@@ -1016,7 +1016,7 @@ fun TopStatusBar(
         }
 
         Text(
-            text = "$balance KAS",
+            text = balance,
             color = Color.White,
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontWeight = FontWeight.Bold,

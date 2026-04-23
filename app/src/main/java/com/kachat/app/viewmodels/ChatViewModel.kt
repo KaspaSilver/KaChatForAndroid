@@ -172,76 +172,27 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Sends an on-chain message via WalletService.
+     * Matches iOS SendKasView flow.
+     */
     fun sendMessage(contactId: String, text: String) {
         viewModelScope.launch {
             try {
                 if (text.isEmpty()) return@launch
-                val fromAddress = walletManager.getAddress()
-                val payloadHex = text.toByteArray().joinToString("") { "%02x".format(it) }
                 
-                val api = networkService.kaspaRestApi.value ?: return@launch
-                val utxos = api.getUtxos(fromAddress)
+                // Call Wallet Engine
+                val txId = walletService.sendKasiaMessage(contactId, text)
                 
-                if (utxos.isEmpty()) return@launch
-
-                var totalSelected = 0L
-                val selectedUtxos = mutableListOf<com.kachat.app.services.UtxoEntry>()
-                var fee = 0L
-                
-                for (utxo in utxos) {
-                    selectedUtxos.add(utxo)
-                    totalSelected += utxo.utxoEntry.amount
-                    
-                    val payloadSize = payloadHex.chunked(2).size
-                    val mass = 4 + 8 + payloadSize + (selectedUtxos.size * 66) + (1 * 34) // Only 1 output for messages (self-send)
-                    fee = (mass * _networkFeeRate.value).toLong().coerceAtLeast(1L)
-                    
-                    if (totalSelected >= fee) break 
-                }
-
-                if (totalSelected < fee) return@launch
-
-                val inputs = selectedUtxos.map { utxo ->
-                    com.kachat.app.services.RawInput(
-                        previousOutpoint = utxo.outpoint,
-                        signatureScript = ""
-                    )
-                }
-                
-                // Self-send pattern for messages
-                val outputs = mutableListOf(
-                    com.kachat.app.services.RawOutputWithVersion(
-                        amount = totalSelected - fee,
-                        scriptPublicKey = com.kachat.app.services.ScriptPublicKeyWithVersion(
-                            scriptPublicKey = com.kachat.app.util.KaspaAddress.getScriptPublicKey(fromAddress)
-                        )
-                    )
-                )
-
-                val rawTx = com.kachat.app.services.RawTransaction(
-                    inputs = inputs,
-                    outputs = outputs,
-                    payload = payloadHex
-                )
-
-                val signedTx = com.kachat.app.util.KaspaTransactionSigner.signTransaction(
-                    rawTx = rawTx,
-                    utxos = selectedUtxos,
-                    privateKey = walletManager.getPrivateKeyBytes()
-                )
-
-                // 5. Broadcast
-                val response = api.postTransaction(com.kachat.app.services.PostTransactionRequest(signedTx))
-
-                // Local bubble
+                // Update local UI immediately
                 val message = MessageEntity(
-                    id = response.transactionId,
+                    id = txId,
                     contactId = contactId,
-                    walletAddress = fromAddress,
+                    walletAddress = walletManager.getAddress(),
                     type = "msg",
                     direction = "sent",
                     plaintextBody = text,
-                    encryptedPayload = payloadHex,
+                    encryptedPayload = "", // TODO: Real encryption in Phase 4
                     amountSompi = 0,
                     blockTimestamp = System.currentTimeMillis()
                 )
@@ -253,118 +204,29 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Sends a Kaspa payment via WalletService.
+     * Matches iOS SendKasView flow.
+     */
     fun sendPayment(contactId: String, amount: String) {
         viewModelScope.launch {
             try {
-                Log.d("ChatViewModel", "Starting sendPayment to $contactId for $amount KAS")
-                val amountKas = amount.toDoubleOrNull() ?: run {
-                    Log.e("ChatViewModel", "Invalid amount: $amount")
-                    return@launch
-                }
+                val amountKas = amount.toDoubleOrNull() ?: return@launch
                 val sompi = (amountKas * 100_000_000).toLong()
-                val fromAddress = walletManager.getAddress()
-                Log.d("ChatViewModel", "From address: $fromAddress")
                 
-                val payloadHex = ("Sent $amount KAS").toByteArray().joinToString("") { "%02x".format(it) }
-                val api = networkService.kaspaRestApi.value ?: run {
-                    Log.e("ChatViewModel", "REST API not available")
-                    return@launch
-                }
-                val utxos = api.getUtxos(fromAddress)
-                Log.d("ChatViewModel", "Fetched ${utxos.size} UTXOs")
+                // Call Wallet Engine
+                val txId = walletService.sendKaspa(toAddress = contactId, amountSompi = sompi)
                 
-                if (utxos.isEmpty()) {
-                    Log.w("ChatViewModel", "No UTXOs found for address")
-                    return@launch
-                }
-
-                // 2. Select UTXOs
-                var totalSelected = 0L
-                val selectedUtxos = mutableListOf<com.kachat.app.services.UtxoEntry>()
-                var fee = 0L
-                
-                for (utxo in utxos) {
-                    selectedUtxos.add(utxo)
-                    totalSelected += utxo.utxoEntry.amount
-                    
-                    // Update fee based on input count and actual network rate
-                    val payloadSize = payloadHex.chunked(2).size
-                    val mass = 4 + 8 + payloadSize + (selectedUtxos.size * 66) + (2 * 34)
-                    fee = (mass * _networkFeeRate.value).toLong().coerceAtLeast(1L)
-                    
-                    Log.d("ChatViewModel", "Selected UTXO: ${utxo.utxoEntry.amount} sompi. Total selected: $totalSelected, needed: ${sompi + fee}")
-                    if (totalSelected >= sompi + fee) break 
-                }
-
-                var finalSompi = sompi
-                if (totalSelected < sompi + fee) {
-                    // If we have almost enough, maybe the user tried to send "Max"
-                    if (totalSelected > fee && (sompi + fee - totalSelected) < 2000) {
-                        Log.i("ChatViewModel", "Adjusting amount for Max send: $sompi -> ${totalSelected - fee}")
-                        finalSompi = totalSelected - fee
-                    } else {
-                        Log.w("ChatViewModel", "Insufficient funds: totalSelected=$totalSelected, needed=${sompi + fee}")
-                        return@launch
-                    }
-                }
-
-                // 3. Create raw transaction
-                val inputs = selectedUtxos.map { utxo ->
-                    com.kachat.app.services.RawInput(
-                        previousOutpoint = utxo.outpoint,
-                        signatureScript = ""
-                    )
-                }
-                
-                val outputs = mutableListOf(
-                    com.kachat.app.services.RawOutputWithVersion(
-                        amount = finalSompi,
-                        scriptPublicKey = com.kachat.app.services.ScriptPublicKeyWithVersion(
-                            scriptPublicKey = com.kachat.app.util.KaspaAddress.getScriptPublicKey(contactId)
-                        )
-                    )
-                )
-                
-                // Change output
-                val change = totalSelected - finalSompi - fee
-                if (change > 500) {
-                    outputs.add(com.kachat.app.services.RawOutputWithVersion(
-                        amount = change,
-                        scriptPublicKey = com.kachat.app.services.ScriptPublicKeyWithVersion(
-                            scriptPublicKey = com.kachat.app.util.KaspaAddress.getScriptPublicKey(fromAddress)
-                        )
-                    ))
-                }
-
-                val rawTx = com.kachat.app.services.RawTransaction(
-                    inputs = inputs,
-                    outputs = outputs,
-                    payload = payloadHex
-                )
-                Log.d("ChatViewModel", "Raw transaction created with ${inputs.size} inputs and ${outputs.size} outputs")
-
-                // 4. Sign
-                val signedTx = com.kachat.app.util.KaspaTransactionSigner.signTransaction(
-                    rawTx = rawTx,
-                    utxos = selectedUtxos,
-                    privateKey = walletManager.getPrivateKeyBytes()
-                )
-                Log.d("ChatViewModel", "Transaction signed")
-
-                // 5. Broadcast
-                val response = api.postTransaction(com.kachat.app.services.PostTransactionRequest(signedTx))
-                Log.i("ChatViewModel", "Transaction broadcast successful: ${response.transactionId}")
-                
-                // 6. Save local message placeholder
+                // Update local UI immediately
                 val message = MessageEntity(
-                    id = response.transactionId,
+                    id = txId,
                     contactId = contactId,
-                    walletAddress = fromAddress,
+                    walletAddress = walletManager.getAddress(),
                     type = "pay",
                     direction = "sent",
-                    plaintextBody = "Sent ${String.format(Locale.US, "%.8f", finalSompi.toDouble()/1e8)} KAS",
-                    encryptedPayload = payloadHex,
-                    amountSompi = finalSompi,
+                    plaintextBody = "Sent $amount KAS",
+                    encryptedPayload = "",
+                    amountSompi = sompi,
                     blockTimestamp = System.currentTimeMillis()
                 )
                 chatRepository.insertMessage(message)
