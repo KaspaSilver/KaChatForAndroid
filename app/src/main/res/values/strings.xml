@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">KaChat</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_tagline">Encrypted messaging on Kaspa</string>
+    <string name="btn_create_wallet">Create New Wallet</string>
+    <string name="btn_import_wallet">Import Existing Wallet</string>
+    <string name="onboarding_privacy_note">Your keys never leave your device.\nMessages are encrypted end-to-end.</string>
+
+    <!-- Navigation -->
+    <string name="nav_chats">Chats</string>
+    <string name="nav_contacts">Contacts</string>
+    <string name="nav_wallet">Wallet</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Settings -->
+    <string name="settings_network">Network</string>
+    <string name="settings_endpoints">Endpoints</string>
+    <string name="settings_indexer_url">Kasia Indexer URL</string>
+    <string name="settings_kns_url">KNS API URL</string>
+    <string name="settings_kaspa_rest_url">Kaspa REST API URL</string>
+    <string name="settings_save">Save Settings</string>
+    <string name="network_mainnet">Mainnet</string>
+    <string name="network_testnet">Testnet</string>
+
+    <!-- Chats -->
+    <string name="chats_empty_title">No conversations yet</string>
+    <string name="chats_empty_subtitle">Add a contact to start chatting</string>
+
+    <!-- Errors -->
+    <string name="error_network">Network error. Please try again.</string>
+    <string name="error_decryption">Could not decrypt message.</string>
+</resources>
