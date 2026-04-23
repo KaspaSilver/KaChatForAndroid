@@ -2,6 +2,7 @@ package com.kachat.app.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.kachat.app.services.KaspaWalletEngine
 import com.kachat.app.services.WalletManager
 import com.kachat.app.services.WalletService
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -13,8 +14,15 @@ import javax.inject.Inject
 @HiltViewModel
 class WalletViewModel @Inject constructor(
     private val walletManager: WalletManager,
-    private val walletService: WalletService
+    private val walletService: WalletService,
+    private val walletEngine: KaspaWalletEngine
 ) : ViewModel() {
+
+    private val _sendResult = MutableStateFlow<Result<String>?>(null)
+    val sendResult: StateFlow<Result<String>?> = _sendResult.asStateFlow()
+
+    private val _isSending = MutableStateFlow(false)
+    val isSending: StateFlow<Boolean> = _isSending.asStateFlow()
 
     private val _hasWallet = MutableStateFlow(walletManager.hasWallet())
     val hasWallet: StateFlow<Boolean> = _hasWallet
@@ -118,6 +126,26 @@ class WalletViewModel @Inject constructor(
     fun clearMnemonic() {
         _mnemonic.value = null
         _onMnemonicGenerated.value = null
+    }
+
+    /**
+     * Sends Kaspa to a given address.
+     */
+    fun onSendClicked(address: String, amountSompi: Long) {
+        viewModelScope.launch {
+            _isSending.value = true
+            val result = walletEngine.sendKaspa(address, amountSompi)
+            _sendResult.value = result
+            _isSending.value = false
+            
+            if (result.isSuccess) {
+                refreshBalance()
+            }
+        }
+    }
+
+    fun clearSendResult() {
+        _sendResult.value = null
     }
 
     fun getActiveMnemonic(): String? = walletManager.getActiveMnemonic()
