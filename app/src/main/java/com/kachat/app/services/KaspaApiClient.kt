@@ -120,6 +120,7 @@ data class RawTransaction(
     val outputs: List<RawOutputWithVersion>,
     val lockTime: Long = 0,
     val subnetworkId: String = "0000000000000000000000000000000000000000",
+    val gas: Long = 0,
     val payload: String? = null // hex-encoded
 )
 

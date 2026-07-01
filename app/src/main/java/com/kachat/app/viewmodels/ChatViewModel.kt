@@ -180,24 +180,24 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 if (text.isEmpty()) return@launch
-                
-                // Call Wallet Engine
-                val txId = walletService.sendKasiaMessage(contactId, text)
-                
+
+                // Encrypt + send handshake (if needed) + encrypted message
+                val result = walletService.sendKasiaMessage(contactId, text)
+
                 // Update local UI immediately
                 val message = MessageEntity(
-                    id = txId,
+                    id = result.txId,
                     contactId = contactId,
                     walletAddress = walletManager.getAddress(),
-                    type = "msg",
+                    type = com.kachat.app.util.MessageProtocol.TYPE_COMM,
                     direction = "sent",
                     plaintextBody = text,
-                    encryptedPayload = "", // TODO: Real encryption in Phase 4
+                    encryptedPayload = result.payloadHex,
                     amountSompi = 0,
                     blockTimestamp = System.currentTimeMillis()
                 )
                 chatRepository.insertMessage(message)
-                
+
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error sending message", e)
             }

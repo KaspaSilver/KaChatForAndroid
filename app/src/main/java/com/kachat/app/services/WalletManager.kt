@@ -190,10 +190,11 @@ class WalletManager @Inject constructor(
     }
 
     /**
-     * Derives a shared ECDH secret with a contact's public key.
+     * Derives the shared symmetric key (ECDH + HKDF-SHA256) with a contact's
+     * x-only secp256k1 public key. See [com.kachat.app.util.KasiaCipher].
      */
     fun deriveSharedSecret(contactPublicKeyHex: String): ByteArray {
-        // TODO: ECDH key agreement
-        return ByteArray(32)
+        val peerPubKey = contactPublicKeyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        return com.kachat.app.util.KasiaCipher.deriveSymmetricKey(getPrivateKeyBytes(), peerPubKey)
     }
 }

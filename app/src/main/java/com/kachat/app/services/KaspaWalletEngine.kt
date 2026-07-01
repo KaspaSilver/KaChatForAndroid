@@ -22,7 +22,7 @@ class KaspaWalletEngine @Inject constructor(
      * @param amountSompi Amount to send in sompi (1 KAS = 100,000,000 sompi).
      * @return Result containing the transaction ID or an error.
      */
-    suspend fun sendKaspa(toAddress: String, amountSompi: Long, payload: String? = null): Result<String> {
+    suspend fun sendKaspa(toAddress: String, amountSompi: Long, payloadBytes: ByteArray? = null): Result<String> {
         return try {
             // 1. Validate address
             if (!isValidAddress(toAddress)) {
@@ -47,7 +47,7 @@ class KaspaWalletEngine @Inject constructor(
             }
 
             // 4. Use SDK-like generator logic for UTXO selection and fee calculation
-            val selectionResult = selectUtxosAndCalculateFee(utxos, amountSompi, feeRate, payload)
+            val selectionResult = selectUtxosAndCalculateFee(utxos, amountSompi, feeRate, payloadBytes)
             
             if (selectionResult.totalSelected < selectionResult.requiredAmount) {
                 return Result.failure(IllegalStateException("Insufficient funds: Needed ${selectionResult.requiredAmount}, have ${selectionResult.totalSelected}"))
@@ -71,13 +71,14 @@ class KaspaWalletEngine @Inject constructor(
                 )
             }
 
-            val payloadHex = payload?.toByteArray()?.joinToString("") { "%02x".format(it) }
+            val payloadHex = payloadBytes?.joinToString("") { "%02x".format(it) }
 
             val rawTx = RawTransaction(
                 inputs = selectionResult.selectedUtxos.map { utxo ->
                     RawInput(previousOutpoint = utxo.outpoint, signatureScript = "")
                 },
                 outputs = outputs,
+                gas = 0,
                 payload = payloadHex
             )
 
@@ -120,14 +121,13 @@ class KaspaWalletEngine @Inject constructor(
         utxos: List<UtxoEntry>,
         amountSompi: Long,
         feeRate: Double,
-        payload: String?
+        payloadBytes: ByteArray?
     ): SelectionResult {
         var totalSelected = 0L
         val selectedUtxos = mutableListOf<UtxoEntry>()
         var estimatedFee = 0L
-        
-        val payloadHex = payload?.toByteArray()?.joinToString("") { "%02x".format(it) }
-        val payloadSize = payloadHex?.chunked(2)?.size ?: 0
+
+        val payloadSize = payloadBytes?.size ?: 0
 
         // Iterate and select UTXOs until amount + fee is covered
         for (utxo in utxos.sortedByDescending { it.utxoEntry.amount }) {
