@@ -76,7 +76,7 @@ object KasiaCipher {
 
         val recipientPoint = decodePoint(recipientXOnlyPubKey)
         val sharedX = ecdhX(ephemeralPrivate, recipientPoint)
-        val key = hkdfSha256(sharedX, 32)
+        val key = hkdfSha256(sharedX, ByteArray(0), 32)
 
         val nonce = ByteArray(NONCE_SIZE).also { SecureRandom().nextBytes(it) }
         val ciphertext = chaChaPolyEncrypt(key, nonce, plaintext.toByteArray(Charsets.UTF_8))
@@ -90,7 +90,7 @@ object KasiaCipher {
     fun decrypt(message: EncryptedMessage, privateKey: ByteArray): String {
         val ephemeralPoint = decodePoint(message.ephemeralPublicKey)
         val sharedX = ecdhX(BigInteger(1, privateKey), ephemeralPoint)
-        val key = hkdfSha256(sharedX, 32)
+        val key = hkdfSha256(sharedX, ByteArray(0), 32)
 
         val plaintext = chaChaPolyDecrypt(key, message.nonce, message.ciphertext)
         return String(plaintext, Charsets.UTF_8)
@@ -103,7 +103,24 @@ object KasiaCipher {
     fun deriveSymmetricKey(privateKey: ByteArray, peerXOnlyPubKey: ByteArray): ByteArray {
         val peerPoint = decodePoint(peerXOnlyPubKey)
         val sharedX = ecdhX(BigInteger(1, privateKey), peerPoint)
-        return hkdfSha256(sharedX, 32)
+        return hkdfSha256(sharedX, ByteArray(0), 32)
+    }
+
+    /**
+     * Deterministic per-conversation alias — derived purely from both parties' public
+     * keys via ECDH + HKDF-SHA256, so two contacts can find each other's self-stashed
+     * messages without ever exchanging a handshake. Matches iOS KaChat's
+     * DeterministicAlias.swift byte-for-byte: info = "chat" || sharedX(32) || contextPubKey(32).
+     * [contextXOnlyPubKey] picks which side of the pair this alias is "for" — pass your
+     * own pubkey to get the alias you watch for incoming, or the peer's to get the alias
+     * you tag outgoing messages with (see WalletManager.myDeterministicAlias/theirDeterministicAlias).
+     */
+    fun deriveDeterministicAlias(myPrivateKey: ByteArray, theirXOnlyPubKey: ByteArray, contextXOnlyPubKey: ByteArray): String {
+        val theirPoint = decodePoint(theirXOnlyPubKey)
+        val sharedX = ecdhX(BigInteger(1, myPrivateKey), theirPoint)
+        val info = "chat".toByteArray(Charsets.US_ASCII) + sharedX + contextXOnlyPubKey
+        val aliasBytes = hkdfSha256(sharedX, info, 6)
+        return aliasBytes.joinToString("") { "%02x".format(it) }
     }
 
     // -------------------------------------------------------------------------
@@ -132,12 +149,13 @@ object KasiaCipher {
     }
 
     // -------------------------------------------------------------------------
-    // HKDF-SHA256 (empty salt, empty info — matches CryptoKit's HKDF<SHA256> defaults)
+    // HKDF-SHA256 (empty salt — matches CryptoKit's HKDF<SHA256> defaults; message
+    // encryption uses empty info too, deterministic alias derivation passes a real one)
     // -------------------------------------------------------------------------
 
-    private fun hkdfSha256(ikm: ByteArray, outputLength: Int): ByteArray {
+    private fun hkdfSha256(ikm: ByteArray, info: ByteArray, outputLength: Int): ByteArray {
         val generator = HKDFBytesGenerator(SHA256Digest())
-        generator.init(HKDFParameters(ikm, ByteArray(0), ByteArray(0)))
+        generator.init(HKDFParameters(ikm, ByteArray(0), info))
         val out = ByteArray(outputLength)
         generator.generateBytes(out, 0, outputLength)
         return out

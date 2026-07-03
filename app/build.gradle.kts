@@ -30,6 +30,9 @@ protobuf {
                 }
             }
             it.builtins {
+                create("java") {
+                    option("lite")
+                }
                 create("kotlin") {
                     option("lite")
                 }
@@ -95,6 +98,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.activity.compose)
 
     // Compose BOM — manages all Compose library versions together
@@ -125,6 +129,7 @@ dependencies {
 
     // Coroutines
     implementation(libs.coroutines.android)
+    implementation(libs.coroutines.play.services)
 
     // DataStore (settings/preferences)
     implementation(libs.datastore.preferences)
@@ -137,6 +142,21 @@ dependencies {
     implementation(libs.bip39.kotlin)
     implementation(libs.zxing.core)
 
+    // Camera (QR scanning)
+    implementation(libs.camera.core)
+    implementation(libs.camera.camera2)
+    implementation(libs.camera.lifecycle)
+    implementation(libs.camera.view)
+
+    // Image loading (KNS avatars)
+    implementation(libs.coil.compose)
+
+    // Google Drive backup (sign-in + Drive scope authorization)
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services.auth)
+    implementation(libs.googleid)
+    implementation(libs.play.services.auth)
+
     // gRPC (Kaspa node connections)
     implementation(libs.grpc.okhttp)
     implementation(libs.grpc.protobuf.lite)
@@ -146,6 +166,7 @@ dependencies {
 
     // Testing
     testImplementation(libs.junit)
+    testImplementation(libs.grpc.inprocess) // in-process gRPC transport for testing KaspadConnection offline
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

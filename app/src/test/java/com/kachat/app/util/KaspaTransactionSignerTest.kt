@@ -8,6 +8,7 @@ import com.kachat.app.services.ScriptPublicKey
 import com.kachat.app.services.ScriptPublicKeyWithVersion
 import com.kachat.app.services.UtxoData
 import com.kachat.app.services.UtxoEntry
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -112,5 +113,58 @@ class KaspaTransactionSignerTest {
         )
 
         assertFalse(hashA.contentEquals(hashB))
+    }
+
+    // --- signRevealInput (KNS commit/reveal) -----------------------------------------
+
+    private fun revealFixture(): Triple<RawTransaction, UtxoEntry, ByteArray> {
+        val (rawTx, utxos, privateKey) = fixture()
+        return Triple(rawTx, utxos[0], privateKey)
+    }
+
+    @Test
+    fun `reveal signature script carries the push, sig, sighash type, and pushed redeem script`() {
+        val (rawTx, commitUtxo, privateKey) = revealFixture()
+        val redeemScript = ByteArray(40) { it.toByte() }
+
+        val signed = KaspaTransactionSigner.signRevealInput(rawTx, commitUtxo, redeemScript, privateKey)
+        val sigScriptHex = signed.inputs[0].signatureScript
+        val sigScript = sigScriptHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+        assertEquals(0x41, sigScript[0].toInt() and 0xff)
+        assertEquals(0x01, sigScript[65].toInt() and 0xff)
+        // redeem script is 40 bytes -> canonicalPush is [0x28, ...40 bytes] (0x28 = 40)
+        assertEquals(0x28, sigScript[66].toInt() and 0xff)
+        assertArrayEquals(redeemScript, sigScript.copyOfRange(67, 67 + 40))
+        assertEquals(66 + 1 + 40, sigScript.size)
+    }
+
+    @Test
+    fun `reveal signature verifies against the sighash of the commit output's real scriptPublicKey`() {
+        val (rawTx, commitUtxo, privateKey) = revealFixture()
+        val pubKeyXOnly = Schnorr.publicKeyXOnly(privateKey)
+        val redeemScript = ByteArray(200) { it.toByte() } // exercises the OP_PUSHDATA1 branch (>75 bytes)
+
+        val signed = KaspaTransactionSigner.signRevealInput(rawTx, commitUtxo, redeemScript, privateKey)
+        val sigScript = signed.inputs[0].signatureScript.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val signatureBytes = sigScript.copyOfRange(1, 65)
+
+        // The sighash must use the COMMIT output's actual scriptPublicKey, NOT the redeem script.
+        val sighash = KaspaTransactionSigner.calculateSighash(
+            rawTx, 0, commitUtxo.utxoEntry.amount, commitUtxo.utxoEntry.scriptPublicKey.scriptPublicKey
+        )
+        assertTrue(Schnorr.verify(sighash, signatureBytes, pubKeyXOnly))
+    }
+
+    @Test
+    fun `reveal signature script grows correctly for a large redeem script via OP_PUSHDATA2`() {
+        val (rawTx, commitUtxo, privateKey) = revealFixture()
+        val redeemScript = ByteArray(300) { it.toByte() }
+
+        val signed = KaspaTransactionSigner.signRevealInput(rawTx, commitUtxo, redeemScript, privateKey)
+        val sigScript = signed.inputs[0].signatureScript.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+        assertEquals(0x4d, sigScript[66].toInt() and 0xff) // OP_PUSHDATA2
+        assertEquals(66 + 3 + 300, sigScript.size)
     }
 }

@@ -53,77 +53,106 @@ val bottomNavItems = listOf(
  * Wallet onboarding is shown instead when no wallet exists.
  */
 @Composable
-fun KaChatApp(walletViewModel: WalletViewModel = hiltViewModel()) {
+fun KaChatApp(
+    walletViewModel: WalletViewModel = hiltViewModel(),
+    pendingContactId: String? = null,
+    onPendingContactHandled: () -> Unit = {}
+) {
     val isLoggedIn by walletViewModel.isLoggedIn.collectAsState()
     val mnemonic by walletViewModel.mnemonic.collectAsState()
 
     if (!isLoggedIn || mnemonic != null) {
         OnboardingScreen(walletViewModel)
     } else {
-        MainShell(walletViewModel)
+        MainShell(
+            walletViewModel = walletViewModel,
+            pendingContactId = pendingContactId,
+            onPendingContactHandled = onPendingContactHandled
+        )
     }
 }
 
 @Composable
 fun MainShell(
     walletViewModel: WalletViewModel = hiltViewModel(),
-    chatViewModel: ChatViewModel = hiltViewModel()
+    chatViewModel: ChatViewModel = hiltViewModel(),
+    pendingContactId: String? = null,
+    onPendingContactHandled: () -> Unit = {}
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
+    val onTabRoute = currentDestination?.hierarchy?.any { dest ->
+        bottomNavItems.any { it.route == dest.route }
+    } == true
+
+    // Tapping a notification for a message/handshake/payment jumps straight to that
+    // conversation, matching what a real chat app does — otherwise you'd land on the
+    // chat list and have to go find it yourself.
+    LaunchedEffect(pendingContactId) {
+        if (pendingContactId != null) {
+            navController.navigate("chat/$pendingContactId")
+            onPendingContactHandled()
+        }
+    }
 
     Scaffold(
         containerColor = Color.Black,
         bottomBar = {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 24.dp, start = 24.dp, end = 24.dp),
-                contentAlignment = Alignment.BottomCenter
-            ) {
-                Row(
+            // Only show the floating tab bar on the top-level tab destinations —
+            // "pushed" detail screens (chat thread, settings sub-screens, etc.) fill
+            // the whole screen with their own Scaffold and must not have this
+            // overlaid on top of them (it was blocking the chat input entirely).
+            if (onTabRoute) {
+                Box(
                     modifier = Modifier
-                        .height(80.dp)
                         .fillMaxWidth()
-                        .background(Color(0xFF1C1C1E), RoundedCornerShape(40.dp))
-                        .padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceAround
+                        .padding(bottom = 24.dp, start = 24.dp, end = 24.dp),
+                    contentAlignment = Alignment.BottomCenter
                 ) {
-                    bottomNavItems.forEach { screen ->
-                        val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
-                        
-                        Box(
-                            modifier = Modifier
-                                .height(64.dp)
-                                .weight(1f)
-                                .clip(RoundedCornerShape(32.dp))
-                                .clickable {
-                                    navController.navigate(screen.route) {
-                                        popUpTo(navController.graph.findStartDestination().id) {
-                                            saveState = true
+                    Row(
+                        modifier = Modifier
+                            .height(80.dp)
+                            .fillMaxWidth()
+                            .background(Color(0xFF1C1C1E), RoundedCornerShape(40.dp))
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceAround
+                    ) {
+                        bottomNavItems.forEach { screen ->
+                            val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+
+                            Box(
+                                modifier = Modifier
+                                    .height(64.dp)
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(32.dp))
+                                    .clickable {
+                                        navController.navigate(screen.route) {
+                                            popUpTo(navController.graph.findStartDestination().id) {
+                                                saveState = true
+                                            }
+                                            launchSingleTop = true
+                                            restoreState = true
                                         }
-                                        launchSingleTop = true
-                                        restoreState = true
-                                    }
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector = screen.icon,
-                                    contentDescription = screen.label,
-                                    tint = if (selected) KaspaTeal else Color.White,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = screen.label,
-                                    color = if (selected) KaspaTeal else Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                                )
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        imageVector = screen.icon,
+                                        contentDescription = screen.label,
+                                        tint = if (selected) KaspaTeal else Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = screen.label,
+                                        color = if (selected) KaspaTeal else Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
                             }
                         }
                     }
@@ -131,23 +160,45 @@ fun MainShell(
             }
         }
     ) { innerPadding ->
+        // Only the bottom-tab destinations (Settings/Chats/Profile) sit inside this
+        // shell's floating nav bar and need innerPadding reserved beneath them.
+        // "Pushed" detail screens (chat thread, settings sub-screens, etc.) fill the
+        // whole screen with their own Scaffold — applying innerPadding to the NavHost
+        // as a whole left permanent dead space at the bottom of every one of those,
+        // which became a visible gap once a Scaffold there also added imePadding().
         NavHost(
             navController = navController,
-            startDestination = Screen.Chats.route,
-            modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())
+            startDestination = Screen.Chats.route
         ) {
-            composable(Screen.Settings.route) { SettingsScreen(navController, walletViewModel) }
-            composable(Screen.Chats.route)    { ChatsScreen(navController, walletViewModel, chatViewModel = chatViewModel) }
-            composable(Screen.Profile.route)  { 
-                ProfileScreen(
-                    viewModel = walletViewModel,
-                    navController = navController,
-                    onNavigateToSeed = { navController.navigate("seed_phrase") }
-                ) 
+            composable(Screen.Settings.route) {
+                Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
+                    SettingsScreen(navController, walletViewModel)
+                }
+            }
+            composable(Screen.Chats.route) {
+                Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
+                    ChatsScreen(navController, walletViewModel, chatViewModel = chatViewModel)
+                }
+            }
+            composable(Screen.Profile.route) {
+                Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
+                    ProfileScreen(
+                        viewModel = walletViewModel,
+                        navController = navController,
+                        onNavigateToSeed = { navController.navigate("seed_phrase") }
+                    )
+                }
             }
 
             composable("seed_phrase") {
                 SeedPhraseScreen(
+                    viewModel = walletViewModel,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable("edit_kns_profile") {
+                EditKnsProfileScreen(
                     viewModel = walletViewModel,
                     onBack = { navController.popBackStack() }
                 )
@@ -161,6 +212,12 @@ fun MainShell(
 
             composable("connection_status") {
                 ConnectionStatusScreen(
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable("notification_settings") {
+                NotificationSettingsScreen(
                     onBack = { navController.popBackStack() }
                 )
             }

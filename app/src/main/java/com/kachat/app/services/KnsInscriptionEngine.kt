@@ -1,0 +1,216 @@
+package com.kachat.app.services
+
+import android.util.Log
+import com.kachat.app.models.PendingKnsCommit
+import com.kachat.app.repository.AppSettingsRepository
+import com.kachat.app.util.KaspaAddress
+import com.kachat.app.util.KaspaMass
+import com.kachat.app.util.KaspaTransactionSigner
+import com.kachat.app.util.KaspaUtxoSelector
+import com.kachat.app.util.KnsInscriptionScript
+import com.kachat.app.util.Schnorr
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlin.math.ceil
+
+/**
+ * Builds and submits KNS commit/reveal inscription transactions — the same commit->reveal
+ * pattern used for both domain registration and profile field updates. Mirrors
+ * [KaspaWalletEngine]'s structure; verified byte-for-byte against the iOS reference
+ * (`KaChat/Services/KaChatTransactionBuilder.swift:480-1188`).
+ */
+@Singleton
+class KnsInscriptionEngine @Inject constructor(
+    private val networkService: NetworkService,
+    private val walletManager: WalletManager,
+    private val nodePoolManager: NodePoolManager,
+    private val settings: AppSettingsRepository
+) {
+    data class CommitResult(
+        val commitTxId: String,
+        val redeemScript: ByteArray,
+        val commitScriptPubKeyHex: String,
+        val commitAmountSompi: Long,
+        val revealAmountSompi: Long
+    )
+
+    // Serializes commit/reveal builds the same way KaspaWalletEngine.sendKaspa does, for the
+    // same reason: overlapping UTXO fetch+select would otherwise race and double-spend.
+    private val mutex = Mutex()
+
+    suspend fun buildAndSubmitCommit(
+        payloadJson: ByteArray,
+        commitAmountSompi: Long,
+        revealAmountSompi: Long,
+        revealTargetAddress: String,
+        operationType: String
+    ): CommitResult = mutex.withLock {
+        val fromAddress = walletManager.getAddress()
+        val api = networkService.kaspaRestApi.value ?: throw IllegalStateException("Network service unavailable")
+
+        val hrp = fromAddress.substringBefore(":")
+        val xOnlyPubKey = Schnorr.publicKeyXOnly(walletManager.getPrivateKeyBytes())
+        val redeemScript = KnsInscriptionScript.buildRedeemScript(xOnlyPubKey, "kns", payloadJson)
+        val commitAddress = KnsInscriptionScript.commitAddress(redeemScript, hrp)
+        val commitScriptPubKeyHex = KaspaAddress.getScriptPublicKey(commitAddress)
+        val changeScriptHex = KaspaAddress.getScriptPublicKey(fromAddress)
+
+        val utxos = api.getUtxos(fromAddress)
+        if (utxos.isEmpty()) throw IllegalStateException("No spendable UTXOs available for KNS inscription")
+
+        val feeRateSompiPerGram = fetchFeeRate(api)
+
+        val selection = KaspaUtxoSelector.selectUtxosAndCalculateFee(
+            utxos = utxos,
+            amountSompi = commitAmountSompi,
+            feeRateSompiPerGram = feeRateSompiPerGram,
+            payloadBytes = null,
+            recipientScriptLen = commitScriptPubKeyHex.length / 2,
+            changeScriptLen = changeScriptHex.length / 2
+        )
+        if (selection.totalSelected < selection.requiredAmount) {
+            throw IllegalStateException("Insufficient funds: needed ${selection.requiredAmount}, have ${selection.totalSelected}")
+        }
+
+        val outputs = mutableListOf<RawOutputWithVersion>(
+            RawOutputWithVersion(amount = commitAmountSompi, scriptPublicKey = ScriptPublicKeyWithVersion(commitScriptPubKeyHex, 0))
+        )
+        if (selection.changeAmount > DUST_THRESHOLD_SOMPI) {
+            outputs.add(RawOutputWithVersion(amount = selection.changeAmount, scriptPublicKey = ScriptPublicKeyWithVersion(changeScriptHex, 0)))
+        }
+
+        val rawTx = RawTransaction(
+            inputs = selection.selectedUtxos.map { RawInput(previousOutpoint = it.outpoint, signatureScript = "") },
+            outputs = outputs
+        )
+        val signedTx = KaspaTransactionSigner.signTransaction(rawTx, selection.selectedUtxos, walletManager.getPrivateKeyBytes())
+        val commitTxId = nodePoolManager.getBroadcastConnection().submitTransaction(signedTx, allowOrphan = false)
+
+        val result = CommitResult(commitTxId, redeemScript, commitScriptPubKeyHex, commitAmountSompi, revealAmountSompi)
+
+        // Persist BEFORE attempting reveal — if reveal fails or the app dies here, the commit
+        // amount is still recoverable on next launch instead of silently stuck.
+        settings.setPendingKnsCommit(
+            PendingKnsCommit(
+                commitTxId = commitTxId,
+                redeemScriptHex = redeemScript.toHex(),
+                commitScriptPubKeyHex = commitScriptPubKeyHex,
+                commitAmountSompi = commitAmountSompi,
+                revealAmountSompi = revealAmountSompi,
+                revealTargetAddress = revealTargetAddress,
+                operationType = operationType
+            )
+        )
+
+        result
+    }
+
+    suspend fun buildAndSubmitReveal(commit: CommitResult, revealTargetAddress: String): String = mutex.withLock {
+        val fromAddress = walletManager.getAddress()
+        val api = networkService.kaspaRestApi.value ?: throw IllegalStateException("Network service unavailable")
+
+        val targetScriptHex = KaspaAddress.getScriptPublicKey(revealTargetAddress)
+        val changeScriptHex = KaspaAddress.getScriptPublicKey(fromAddress)
+        val feeRateSompiPerGram = fetchFeeRate(api)
+
+        val recipientOutput = if (commit.revealAmountSompi > 0) {
+            RawOutputWithVersion(amount = commit.revealAmountSompi, scriptPublicKey = ScriptPublicKeyWithVersion(targetScriptHex, 0))
+        } else null
+        val baseOutputs = listOfNotNull(recipientOutput)
+
+        // Signature script is push(sig+hashtype) + push(redeemScript) — much bigger than the
+        // standard 66-byte Schnorr push, so mass/fee must account for the real size.
+        val sigScriptSize = 66L + KnsInscriptionScript.canonicalPushSize(commit.redeemScript.size)
+
+        require(commit.commitAmountSompi >= commit.revealAmountSompi) {
+            "KNS reveal amount cannot exceed the commit amount"
+        }
+
+        val massWithChange = KaspaMass.calculateMass(
+            numInputs = 1,
+            outputScriptLens = (baseOutputs.map { it.scriptPublicKey.scriptPublicKey.length / 2 }) + (changeScriptHex.length / 2),
+            payloadSize = 0,
+            sigScriptLens = listOf(sigScriptSize)
+        )
+        val feeWithChange = KaspaMass.calculateFee(massWithChange, feeRateSompiPerGram) + REVEAL_PRIORITY_FEE_SOMPI
+
+        val outputs = baseOutputs.toMutableList()
+        val availableForChangeAndFee = commit.commitAmountSompi - commit.revealAmountSompi
+
+        require(availableForChangeAndFee >= feeWithChange) { "KNS reveal amount cannot be covered by commit output" }
+        val changeWithFee = availableForChangeAndFee - feeWithChange
+
+        if (changeWithFee > DUST_THRESHOLD_SOMPI) {
+            outputs.add(RawOutputWithVersion(amount = changeWithFee, scriptPublicKey = ScriptPublicKeyWithVersion(changeScriptHex, 0)))
+        } else {
+            // Change would be dust — recompute the fee for a transaction with no change output
+            // (lower mass, so a lower fee), and see if THAT leaves enough for change instead.
+            val massNoChange = KaspaMass.calculateMass(
+                numInputs = 1,
+                outputScriptLens = baseOutputs.map { it.scriptPublicKey.scriptPublicKey.length / 2 },
+                payloadSize = 0,
+                sigScriptLens = listOf(sigScriptSize)
+            )
+            val feeNoChange = KaspaMass.calculateFee(massNoChange, feeRateSompiPerGram) + REVEAL_PRIORITY_FEE_SOMPI
+            require(availableForChangeAndFee >= feeNoChange) { "Insufficient commit amount for KNS reveal fee" }
+            val changeNoChange = availableForChangeAndFee - feeNoChange
+            if (changeNoChange > DUST_THRESHOLD_SOMPI) {
+                outputs.add(RawOutputWithVersion(amount = changeNoChange, scriptPublicKey = ScriptPublicKeyWithVersion(changeScriptHex, 0)))
+            }
+        }
+        require(outputs.isNotEmpty()) { "KNS reveal transaction has no spendable outputs after fees" }
+
+        val commitUtxo = UtxoEntry(
+            address = fromAddress,
+            outpoint = Outpoint(transactionId = commit.commitTxId, index = 0),
+            utxoEntry = UtxoData(
+                amount = commit.commitAmountSompi,
+                scriptPublicKey = ScriptPublicKey(commit.commitScriptPubKeyHex),
+                blockDaaScore = 0,
+                isCoinbase = false
+            )
+        )
+
+        val rawTx = RawTransaction(
+            inputs = listOf(RawInput(previousOutpoint = commitUtxo.outpoint, signatureScript = "")),
+            outputs = outputs
+        )
+        val signedTx = KaspaTransactionSigner.signRevealInput(rawTx, commitUtxo, commit.redeemScript, walletManager.getPrivateKeyBytes())
+
+        val connection = nodePoolManager.getBroadcastConnection()
+        val revealTxId = try {
+            connection.submitTransaction(signedTx, allowOrphan = false)
+        } catch (e: Exception) {
+            if (e.message?.contains("orphan", ignoreCase = true) == true) {
+                Log.w("KnsInscriptionEngine", "Reveal rejected as orphan, retrying with allowOrphan=true", e)
+                connection.submitTransaction(signedTx, allowOrphan = true)
+            } else {
+                throw e
+            }
+        }
+
+        settings.clearPendingKnsCommit()
+        revealTxId
+    }
+
+    private suspend fun fetchFeeRate(api: KaspaRestApi): Long {
+        return try {
+            val estimate = api.getFeeEstimate()
+            val quoted = estimate.normalBuckets.firstOrNull()?.feerate ?: KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble()
+            ceil(quoted).toLong().coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
+        } catch (e: Exception) {
+            Log.w("KnsInscriptionEngine", "Failed to fetch fee estimate, using network minimum", e)
+            KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM
+        }
+    }
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+
+    companion object {
+        /** Matches iOS's dustThreshold for these builders specifically (10,000 sompi) — more conservative than KaspaWalletEngine's regular-send 500-sompi threshold. */
+        const val DUST_THRESHOLD_SOMPI = 10_000L
+        const val REVEAL_PRIORITY_FEE_SOMPI = 2_000_000L
+    }
+}

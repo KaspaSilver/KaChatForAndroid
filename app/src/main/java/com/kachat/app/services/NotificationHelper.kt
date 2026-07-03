@@ -1,0 +1,116 @@
+package com.kachat.app.services
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import com.kachat.app.MainActivity
+import com.kachat.app.R
+import com.kachat.app.repository.AppSettingsRepository
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/**
+ * Local notifications for new messages/handshakes/payments — fired directly from
+ * ChatRepository's existing poll loop. There's no server-side push infrastructure yet
+ * (see the commented-out FCM service in AndroidManifest), so these only fire while the
+ * app process is alive (foreground or recently backgrounded), not after the OS has
+ * fully killed it. Settings > Notifications controls whether these fire at all, and
+ * whether they carry sound/vibration.
+ */
+@Singleton
+class NotificationHelper @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val settings: AppSettingsRepository
+) {
+    // Suppresses a notification for whichever contact's thread is currently on screen —
+    // set by ChatViewModel as ChatThreadScreen opens/closes.
+    private val activeContactId = MutableStateFlow<String?>(null)
+
+    init {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // A channel's sound/vibration is fixed by the OS once created — the app can't
+            // flip it later, only the user can (in system notification settings). The only
+            // way an in-app Sound/Vibration toggle can actually do anything on API 26+ is
+            // to pre-create one channel per combination and post through whichever one
+            // matches the current settings.
+            val manager = context.getSystemService(NotificationManager::class.java)
+            CHANNELS.forEach { (channelId, soundOn, vibrationOn) ->
+                val channel = NotificationChannel(channelId, "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "New messages, connection requests, and payments"
+                    enableVibration(vibrationOn)
+                    if (!soundOn) setSound(null, null)
+                }
+                manager?.createNotificationChannel(channel)
+            }
+        }
+    }
+
+    fun setActiveContact(contactId: String?) {
+        activeContactId.value = contactId
+    }
+
+    suspend fun show(contactId: String, title: String, text: String) {
+        if (activeContactId.value == contactId) return // already looking at this conversation
+        if (!settings.notificationsEnabled.first()) return
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_CONTACT_ID, contactId)
+        }
+        // Stable per-contact request code so a burst of updates for the same
+        // conversation replaces the pending intent instead of leaking a new one each time.
+        val notificationId = contactId.hashCode()
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val soundEnabled = settings.notificationSoundEnabled.first()
+        val vibrationEnabled = settings.notificationVibrationEnabled.first()
+        val channelId = channelFor(soundEnabled, vibrationEnabled)
+        val notification = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_kachat_logo)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            // Below API 26 there are no channels — these are what actually apply there.
+            .setSilent(!soundEnabled && !vibrationEnabled)
+            .setVibrate(if (vibrationEnabled) longArrayOf(0, 250, 250, 250) else longArrayOf(0))
+            .apply { if (!soundEnabled) setSound(null) }
+            .build()
+
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, notification)
+        } catch (e: SecurityException) {
+            // POST_NOTIFICATIONS not granted — skip rather than crash.
+        }
+    }
+
+    companion object {
+        const val CHANNEL_ID = "kachat_messages_sound_vibrate"
+        const val EXTRA_CONTACT_ID = "contact_id"
+
+        // (channelId, soundEnabled, vibrationEnabled)
+        private val CHANNELS = listOf(
+            Triple("kachat_messages_sound_vibrate", true, true),
+            Triple("kachat_messages_sound_only", true, false),
+            Triple("kachat_messages_vibrate_only", false, true),
+            Triple("kachat_messages_silent", false, false)
+        )
+
+        internal fun channelFor(soundEnabled: Boolean, vibrationEnabled: Boolean) =
+            CHANNELS.first { it.second == soundEnabled && it.third == vibrationEnabled }.first
+    }
+}

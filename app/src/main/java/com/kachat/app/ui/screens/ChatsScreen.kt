@@ -1,5 +1,10 @@
 package com.kachat.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,13 +19,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.ContentScale
 import androidx.navigation.NavController
+import coil.compose.SubcomposeAsyncImage
 import com.kachat.app.R
 import com.kachat.app.ui.theme.KaspaBlue
 import com.kachat.app.ui.theme.KaspaSubtext
@@ -29,6 +40,7 @@ import com.kachat.app.viewmodels.WalletViewModel
 import com.kachat.app.viewmodels.ConnectionViewModel
 import com.kachat.app.viewmodels.ChatViewModel
 import com.kachat.app.models.Conversation
+import com.kachat.app.util.VoiceMessage
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -57,8 +69,8 @@ fun ChatsScreen(
     connectionViewModel: ConnectionViewModel = hiltViewModel(),
     chatViewModel: ChatViewModel = hiltViewModel()
 ) {
-    val balance by walletViewModel.balance.collectAsState()
-    val connStatus by connectionViewModel.status.collectAsState()
+    val balance by walletViewModel.fullBalance.collectAsState()
+    val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val conversations by chatViewModel.conversations.collectAsState()
     val isRefreshing by chatViewModel.isRefreshing.collectAsState()
     
@@ -67,17 +79,55 @@ fun ChatsScreen(
         onRefresh = { chatViewModel.refreshChats() }
     )
 
+    // Balance only updates reactively while this screen is actively composed —
+    // refresh it fresh every time you land on/return to the Chats tab, since a
+    // send that happened while on a different screen won't otherwise be reflected
+    // until something explicitly asks the network for the current balance again.
+    LaunchedEffect(Unit) {
+        walletViewModel.refreshBalance()
+    }
+
+    // Auto-rename any chat to their KNS domain if they have one, every time the chat
+    // list appears — matches iOS's fetchKNSDomainsForAllContacts.
+    LaunchedEffect(Unit) {
+        chatViewModel.refreshKnsNamesForAllContacts()
+    }
+
+    // Auto-link/autocreate system contacts, same trigger point — matches iOS's
+    // SystemContactsService refresh running on every app foreground.
+    LaunchedEffect(Unit) {
+        chatViewModel.syncSystemContacts()
+    }
+
+    val context = LocalContext.current
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* nothing to do either way — notifications just won't show if denied */ }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     Scaffold(
         containerColor = Color.Black,
         topBar = {
-            Column(modifier = Modifier.background(Color.Black).padding(horizontal = 16.dp)) {
+            Column(
+                modifier = Modifier
+                    .background(Color.Black)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp)
+            ) {
                 Spacer(modifier = Modifier.height(16.dp))
-                
+
                 TopStatusBar(
                     balance = balance,
                     onStatusClick = { navController.navigate("connection_status") },
                     onAddClick = { navController.navigate("create_chat") },
-                    connectionStatus = connStatus
+                    dotColorHex = dotColorHex
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -229,6 +279,12 @@ fun ChatsScreen(
     }
 }
 
+/** A one-line preview of a message body, for the chat list and anywhere else a raw body would otherwise leak the audio-message JSON blob to the user. */
+private fun messagePreviewText(body: String?): String? {
+    if (VoiceMessage.parseOrNull(body) != null) return "🎤 Audio message"
+    return body
+}
+
 @Composable
 private fun ConversationRow(convo: Conversation, onClick: () -> Unit) {
     Row(
@@ -238,20 +294,11 @@ private fun ConversationRow(convo: Conversation, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Avatar placeholder
-        Surface(
-            modifier = Modifier.size(48.dp).clip(CircleShape),
-            color = Color(0xFF1C1C1E)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = (convo.contact.alias ?: convo.contact.id.takeLast(8)).take(2).uppercase(),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = KaspaTeal,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
+        ContactAvatar(
+            imageUrl = convo.contact.knsAvatarUrl,
+            fallbackText = convo.contact.alias ?: convo.contact.id.takeLast(8),
+            size = 48.dp
+        )
 
         Spacer(Modifier.width(16.dp))
 
@@ -263,14 +310,77 @@ private fun ConversationRow(convo: Conversation, onClick: () -> Unit) {
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = convo.lastMessage?.plaintextBody ?: "No messages yet",
+                text = when {
+                    convo.contact.conversationStatus == "pending" -> "🤝 ${messagePreviewText(convo.lastMessage?.plaintextBody) ?: "Wants to connect"}"
+                    else -> messagePreviewText(convo.lastMessage?.plaintextBody) ?: "No messages yet"
+                },
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color.Gray,
+                color = if (convo.contact.conversationStatus == "pending") KaspaTeal else Color.Gray,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
+
+        if (convo.unreadCount > 0) {
+            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .defaultMinSize(minWidth = 24.dp, minHeight = 24.dp)
+                    .background(KaspaTeal, CircleShape)
+                    .padding(horizontal = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = convo.unreadCount.toString(),
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
     }
+}
+
+/** Contact avatar — shows the KNS profile photo when available, else falls back to initials, everywhere a contact is shown. */
+@Composable
+fun ContactAvatar(
+    imageUrl: String?,
+    fallbackText: String,
+    size: Dp,
+    modifier: Modifier = Modifier,
+    backgroundColor: Color = Color(0xFF1C1C1E),
+    fontSize: TextUnit = 16.sp
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(backgroundColor),
+        contentAlignment = Alignment.Center
+    ) {
+        if (imageUrl != null) {
+            SubcomposeAsyncImage(
+                model = imageUrl,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+                loading = { AvatarInitials(fallbackText, fontSize) },
+                error = { AvatarInitials(fallbackText, fontSize) }
+            )
+        } else {
+            AvatarInitials(fallbackText, fontSize)
+        }
+    }
+}
+
+@Composable
+private fun AvatarInitials(text: String, fontSize: TextUnit) {
+    Text(
+        text = text.take(2).uppercase(),
+        color = KaspaTeal,
+        fontWeight = FontWeight.Bold,
+        fontSize = fontSize
+    )
 }
 
 // Placeholder data class — replace with Room entity in Phase 4

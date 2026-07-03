@@ -4,8 +4,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -15,8 +18,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -46,10 +52,29 @@ fun OnboardingScreen(viewModel: WalletViewModel) {
 
     NavHost(navController = navController, startDestination = "welcome") {
         composable("welcome") {
-            WelcomeScreen(viewModel, onNavigateToCreate = { navController.navigate("create_account") })
+            WelcomeScreen(
+                viewModel,
+                onNavigateToCreate = { navController.navigate("create_account") },
+                onNavigateToImport = {
+                    // A stale SUCCESS/FAILED status left over from a previous import would
+                    // otherwise fire ImportWalletScreen's success LaunchedEffect immediately on
+                    // entry (this state lives in the singleton WalletViewModel, not the screen),
+                    // silently logging into whatever account is currently active instead of
+                    // letting the user type a new phrase.
+                    viewModel.resetImportWalletState()
+                    navController.navigate("import_wallet")
+                }
+            )
         }
         composable("create_account") {
             CreateAccountScreen(viewModel, onBack = { navController.popBackStack() })
+        }
+        composable("import_wallet") {
+            ImportWalletScreen(
+                viewModel,
+                onBack = { navController.popBackStack() },
+                onImported = { viewModel.login() }
+            )
         }
         composable("backup_mnemonic/{words}") { backStackEntry ->
             val words = backStackEntry.arguments?.getString("words") ?: ""
@@ -65,7 +90,7 @@ fun OnboardingScreen(viewModel: WalletViewModel) {
 }
 
 @Composable
-fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit) {
+fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit, onNavigateToImport: () -> Unit) {
     Surface(
         color = Color.Black,
         modifier = Modifier.fillMaxSize()
@@ -168,7 +193,7 @@ fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit) {
 
             // Import existing wallet button
             Button(
-                onClick = { /* TODO Phase 2: import from mnemonic */ },
+                onClick = onNavigateToImport,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
@@ -420,6 +445,191 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/** Lowercases, trims, and splits a pasted/typed seed phrase on any whitespace — matches iOS's `updateWordCount` splitting rule exactly. */
+internal fun parseSeedPhraseWords(raw: String): List<String> =
+    raw.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImported: () -> Unit) {
+    var seedPhraseText by remember { mutableStateOf("") }
+    var accountName by remember { mutableStateOf("Imported Account") }
+    val importState by viewModel.importWalletState.collectAsState()
+    val clipboardManager = LocalClipboardManager.current
+
+    val words = remember(seedPhraseText) { parseSeedPhraseWords(seedPhraseText) }
+    val wordCount = words.size
+    val isValidCount = wordCount == 12 || wordCount == 24
+    val isImporting = importState.status == WalletViewModel.ImportWalletStatus.IMPORTING
+    val canImport = isValidCount && accountName.isNotBlank() && !isImporting
+
+    LaunchedEffect(importState.status) {
+        if (importState.status == WalletViewModel.ImportWalletStatus.SUCCESS) {
+            onImported()
+        }
+    }
+
+    Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(Color(0xFF1C1C1E), CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = Color.White,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "Import Account",
+                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold),
+                color = Color.White
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Seed Phrase",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = "$wordCount words",
+                    color = if (isValidCount) Color(0xFF4CD964) else Color.Gray,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            TextField(
+                value = seedPhraseText,
+                onValueChange = { seedPhraseText = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 120.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace),
+                placeholder = { Text("Enter your 12 or 24 word seed phrase", color = Color.Gray) },
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrect = false),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color(0xFF1C1C1E),
+                    unfocusedContainerColor = Color(0xFF1C1C1E),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    cursorColor = KaspaTeal,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent
+                )
+            )
+
+            if (seedPhraseText.isNotBlank() && !isValidCount) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Please enter exactly 12 or 24 words",
+                    color = Color(0xFFFF3B30),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            TextButton(onClick = { clipboardManager.getText()?.text?.let { seedPhraseText = it } }) {
+                Icon(Icons.Default.ContentPaste, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Paste from Clipboard", color = KaspaTeal, fontWeight = FontWeight.Bold)
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Text(
+                text = "Account Name",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMedium
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            TextField(
+                value = accountName,
+                onValueChange = { accountName = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp)),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color(0xFF1C1C1E),
+                    unfocusedContainerColor = Color(0xFF1C1C1E),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    cursorColor = KaspaTeal,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent
+                ),
+                singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Button(
+                onClick = { viewModel.importWallet(accountName, words) },
+                enabled = canImport,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal, disabledContainerColor = Color(0xFF1C1C1E)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                if (isImporting) {
+                    CircularProgressIndicator(color = Color.Black, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Text(
+                        text = "Import Account",
+                        color = if (canImport) Color.Black else Color.Gray,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+        }
+    }
+
+    if (importState.status == WalletViewModel.ImportWalletStatus.FAILED) {
+        AlertDialog(
+            onDismissRequest = { viewModel.resetImportWalletState() },
+            containerColor = Color(0xFF1C1C1E),
+            title = { Text("Error", color = Color.White) },
+            text = { Text(importState.errorMessage ?: "Something went wrong", color = Color.Gray) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.resetImportWalletState() }) {
+                    Text("OK", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
     }
 }
 

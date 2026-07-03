@@ -5,6 +5,8 @@ import org.bouncycastle.crypto.generators.HKDFBytesGenerator
 import org.bouncycastle.crypto.params.HKDFParameters
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.math.BigInteger
@@ -102,5 +104,62 @@ class KasiaCipherTest {
         } catch (e: Exception) {
             // expected
         }
+    }
+
+    @Test
+    fun `deterministic alias derivation is deterministic across repeated calls`() {
+        val myPriv = randomScalarBytes()
+        val theirPub = Schnorr.publicKeyXOnly(randomScalarBytes())
+        val contextPub = Schnorr.publicKeyXOnly(randomScalarBytes())
+
+        val first = KasiaCipher.deriveDeterministicAlias(myPriv, theirPub, contextPub)
+        val second = KasiaCipher.deriveDeterministicAlias(myPriv, theirPub, contextPub)
+
+        assertEquals(first, second)
+    }
+
+    @Test
+    fun `deterministic alias output is exactly 12 lowercase hex characters`() {
+        val alias = KasiaCipher.deriveDeterministicAlias(
+            randomScalarBytes(),
+            Schnorr.publicKeyXOnly(randomScalarBytes()),
+            Schnorr.publicKeyXOnly(randomScalarBytes())
+        )
+
+        assertEquals(12, alias.length)
+        assertTrue(alias.all { it in "0123456789abcdef" })
+    }
+
+    @Test
+    fun `my-context and their-context aliases differ for the same pair`() {
+        val myPriv = randomScalarBytes()
+        val myPub = Schnorr.publicKeyXOnly(myPriv)
+        val theirPub = Schnorr.publicKeyXOnly(randomScalarBytes())
+
+        val aliasForMe = KasiaCipher.deriveDeterministicAlias(myPriv, theirPub, contextXOnlyPubKey = myPub)
+        val aliasForThem = KasiaCipher.deriveDeterministicAlias(myPriv, theirPub, contextXOnlyPubKey = theirPub)
+
+        assertNotEquals(aliasForMe, aliasForThem)
+    }
+
+    /**
+     * The core property that makes handshake-free messaging work: A's "alias I tag
+     * messages to B with" (context = B's pubkey) must equal B's "alias I watch for
+     * incoming from A with" (context = B's own pubkey) — both sides land on the same
+     * value independently, purely from ECDH being symmetric.
+     */
+    @Test
+    fun `alias derivation is symmetric between two independent parties`() {
+        val aPriv = randomScalarBytes()
+        val aPub = Schnorr.publicKeyXOnly(aPriv)
+        val bPriv = randomScalarBytes()
+        val bPub = Schnorr.publicKeyXOnly(bPriv)
+
+        // A sending to B: peer = B, context = B (this is what A tags the outgoing message with).
+        val aliasATagsOutgoingToB = KasiaCipher.deriveDeterministicAlias(aPriv, bPub, contextXOnlyPubKey = bPub)
+        // B watching for A: peer = A, context = B's own pubkey (this is what B polls for).
+        val aliasBWatchesForA = KasiaCipher.deriveDeterministicAlias(bPriv, aPub, contextXOnlyPubKey = bPub)
+
+        assertEquals(aliasATagsOutgoingToB, aliasBWatchesForA)
     }
 }

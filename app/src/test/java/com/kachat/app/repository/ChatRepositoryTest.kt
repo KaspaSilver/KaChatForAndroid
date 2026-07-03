@@ -1,0 +1,81 @@
+package com.kachat.app.repository
+
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class ChatRepositoryTest {
+
+    @Test
+    fun `fresh incoming handshake from an unknown sender is pending`() {
+        assertEquals(
+            "pending",
+            ChatRepository.deriveIncomingHandshakeStatus(existingStatus = null, existingHandshakeComplete = false)
+        )
+    }
+
+    @Test
+    fun `incoming handshake is a reply if we already sent one to this contact`() {
+        assertEquals(
+            "active",
+            ChatRepository.deriveIncomingHandshakeStatus(existingStatus = "pending", existingHandshakeComplete = true)
+        )
+    }
+
+    @Test
+    fun `already-active conversation stays active on a repeat handshake`() {
+        assertEquals(
+            "active",
+            ChatRepository.deriveIncomingHandshakeStatus(existingStatus = "active", existingHandshakeComplete = false)
+        )
+    }
+
+    @Test
+    fun `a rejected contact re-requesting is treated as a fresh pending request`() {
+        assertEquals(
+            "pending",
+            ChatRepository.deriveIncomingHandshakeStatus(existingStatus = "rejected", existingHandshakeComplete = false)
+        )
+    }
+
+    @Test
+    fun `contextual message payload decodes through the hex-then-base64 double encoding`() {
+        // Real payload captured live from indexer.kasia.fyi's contextual-messages/by-sender —
+        // decodes to a 65-byte EncryptedMessage (12-byte nonce + 33-byte ephemeral pubkey +
+        // 20-byte ciphertext+tag), confirming comm payloads are hex(base64(bytes)), unlike
+        // handshake payloads which are hex(bytes) directly.
+        val hexPayload = "557a36566f3558644144555a7948304b41317a556f6d5a6e584976783562746a496d74" +
+            "5176686670343938675464565a556e2f4c4b56327a6944716d74384841764472724c634d3934" +
+            "4f325164597a624457504e536d383d"
+
+        val decoded = ChatRepository.decodeContextualMessagePayload(hexPayload)
+
+        assertEquals(65, decoded.size)
+    }
+
+    @Test
+    fun `formats a whole KAS amount without trailing zeros`() {
+        assertEquals("1", ChatRepository.formatKas(100_000_000L))
+    }
+
+    @Test
+    fun `formats a fractional KAS amount trimmed to significant digits`() {
+        assertEquals("3.98962", ChatRepository.formatKas(398_962_000L))
+    }
+
+    @Test
+    fun `formats a small dust amount correctly`() {
+        assertEquals("0.00000001", ChatRepository.formatKas(1L))
+    }
+
+    @Test
+    fun `hex-encodes the ASCII bytes of an alias string, not its raw hex bytes`() {
+        // 'a'=0x61, 'b'=0x62, '1'=0x31, '2'=0x32 — the indexer expects the alias's ASCII
+        // bytes hex-encoded, not the 6 raw bytes the 12-char hex string itself represents.
+        assertEquals("61623132", ChatRepository.hexEncodeAscii("ab12"))
+    }
+
+    @Test
+    fun `hex-encodes a real 12-char alias`() {
+        assertEquals(24, ChatRepository.hexEncodeAscii("f0313b15fd24").length)
+    }
+}

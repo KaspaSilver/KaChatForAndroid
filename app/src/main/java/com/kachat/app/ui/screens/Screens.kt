@@ -1,10 +1,30 @@
 package com.kachat.app.ui.screens
 
+import android.Manifest
+import android.app.Activity
+import android.content.ContextWrapper
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
+import android.net.Uri
+import android.os.Build
+import android.provider.ContactsContract
+import android.provider.Settings
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.SubcomposeAsyncImage
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,12 +52,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -46,19 +73,26 @@ import androidx.navigation.NavController
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import com.kachat.app.models.BackupRetention
 import com.kachat.app.models.Conversation
 import com.kachat.app.models.MessageEntity
 import com.kachat.app.ui.theme.KaspaBlue
 import com.kachat.app.ui.theme.KaspaSubtext
 import com.kachat.app.ui.theme.KaspaTeal
 import com.kachat.app.util.KaspaAddress
+import com.kachat.app.util.TextLinkify
+import com.kachat.app.util.MessageProtocol
+import com.kachat.app.util.VoiceMessage
+import com.kachat.app.util.VoiceMessageContent
 import com.kachat.app.viewmodels.ChatViewModel
 import com.kachat.app.viewmodels.ConnectionStatus as ConnStatus
 import com.kachat.app.viewmodels.ConnectionViewModel
 import com.kachat.app.viewmodels.NodeInfo
+import com.kachat.app.viewmodels.SettingsViewModel
 import com.kachat.app.viewmodels.WalletViewModel
+import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatThreadScreen(
     navController: NavController, 
@@ -67,24 +101,46 @@ fun ChatThreadScreen(
     connectionViewModel: ConnectionViewModel = hiltViewModel(),
     walletViewModel: WalletViewModel = hiltViewModel()
 ) {
-    val conversation = remember(contactId) { chatViewModel.getConversation(contactId) }
+    val conversations by chatViewModel.conversations.collectAsState()
+    val conversation = conversations.find { it.contact.id == contactId }
     val messages by chatViewModel.getMessages(contactId).collectAsState(initial = emptyList())
     val contactBalances by chatViewModel.contactBalances.collectAsState()
     val contactBalance = contactBalances[contactId] ?: "0.00000000"
-    
-    val connStatus by connectionViewModel.status.collectAsState()
+    val showContactBalance by chatViewModel.showContactBalance.collectAsState()
+
+    val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val balance by walletViewModel.fullBalance.collectAsState()
     val balanceSompi by walletViewModel.balanceSompi.collectAsState()
     val paymentAmount by chatViewModel.paymentAmount.collectAsState()
     val estimatedFee by chatViewModel.estimatedFeeSompi.collectAsState()
     val estimateFeesEnabled by chatViewModel.estimateFeesEnabled.collectAsState()
     val messageText by chatViewModel.messageText.collectAsState()
+    val voiceRecordingState by chatViewModel.voiceRecordingState.collectAsState()
 
     var paymentMode by remember { mutableStateOf(false) }
     val clipboardManager = LocalClipboardManager.current
+    val micContext = LocalContext.current
+    val recordAudioPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) chatViewModel.startVoiceRecording(contactId)
+    }
+    val startVoiceRecordingIfPermitted = {
+        if (chatViewModel.voiceRecordingSupported) {
+            if (ContextCompat.checkSelfPermission(micContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                chatViewModel.startVoiceRecording(contactId)
+            } else {
+                recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
 
     LaunchedEffect(contactId) {
         chatViewModel.refreshContactBalance(contactId)
+        chatViewModel.markAsRead(contactId)
+    }
+
+    DisposableEffect(contactId) {
+        chatViewModel.setActiveContact(contactId)
+        onDispose { chatViewModel.setActiveContact(null) }
     }
 
     LaunchedEffect(paymentMode) {
@@ -94,6 +150,7 @@ fun ChatThreadScreen(
     }
 
     Scaffold(
+        modifier = Modifier.imePadding(),
         containerColor = Color.Black,
         topBar = {
             TopAppBar(
@@ -108,11 +165,13 @@ fun ChatThreadScreen(
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp
                         )
-                        Text(
-                            text = "$contactBalance KAS",
-                            color = Color.Gray,
-                            fontSize = 12.sp
-                        )
+                        if (showContactBalance) {
+                            Text(
+                                text = "$contactBalance KAS",
+                                color = Color.Gray,
+                                fontSize = 12.sp
+                            )
+                        }
                     }
                 },
                 navigationIcon = {
@@ -121,11 +180,7 @@ fun ChatThreadScreen(
                     }
                 },
                 actions = {
-                    val statusColor = when (connStatus) {
-                        ConnStatus.CONNECTED -> Color(0xFF4CD964)
-                        ConnStatus.WEAK -> Color(0xFFF39C12)
-                        ConnStatus.DISCONNECTED -> Color.Red
-                    }
+                    val statusColor = Color(dotColorHex)
                     Box(
                         modifier = Modifier
                             .size(32.dp)
@@ -211,10 +266,18 @@ fun ChatThreadScreen(
                                     val currentUtxos by chatViewModel.currentUtxos.collectAsState()
                                     val networkFeeRate by chatViewModel.networkFeeRate.collectAsState()
                                     TextButton(onClick = {
-                                        // Calculate fee for total balance using real network rate
-                                        val count = currentUtxos.size
-                                        val estimatedSize = 300 + (count * 100L)
-                                        val fee = (estimatedSize * networkFeeRate).toLong().coerceAtLeast(1L)
+                                        // Mirror KaspaWalletEngine's own fee calculation exactly
+                                        // (real Kaspa mass model, assuming a recipient + change
+                                        // output) so the amount filled in here is always actually
+                                        // sendable — the previous naive formula (300 + count*100)
+                                        // didn't match the real fee, so "Max" sends kept failing
+                                        // with "insufficient funds".
+                                        val mass = com.kachat.app.util.KaspaMass.calculateMass(
+                                            numInputs = currentUtxos.size.coerceAtLeast(1),
+                                            outputScriptLens = listOf(34, 34),
+                                            payloadSize = 0
+                                        )
+                                        val fee = com.kachat.app.util.KaspaMass.calculateFee(mass, networkFeeRate.toLong())
 
                                         val maxSendableSompi = (balanceSompi - fee).coerceAtLeast(0L)
                                         val maxSendableKas = maxSendableSompi.toDouble() / 100_000_000.0
@@ -236,13 +299,10 @@ fun ChatThreadScreen(
 
                         Button(
                             onClick = {
-                                android.util.Log.d("ChatThreadScreen", "Send Payment clicked. Amount: $paymentAmount, Contact: $contactId")
                                 if (paymentAmount.isNotEmpty()) {
                                     chatViewModel.sendPayment(contactId, paymentAmount)
                                     chatViewModel.setPaymentAmount("")
                                     paymentMode = false
-                                } else {
-                                    android.util.Log.w("ChatThreadScreen", "Payment amount is empty")
                                 }
                             },
                             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -250,6 +310,56 @@ fun ChatThreadScreen(
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Text("Send Payment", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                } else if (voiceRecordingState.status == ChatViewModel.VoiceRecordingStatus.RECORDING) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        if (estimateFeesEnabled && estimatedFee != null) {
+                            Surface(
+                                color = Color(0xFF1C1C1E),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)
+                            ) {
+                                Text(
+                                    text = "fee: $estimatedFee sompi",
+                                    color = Color.Gray,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 40.dp)
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(Color(0xFF1C1C1E))
+                                .padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            IconButton(onClick = { chatViewModel.cancelVoiceRecording() }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Cancel recording", tint = Color(0xFFFF3B30))
+                            }
+                            Icon(Icons.Default.Mic, contentDescription = null, tint = Color(0xFFFF3B30), modifier = Modifier.size(18.dp))
+                            Text(
+                                text = "Recording... ${formatRecordingElapsed(voiceRecordingState.elapsedMs)}",
+                                color = Color.White,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = { chatViewModel.stopAndSendVoiceRecording(contactId) },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(KaspaTeal, CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "Send",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                         }
                     }
                 } else {
@@ -293,15 +403,22 @@ fun ChatThreadScreen(
                                 ),
                                 maxLines = 4
                             )
-                            
+
                             if (messageText.isEmpty()) {
-                                ChatActionButton(Icons.Default.EmojiEmotions)
                                 ChatActionButton(Icons.Default.CurrencyExchange, onClick = { paymentMode = true })
-                                ChatActionButton(Icons.Default.Mic)
-                                ChatActionButton(Icons.Default.BackHand)
+                                ChatActionButton(
+                                    Icons.Default.Mic,
+                                    onClick = { startVoiceRecordingIfPermitted() }
+                                )
+                                if (conversation?.contact?.handshakeComplete != true) {
+                                    ChatActionButton(
+                                        Icons.Default.BackHand,
+                                        onClick = { chatViewModel.sendHandshake(contactId) }
+                                    )
+                                }
                             } else {
                                 IconButton(
-                                    onClick = { 
+                                    onClick = {
                                         chatViewModel.sendMessage(contactId, messageText)
                                         chatViewModel.setMessageText("")
                                     },
@@ -324,7 +441,8 @@ fun ChatThreadScreen(
         }
     ) { padding ->
         val scrollState = rememberLazyListState()
-        
+        val coroutineScope = rememberCoroutineScope()
+
         // Auto-scroll to bottom when new messages arrive
         LaunchedEffect(messages.size) {
             if (messages.isNotEmpty()) {
@@ -332,28 +450,87 @@ fun ChatThreadScreen(
             }
         }
 
-        LazyColumn(
-            state = scrollState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            contentPadding = PaddingValues(vertical = 16.dp)
-        ) {
-            if (messages.isEmpty()) {
-                item {
-                    Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            "No messages yet",
-                            color = Color.Gray,
-                            style = MaterialTheme.typography.bodyMedium
+        // Also re-pin to the bottom when the keyboard's own inset animation finishes (not
+        // just when messageText changes — the IME resize is system-driven and can complete
+        // after Compose's own recomposition, so keying on messageText alone raced with it
+        // and left the latest message hidden behind the keyboard without a real scroll-up).
+        val imeVisible = WindowInsets.isImeVisible
+        LaunchedEffect(imeVisible, messageText.isEmpty()) {
+            if (messages.isNotEmpty()) {
+                scrollState.animateScrollToItem(messages.size - 1)
+            }
+        }
+
+        // Not scrollState.canScrollForward — that flips true for a frame or two whenever
+        // the viewport merely shrinks (keyboard opening, the fee-estimate row appearing),
+        // even though the user never scrolled and is still logically at the latest
+        // message. Only show the button once the last message isn't even partially
+        // among the visible items — a real, deliberate scroll away from the bottom.
+        // Tolerate a 1-item gap — the keyboard/fee-row resize can leave the second-to-last
+        // message as the last fully visible one for a moment even when the re-pin effect
+        // above hasn't finished animating yet. A genuine scroll-up to read history moves
+        // by much more than one item, so this threshold still catches real cases.
+        val showScrollToBottom by remember {
+            derivedStateOf {
+                val lastVisibleIndex = scrollState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                lastVisibleIndex != null && lastVisibleIndex < messages.lastIndex - 1
+            }
+        }
+
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            LazyColumn(
+                state = scrollState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                contentPadding = PaddingValues(vertical = 16.dp)
+            ) {
+                if (messages.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                "No messages yet",
+                                color = Color.Gray,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                } else {
+                    items(messages) { msg ->
+                        MessageBubble(
+                            message = msg,
+                            isPendingRequest = msg.type == MessageProtocol.TYPE_HANDSHAKE &&
+                                msg.direction == "received" &&
+                                conversation?.contact?.conversationStatus == "pending",
+                            isHandshakeComplete = conversation?.contact?.conversationStatus == "active",
+                            onAccept = { chatViewModel.acceptHandshake(contactId) },
+                            onDecline = { chatViewModel.declineHandshake(contactId) },
+                            onRetry = { chatViewModel.retrySendMessage(msg) }
                         )
                     }
+                    if (ChatViewModel.shouldShowUnnotifiedWarning(messages)) {
+                        item { UnnotifiedMessageBanner() }
+                    }
                 }
-            } else {
-                items(messages) { msg ->
-                    MessageBubble(msg)
+            }
+
+            if (showScrollToBottom && messages.isNotEmpty()) {
+                IconButton(
+                    onClick = {
+                        coroutineScope.launch { scrollState.animateScrollToItem(messages.size - 1) }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
+                        .size(44.dp)
+                        .background(Color(0xFF1C1C1E), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Scroll to latest",
+                        tint = Color.White
+                    )
                 }
             }
         }
@@ -361,62 +538,363 @@ fun ChatThreadScreen(
 }
 
 @Composable
-fun MessageBubble(message: MessageEntity) {
+private fun UnnotifiedMessageBanner() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFFFF9500).copy(alpha = 0.08f))
+            .border(0.5.dp, Color(0xFFFF9500).copy(alpha = 0.25f), RoundedCornerShape(10.dp))
+            .padding(10.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Icon(
+            imageVector = Icons.Default.Warning,
+            contentDescription = null,
+            tint = Color(0xFFFF9500),
+            modifier = Modifier.size(16.dp).padding(top = 2.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = "When you message someone new on KaChat, they won't get a notification and your message stays hidden until they message you back or add as well. This protects against spam and increases your privacy. If you want them to be notified, click the hand icon to send a request to communicate which will cost 0.2 KAS. (Note: all non KaChat messaging apps will require a request to communicate)",
+            color = Color.Gray,
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun MessageBubble(
+    message: MessageEntity,
+    isPendingRequest: Boolean = false,
+    isHandshakeComplete: Boolean = false,
+    onAccept: () -> Unit = {},
+    onDecline: () -> Unit = {},
+    onRetry: () -> Unit = {}
+) {
     val isSent = message.direction == "sent"
-    
+    var showMenu by remember { mutableStateOf(false) }
+    val clipboardManager = LocalClipboardManager.current
+    val timestampText = remember(message.blockTimestamp) {
+        java.text.SimpleDateFormat("MM/dd/yyyy h:mma", java.util.Locale.US)
+            .format(java.util.Date(message.blockTimestamp))
+            .lowercase()
+    }
+
+    if (isPendingRequest) {
+        Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+            Surface(
+                color = Color(0xFF2C2C2E),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.padding(bottom = 6.dp)
+            ) {
+                Text(
+                    text = "👋 Request to communicate",
+                    color = Color.Gray,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
+            Surface(
+                color = Color(0xFF1C1C1E),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.fillMaxWidth(0.85f)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("👋", fontSize = 20.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Contact has requested permission to communicate",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = onAccept,
+                            colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Accept", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                        Button(
+                            onClick = onDecline,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3C)),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Decline", color = Color.Gray, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = if (isSent) Alignment.End else Alignment.Start
     ) {
-        if (message.type == "pay") {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
-                Icon(Icons.Default.MonetizationOn, null, tint = Color(0xFFF39C12), modifier = Modifier.size(14.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Payment", color = Color(0xFFF39C12), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
-            
-            Surface(
-                color = if (isSent) KaspaTeal else Color(0xFF1C1C1E),
-                shape = RoundedCornerShape(20.dp)
-            ) {
-                Text(
-                    text = message.plaintextBody ?: "Payment",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    color = if (isSent) Color.Black else Color.White,
-                    fontWeight = FontWeight.Bold
+        Box {
+            if (message.type == "pay") {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
+                    Icon(Icons.Default.MonetizationOn, null, tint = Color(0xFFF39C12), modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Payment", color = Color(0xFFF39C12), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Surface(
+                    color = if (isSent) KaspaTeal else Color(0xFF1C1C1E),
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { showMenu = true })
+                ) {
+                    Text(
+                        text = message.plaintextBody ?: "Payment",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        color = if (isSent) Color.Black else Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            } else if (message.type == MessageProtocol.TYPE_HANDSHAKE) {
+                // Matches the iOS bubble for any handshake message once it's not the
+                // pending accept/decline card anymore (sent, or an already-accepted
+                // received one) — a small pill above a "[Request to communicate]" bubble.
+                // A message I sent is always framed as my outreach/response and never
+                // changes. Their message only flips to "completed" once the connection
+                // is actually live — i.e. once I've received their side of it.
+                val showCompleted = !isSent && isHandshakeComplete
+                val pillText = if (showCompleted) "🤝 Handshake completed" else "👋 Request to communicate"
+                val bodyText = if (showCompleted) "[Handshake completed]" else "[Request to communicate]"
+                Column(horizontalAlignment = if (isSent) Alignment.End else Alignment.Start) {
+                    Surface(
+                        color = Color(0xFF2C2C2E),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    ) {
+                        Text(
+                            text = pillText,
+                            color = Color.Gray,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                    Surface(
+                        color = if (isSent) KaspaTeal else Color(0xFF1C1C1E),
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { showMenu = true })
+                    ) {
+                        Text(
+                            text = bodyText,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            color = if (isSent) Color.Black else Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            } else if (VoiceMessage.parseOrNull(message.plaintextBody) != null) {
+                AudioBubble(
+                    voiceContent = VoiceMessage.parseOrNull(message.plaintextBody)!!,
+                    isSent = isSent,
+                    onLongPress = { showMenu = true }
                 )
+            } else {
+                val bodyText = message.plaintextBody ?: ""
+                val uriHandler = LocalUriHandler.current
+                var textLayoutResult by remember(bodyText) { mutableStateOf<TextLayoutResult?>(null) }
+                val annotatedBody = remember(bodyText) {
+                    buildAnnotatedString {
+                        append(bodyText)
+                        for (match in TextLinkify.findUrls(bodyText)) {
+                            addStyle(SpanStyle(color = KaspaTeal, textDecoration = TextDecoration.Underline), match.range.first, match.range.last + 1)
+                            addStringAnnotation("URL", match.uri, match.range.first, match.range.last + 1)
+                        }
+                    }
+                }
+                Surface(
+                    color = if (isSent) Color(0xFF2C2C2E) else Color(0xFF1C1C1E),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Text(
+                        text = annotatedBody,
+                        modifier = Modifier
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                            .pointerInput(annotatedBody) {
+                                detectTapGestures(
+                                    onLongPress = { showMenu = true },
+                                    onTap = { offset ->
+                                        val layout = textLayoutResult ?: return@detectTapGestures
+                                        val charOffset = layout.getOffsetForPosition(offset)
+                                        annotatedBody.getStringAnnotations("URL", charOffset, charOffset)
+                                            .firstOrNull()?.let { uriHandler.openUri(it.item) }
+                                    }
+                                )
+                            },
+                        onTextLayout = { textLayoutResult = it },
+                        color = Color.White
+                    )
+                }
             }
-        } else {
-            Surface(
-                color = if (isSent) Color(0xFF2C2C2E) else Color(0xFF1C1C1E),
-                shape = RoundedCornerShape(20.dp)
+
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+                modifier = Modifier
+                    .background(Color(0xFF2C2C2E), RoundedCornerShape(20.dp))
             ) {
-                Text(
-                    text = message.plaintextBody ?: "",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    color = Color.White
+                DropdownMenuItem(
+                    text = { Text("Copy Message", color = Color.White, fontWeight = FontWeight.SemiBold) },
+                    leadingIcon = { Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal) },
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(message.plaintextBody ?: ""))
+                        showMenu = false
+                    }
                 )
+                DropdownMenuItem(
+                    text = { Text("Copy Transaction ID", color = Color.White, fontWeight = FontWeight.SemiBold) },
+                    leadingIcon = { Icon(Icons.Default.Tag, null, tint = KaspaTeal) },
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(message.id))
+                        showMenu = false
+                    }
+                )
+                if (ChatViewModel.shouldShowRetryOption(message)) {
+                    DropdownMenuItem(
+                        text = { Text("Retry Send", color = Color.White, fontWeight = FontWeight.SemiBold) },
+                        leadingIcon = { Icon(Icons.Default.Refresh, null, tint = KaspaTeal) },
+                        onClick = {
+                            onRetry()
+                            showMenu = false
+                        }
+                    )
+                }
             }
         }
-        
+
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(top = 4.dp)
         ) {
             Text(
-                text = "11:32", 
+                text = timestampText,
                 color = Color.Gray,
                 fontSize = 11.sp
             )
             if (isSent) {
                 Spacer(Modifier.width(4.dp))
+                when (message.deliveryStatus) {
+                    "failed" -> Icon(
+                        imageVector = Icons.Default.Error,
+                        contentDescription = "Failed to send",
+                        tint = Color(0xFFFF3B30),
+                        modifier = Modifier.size(12.dp)
+                    )
+                    "pending" -> Icon(
+                        imageVector = Icons.Default.Schedule,
+                        contentDescription = "Sending",
+                        tint = Color.Gray,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    else -> Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = Color(0xFF4CD964),
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A voice message bubble — decodes the embedded base64 audio to a temp file once, then plays it
+ * with [android.media.MediaPlayer] (which decodes WebM/Opus natively, no manual PCM handling
+ * needed for playback). No waveform visualization — the [VoiceMessageContent] format doesn't
+ * carry sample data, and re-decoding to PCM just to draw bars isn't worth the extra native-audio
+ * surface area for a cosmetic detail; play/pause + duration covers the actual "does it work" bar.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AudioBubble(voiceContent: VoiceMessageContent, isSent: Boolean, onLongPress: () -> Unit) {
+    val context = LocalContext.current
+    var isPlaying by remember { mutableStateOf(false) }
+    var durationMs by remember { mutableStateOf(0) }
+    var isReady by remember { mutableStateOf(false) }
+    var mediaPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+
+    DisposableEffect(voiceContent.content) {
+        var tempFile: java.io.File? = null
+        try {
+            val bytes = android.util.Base64.decode(VoiceMessage.base64Payload(voiceContent), android.util.Base64.DEFAULT)
+            val file = java.io.File(context.cacheDir, "voice_playback_${System.nanoTime()}.webm")
+            file.writeBytes(bytes)
+            tempFile = file
+            val player = android.media.MediaPlayer()
+            player.setDataSource(file.absolutePath)
+            player.setOnPreparedListener {
+                durationMs = it.duration
+                isReady = true
+            }
+            player.setOnCompletionListener { isPlaying = false }
+            player.prepareAsync()
+            mediaPlayer = player
+        } catch (e: Exception) {
+            android.util.Log.e("AudioBubble", "Could not prepare voice message for playback", e)
+        }
+        onDispose {
+            mediaPlayer?.release()
+            mediaPlayer = null
+            tempFile?.delete()
+        }
+    }
+
+    Surface(
+        color = if (isSent) Color(0xFF2C2C2E) else Color(0xFF1C1C1E),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.combinedClickable(onClick = {}, onLongClick = onLongPress)
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .widthIn(min = 150.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                enabled = isReady,
+                onClick = {
+                    val player = mediaPlayer ?: return@IconButton
+                    if (isPlaying) {
+                        player.pause()
+                        isPlaying = false
+                    } else {
+                        if (player.currentPosition >= player.duration) player.seekTo(0)
+                        player.start()
+                        isPlaying = true
+                    }
+                },
+                modifier = Modifier.size(32.dp)
+            ) {
                 Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = Color(0xFF4CD964),
-                    modifier = Modifier.size(12.dp)
+                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    tint = if (isReady) KaspaTeal else Color.Gray
                 )
             }
+            Spacer(Modifier.width(8.dp))
+            Icon(Icons.Default.GraphicEq, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = if (isReady) VoiceMessage.formatDuration(durationMs) else "...",
+                color = Color.White,
+                fontSize = 13.sp
+            )
         }
     }
 }
@@ -432,6 +910,9 @@ fun ChatActionButton(icon: ImageVector, onClick: () -> Unit = {}) {
         Icon(icon, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
     }
 }
+
+/** "0:07" — the composer's live recording timer, capped display-wise the same way the recording itself is capped at 10s. */
+private fun formatRecordingElapsed(elapsedMs: Long): String = VoiceMessage.formatDuration(elapsedMs.toInt())
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -457,21 +938,42 @@ fun ProfileScreen(
     connectionViewModel: ConnectionViewModel = hiltViewModel()
 ) {
     val address by viewModel.address.collectAsState()
-    val balance by viewModel.balance.collectAsState()
+    val balance by viewModel.fullBalance.collectAsState()
     val accountName by viewModel.accountName.collectAsState()
-    val connStatus by connectionViewModel.status.collectAsState()
+    val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val scrollState = rememberScrollState()
+
+    val ownedDomains by viewModel.ownedDomains.collectAsState()
+    val ownedDomainAssets by viewModel.ownedDomainAssets.collectAsState()
+    val primaryDomainName by viewModel.primaryDomainName.collectAsState()
+    val setPrimaryState by viewModel.setPrimaryState.collectAsState()
+    val domainPreview by viewModel.domainPreview.collectAsState()
+    val knsInscribeState by viewModel.knsInscribeState.collectAsState()
+    val pendingKnsCommit by viewModel.pendingKnsCommit.collectAsState()
+    var showInscribeDialog by remember { mutableStateOf(false) }
+    var domainLabelInput by remember { mutableStateOf("") }
+    var transferDialogDomain by remember { mutableStateOf<com.kachat.app.services.KnsAsset?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshBalance()
+        viewModel.refreshOwnedDomains()
+    }
 
     Scaffold(
         containerColor = Color.Black,
         topBar = {
-            Column(modifier = Modifier.background(Color.Black).padding(horizontal = 16.dp)) {
+            Column(
+                modifier = Modifier
+                    .background(Color.Black)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp)
+            ) {
                 Spacer(modifier = Modifier.height(16.dp))
                 TopStatusBar(
                     balance = balance,
                     onStatusClick = { navController.navigate("connection_status") },
                     onAddClick = { navController.navigate("create_chat") },
-                    connectionStatus = connStatus
+                    dotColorHex = dotColorHex
                 )
                 Spacer(modifier = Modifier.height(8.dp))
             }
@@ -494,13 +996,87 @@ fun ProfileScreen(
                 )
             }
 
+            if (pendingKnsCommit != null) {
+                SettingsSection(title = "Unfinished Inscription") {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            "A KNS inscription's commit transaction went through, but the reveal never finished. Retry now to complete it — the funds are safely tied up until you do.",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Button(
+                            onClick = { viewModel.retryPendingKnsReveal() },
+                            colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal),
+                            enabled = knsInscribeState.status != WalletViewModel.KnsInscribeUiStatus.SUBMITTING_REVEAL
+                        ) {
+                            Text("Retry Inscription Reveal", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
             SettingsSection(title = "KNS Domains") {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(text = "No domains yet.", color = Color.Gray)
+                    if (ownedDomainAssets.isEmpty()) {
+                        Text(text = "No domains yet.", color = Color.Gray)
+                    } else {
+                        ownedDomainAssets.forEachIndexed { index, domainAsset ->
+                            val name = domainAsset.asset ?: return@forEachIndexed
+                            val assetId = domainAsset.assetId
+                            val isPrimary = name == primaryDomainName
+                            val settingThisOne = setPrimaryState.inFlight && setPrimaryState.assetId == assetId
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                if (settingThisOne) {
+                                    CircularProgressIndicator(color = KaspaTeal, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(
+                                        if (isPrimary) Icons.Default.Star else Icons.Default.StarBorder,
+                                        contentDescription = if (isPrimary) "Primary domain" else "Set as primary",
+                                        tint = if (isPrimary) KaspaTeal else Color.Gray,
+                                        modifier = Modifier
+                                            .size(18.dp)
+                                            .then(
+                                                if (!isPrimary && assetId != null) Modifier.clickable { viewModel.setPrimaryDomain(assetId) }
+                                                else Modifier
+                                            )
+                                    )
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Text(name, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                if (assetId != null) {
+                                    Icon(
+                                        Icons.Default.SwapHoriz,
+                                        contentDescription = "Transfer domain",
+                                        tint = Color.Gray,
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .clickable {
+                                                viewModel.resetTransferDomainState()
+                                                transferDialogDomain = domainAsset
+                                            }
+                                    )
+                                }
+                            }
+                            val setPrimaryError = setPrimaryState.errorMessage
+                            if (setPrimaryState.assetId == assetId && setPrimaryError != null) {
+                                Text(setPrimaryError, color = Color(0xFFFF3B30), style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (index < ownedDomainAssets.lastIndex) Spacer(Modifier.height(8.dp))
+                        }
+                    }
                     Spacer(Modifier.height(12.dp))
                     HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
                     Spacer(Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable {
+                            domainLabelInput = ""
+                            viewModel.clearDomainPreview()
+                            viewModel.resetKnsInscribeState()
+                            showInscribeDialog = true
+                        }
+                    ) {
                         Icon(Icons.Default.AddCircleOutline, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Inscribe New Domain", color = KaspaTeal, fontWeight = FontWeight.Bold)
@@ -509,20 +1085,72 @@ fun ProfileScreen(
             }
 
             SettingsSection(title = "KNS Profile") {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .background(Color(0xFF2C3E50), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("TE", color = Color(0xFF7F8C8D), fontWeight = FontWeight.Bold)
+                val profileAssetId by viewModel.profileDomainAssetId.collectAsState()
+                val knsProfile by viewModel.knsProfile.collectAsState()
+                val primaryDomainName = ownedDomains.firstOrNull()
+
+                if (profileAssetId == null || primaryDomainName == null) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Info, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Register a domain above first — a profile attaches to a domain.",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
-                    Spacer(Modifier.width(16.dp))
-                    Text("No on-chain profile fields set.", color = Color.Gray, style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    val hasAnyProfileData = knsProfile != null && listOf(
+                        knsProfile?.bio, knsProfile?.x, knsProfile?.website, knsProfile?.telegram,
+                        knsProfile?.discord, knsProfile?.contactEmail, knsProfile?.github, knsProfile?.redirectUrl
+                    ).any { !it.isNullOrBlank() }
+
+                    Column {
+                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            ContactAvatar(
+                                imageUrl = knsProfile?.avatarUrl,
+                                fallbackText = primaryDomainName,
+                                size = 48.dp
+                            )
+                            Spacer(Modifier.width(16.dp))
+                            Column {
+                                Text(primaryDomainName, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    if (hasAnyProfileData) "On-chain profile data available." else "No on-chain profile data yet.",
+                                    color = Color.Gray,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                        HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { navController.navigate("edit_kns_profile") }
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Edit, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Edit KNS Profile", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                        }
+
+                        val readOnlyFields = listOf(
+                            "Bio" to knsProfile?.bio,
+                            "X" to knsProfile?.x,
+                            "Website" to knsProfile?.website,
+                            "Telegram" to knsProfile?.telegram,
+                            "Discord" to knsProfile?.discord,
+                            "Email" to knsProfile?.contactEmail,
+                            "GitHub" to knsProfile?.github,
+                            "Redirect" to knsProfile?.redirectUrl
+                        ).filter { !it.second.isNullOrBlank() }
+
+                        readOnlyFields.forEach { (label, value) ->
+                            HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                            KnsProfileReadOnlyRow(label = label, value = value!!)
+                        }
+                    }
                 }
             }
 
@@ -621,10 +1249,536 @@ fun ProfileScreen(
                     viewModel.logout()
                 }
             }
-            
+
             Spacer(modifier = Modifier.height(100.dp))
         }
     }
+
+    if (showInscribeDialog) {
+        val inFlight = knsInscribeState.status !in listOf(
+            WalletViewModel.KnsInscribeUiStatus.IDLE,
+            WalletViewModel.KnsInscribeUiStatus.SUCCESS,
+            WalletViewModel.KnsInscribeUiStatus.FAILED
+        )
+        AlertDialog(
+            onDismissRequest = { if (!inFlight) showInscribeDialog = false },
+            title = {
+                Text(
+                    when (knsInscribeState.status) {
+                        WalletViewModel.KnsInscribeUiStatus.SUCCESS -> "Domain Registered"
+                        WalletViewModel.KnsInscribeUiStatus.FAILED -> "Inscription Failed"
+                        else -> "Inscribe New Domain"
+                    },
+                    color = Color.White
+                )
+            },
+            containerColor = Color(0xFF1C1C1E),
+            text = {
+                Column {
+                    when (knsInscribeState.status) {
+                        WalletViewModel.KnsInscribeUiStatus.IDLE -> {
+                            OutlinedTextField(
+                                value = domainLabelInput,
+                                onValueChange = {
+                                    domainLabelInput = it
+                                    viewModel.checkDomainLabel(it)
+                                },
+                                label = { Text("Domain name") },
+                                suffix = { Text(".kas") },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White,
+                                    focusedBorderColor = KaspaTeal,
+                                    unfocusedBorderColor = Color.Gray,
+                                    focusedLabelColor = KaspaTeal,
+                                    unfocusedLabelColor = Color.Gray
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            domainPreview?.let { preview ->
+                                when {
+                                    preview.checking -> Text("Checking availability...", color = Color.Gray)
+                                    preview.errorMessage != null -> Text(preview.errorMessage, color = Color(0xFFFF3B30))
+                                    preview.available == false -> Text("${preview.label}.kas is not available", color = Color(0xFFFF3B30))
+                                    preview.available == true && preview.isReserved -> {
+                                        Text("${preview.label}.kas is available", color = Color(0xFF4CD964), fontWeight = FontWeight.Bold)
+                                        Text("Reserved domain — no registration fee, only network fees apply.", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    preview.available == true -> {
+                                        Text("${preview.label}.kas is available", color = Color(0xFF4CD964), fontWeight = FontWeight.Bold)
+                                        Spacer(Modifier.height(8.dp))
+                                        val revealKas = preview.revealKas ?: 0.0
+                                        val commitKas = preview.commitKas ?: 0.0
+                                        Text(
+                                            "Registration fee: ${"%.2f".format(revealKas)} KAS",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            "You'll send ~${"%.2f".format(commitKas)} KAS total; ~${"%.2f".format((commitKas - revealKas).coerceAtLeast(0.0))} KAS comes back as change, the rest covers the fee and network costs.",
+                                            color = Color.Gray,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        WalletViewModel.KnsInscribeUiStatus.CHECKING_AVAILABILITY -> InscribeProgressRow("Checking availability...")
+                        WalletViewModel.KnsInscribeUiStatus.FETCHING_FEE -> InscribeProgressRow("Calculating fee...")
+                        WalletViewModel.KnsInscribeUiStatus.SUBMITTING_COMMIT -> InscribeProgressRow("Submitting commit transaction...")
+                        WalletViewModel.KnsInscribeUiStatus.SUBMITTING_REVEAL -> InscribeProgressRow("Submitting reveal transaction...")
+                        WalletViewModel.KnsInscribeUiStatus.VERIFYING -> InscribeProgressRow("Verifying on-chain (this can take a minute)...")
+                        WalletViewModel.KnsInscribeUiStatus.SUCCESS -> {
+                            val result = knsInscribeState.result
+                            Text("${result?.domain} is now yours.", color = Color(0xFF4CD964), fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(8.dp))
+                            Text("Commit tx: ${result?.commitTxId}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            Text("Reveal tx: ${result?.revealTxId}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            if (result?.verified == false) {
+                                Spacer(Modifier.height(8.dp))
+                                Text("Still indexing — it'll show up above shortly.", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        WalletViewModel.KnsInscribeUiStatus.FAILED -> {
+                            Text(knsInscribeState.errorMessage ?: "Something went wrong", color = Color(0xFFFF3B30))
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                when (knsInscribeState.status) {
+                    WalletViewModel.KnsInscribeUiStatus.IDLE -> {
+                        val preview = domainPreview
+                        TextButton(
+                            onClick = { viewModel.inscribeDomain(preview?.label ?: domainLabelInput) },
+                            enabled = preview?.available == true
+                        ) {
+                            val costLabel = preview?.commitKas?.let { " (pay ~${"%.2f".format(it)} KAS)" } ?: ""
+                            Text("Inscribe$costLabel", color = if (preview?.available == true) KaspaTeal else Color.Gray, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    WalletViewModel.KnsInscribeUiStatus.SUCCESS, WalletViewModel.KnsInscribeUiStatus.FAILED -> {
+                        TextButton(onClick = { showInscribeDialog = false }) {
+                            Text("Done", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    else -> {}
+                }
+            },
+            dismissButton = {
+                if (!inFlight && knsInscribeState.status == WalletViewModel.KnsInscribeUiStatus.IDLE) {
+                    TextButton(onClick = { showInscribeDialog = false }) {
+                        Text("Cancel", color = Color.Gray)
+                    }
+                }
+            }
+        )
+    }
+
+    transferDialogDomain?.let { domain ->
+        val recipientPreview by viewModel.transferRecipientPreview.collectAsState()
+        val transferState by viewModel.transferDomainState.collectAsState()
+        var recipientInput by remember(domain) { mutableStateOf("") }
+        var confirmStep by remember(domain) { mutableStateOf(false) }
+        val inFlight = transferState.status !in listOf(
+            WalletViewModel.KnsInscribeUiStatus.IDLE,
+            WalletViewModel.KnsInscribeUiStatus.SUCCESS,
+            WalletViewModel.KnsInscribeUiStatus.FAILED
+        )
+        val domainName = domain.asset ?: ""
+        val assetId = domain.assetId ?: ""
+
+        AlertDialog(
+            onDismissRequest = { if (!inFlight) transferDialogDomain = null },
+            title = {
+                Text(
+                    when {
+                        transferState.status == WalletViewModel.KnsInscribeUiStatus.SUCCESS -> "Domain Transferred"
+                        transferState.status == WalletViewModel.KnsInscribeUiStatus.FAILED -> "Transfer Failed"
+                        confirmStep -> "Confirm Transfer"
+                        else -> "Transfer $domainName"
+                    },
+                    color = Color.White
+                )
+            },
+            containerColor = Color(0xFF1C1C1E),
+            text = {
+                Column {
+                    when {
+                        transferState.status == WalletViewModel.KnsInscribeUiStatus.SUBMITTING_COMMIT -> InscribeProgressRow("Submitting commit transaction...")
+                        transferState.status == WalletViewModel.KnsInscribeUiStatus.SUBMITTING_REVEAL -> InscribeProgressRow("Submitting reveal transaction...")
+                        transferState.status == WalletViewModel.KnsInscribeUiStatus.VERIFYING -> InscribeProgressRow("Verifying new ownership on-chain (this can take a minute)...")
+                        transferState.status == WalletViewModel.KnsInscribeUiStatus.SUCCESS -> {
+                            val result = transferState.result
+                            Text("$domainName now belongs to ${result?.toAddress}.", color = Color(0xFF4CD964), fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(8.dp))
+                            Text("Commit tx: ${result?.commitTxId}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            Text("Reveal tx: ${result?.revealTxId}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            if (result?.verified == false) {
+                                Spacer(Modifier.height(8.dp))
+                                Text("Still indexing — ownership will update shortly.", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        transferState.status == WalletViewModel.KnsInscribeUiStatus.FAILED -> {
+                            Text(transferState.errorMessage ?: "Something went wrong", color = Color(0xFFFF3B30))
+                        }
+                        confirmStep -> {
+                            Text("This will permanently transfer ownership of $domainName to:", color = Color.White)
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                recipientPreview?.resolvedAddress ?: "",
+                                color = KaspaTeal,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "This action cannot be undone. Double-check the address above before confirming.",
+                                color = Color(0xFFFF3B30),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        else -> {
+                            Text("Inscription: $assetId", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(12.dp))
+                            OutlinedTextField(
+                                value = recipientInput,
+                                onValueChange = {
+                                    recipientInput = it
+                                    viewModel.checkTransferRecipient(it)
+                                },
+                                label = { Text("Recipient address or .kas name") },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White,
+                                    focusedBorderColor = KaspaTeal,
+                                    unfocusedBorderColor = Color.Gray,
+                                    focusedLabelColor = KaspaTeal,
+                                    unfocusedLabelColor = Color.Gray
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            recipientPreview?.let { preview ->
+                                when {
+                                    preview.checking -> Text("Resolving...", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                                    preview.errorMessage != null -> Text(preview.errorMessage, color = Color(0xFFFF3B30), style = MaterialTheme.typography.bodySmall)
+                                    preview.resolvedAddress != null -> Text("Resolves to: ${preview.resolvedAddress}", color = Color(0xFF4CD964), style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                when {
+                    transferState.status == WalletViewModel.KnsInscribeUiStatus.SUCCESS || transferState.status == WalletViewModel.KnsInscribeUiStatus.FAILED -> {
+                        TextButton(onClick = { transferDialogDomain = null }) {
+                            Text("Done", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    confirmStep -> {
+                        TextButton(onClick = { viewModel.transferDomain(domainName, assetId) }) {
+                            Text("Confirm Transfer", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    transferState.status == WalletViewModel.KnsInscribeUiStatus.IDLE -> {
+                        TextButton(
+                            onClick = { confirmStep = true },
+                            enabled = recipientPreview?.resolvedAddress != null
+                        ) {
+                            Text("Next", color = if (recipientPreview?.resolvedAddress != null) KaspaTeal else Color.Gray, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    else -> {}
+                }
+            },
+            dismissButton = {
+                when {
+                    confirmStep && !inFlight -> {
+                        TextButton(onClick = { confirmStep = false }) {
+                            Text("Back", color = Color.Gray)
+                        }
+                    }
+                    !inFlight && transferState.status == WalletViewModel.KnsInscribeUiStatus.IDLE -> {
+                        TextButton(onClick = { transferDialogDomain = null }) {
+                            Text("Cancel", color = Color.Gray)
+                        }
+                    }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun InscribeProgressRow(text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        CircularProgressIndicator(color = KaspaTeal, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(12.dp))
+        Text(text, color = Color.White)
+    }
+}
+
+/** A read-only KNS profile field on the Profile screen's summary card — matches iOS, with any URL inside the value rendered clickable using the same link-detection as message bubbles. */
+@Composable
+private fun KnsProfileReadOnlyRow(label: String, value: String) {
+    val uriHandler = LocalUriHandler.current
+    var textLayoutResult by remember(value) { mutableStateOf<TextLayoutResult?>(null) }
+    val annotated = remember(value) {
+        buildAnnotatedString {
+            append(value)
+            for (match in TextLinkify.findUrls(value)) {
+                addStyle(SpanStyle(color = KaspaTeal, textDecoration = TextDecoration.Underline), match.range.first, match.range.last + 1)
+                addStringAnnotation("URL", match.uri, match.range.first, match.range.last + 1)
+            }
+        }
+    }
+
+    Column(modifier = Modifier.padding(16.dp)) {
+        Text(label, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = annotated,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            onTextLayout = { textLayoutResult = it },
+            modifier = Modifier.pointerInput(annotated) {
+                detectTapGestures(onTap = { offset ->
+                    val layout = textLayoutResult ?: return@detectTapGestures
+                    val charOffset = layout.getOffsetForPosition(offset)
+                    annotated.getStringAnnotations("URL", charOffset, charOffset).firstOrNull()?.let { uriHandler.openUri(it.item) }
+                })
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
+    val knsProfile by viewModel.knsProfile.collectAsState()
+    val ownedDomains by viewModel.ownedDomains.collectAsState()
+    val profileAssetId by viewModel.profileDomainAssetId.collectAsState()
+    val pendingAvatarUri by viewModel.pendingAvatarUri.collectAsState()
+    val pendingBannerUri by viewModel.pendingBannerUri.collectAsState()
+    val editState by viewModel.editProfileState.collectAsState()
+
+    var bio by remember { mutableStateOf("") }
+    var x by remember { mutableStateOf("") }
+    var website by remember { mutableStateOf("") }
+    var telegram by remember { mutableStateOf("") }
+    var discord by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var github by remember { mutableStateOf("") }
+    var redirect by remember { mutableStateOf("") }
+    var seeded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(knsProfile) {
+        if (!seeded) {
+            bio = knsProfile?.bio ?: ""
+            x = knsProfile?.x ?: ""
+            website = knsProfile?.website ?: ""
+            telegram = knsProfile?.telegram ?: ""
+            discord = knsProfile?.discord ?: ""
+            email = knsProfile?.contactEmail ?: ""
+            github = knsProfile?.github ?: ""
+            redirect = knsProfile?.redirectUrl ?: ""
+            seeded = true
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { viewModel.resetEditProfileState() }
+    }
+
+    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) viewModel.setPendingAvatar(uri) }
+    val bannerPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) viewModel.setPendingBanner(uri) }
+
+    val inFlight = editState.step !in listOf(
+        WalletViewModel.EditProfileStep.IDLE,
+        WalletViewModel.EditProfileStep.SUCCESS,
+        WalletViewModel.EditProfileStep.PARTIAL_FAILURE,
+        WalletViewModel.EditProfileStep.FAILED
+    )
+
+    Scaffold(
+        containerColor = Color.Black,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("Edit KNS Profile", color = Color.White, fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    TextButton(onClick = onBack, enabled = !inFlight) {
+                        Text("Cancel", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                    }
+                },
+                actions = {
+                    TextButton(
+                        onClick = {
+                            viewModel.saveKnsProfile(
+                                mapOf(
+                                    "bio" to bio,
+                                    "x" to x,
+                                    "website" to website,
+                                    "telegram" to telegram,
+                                    "discord" to discord,
+                                    "contactEmail" to email,
+                                    "github" to github,
+                                    "redirectUrl" to redirect
+                                )
+                            )
+                        },
+                        enabled = !inFlight
+                    ) {
+                        Text("Save", color = if (!inFlight) KaspaTeal else Color.Gray, fontWeight = FontWeight.Bold)
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
+        ) {
+            Spacer(Modifier.height(8.dp))
+
+            SettingsSection(title = "Domain") {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(ownedDomains.firstOrNull() ?: "—", color = Color.White, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(profileAssetId ?: "", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            SettingsSection(title = "Avatar") {
+                Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    ContactAvatar(
+                        imageUrl = pendingAvatarUri?.toString() ?: knsProfile?.avatarUrl,
+                        fallbackText = ownedDomains.firstOrNull() ?: "?",
+                        size = 64.dp
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        TextButton(onClick = { avatarPicker.launch("image/*") }, enabled = !inFlight) {
+                            Text("Choose Avatar", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                        }
+                        if (pendingAvatarUri != null) {
+                            TextButton(onClick = { viewModel.setPendingAvatar(null) }, enabled = !inFlight) {
+                                Text("Remove", color = Color(0xFFFF3B30))
+                            }
+                        }
+                    }
+                    if (editState.step == WalletViewModel.EditProfileStep.UPLOADING_AVATAR) {
+                        Spacer(Modifier.height(8.dp))
+                        InscribeProgressRow("Uploading avatar...")
+                    }
+                }
+            }
+
+            SettingsSection(title = "Banner") {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    val previewUrl = pendingBannerUri?.toString() ?: knsProfile?.bannerUrl
+                    if (previewUrl != null) {
+                        SubcomposeAsyncImage(
+                            model = previewUrl,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(110.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF1C1C1E))
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        TextButton(onClick = { bannerPicker.launch("image/*") }, enabled = !inFlight) {
+                            Text("Choose Banner", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                        }
+                        if (pendingBannerUri != null) {
+                            TextButton(onClick = { viewModel.setPendingBanner(null) }, enabled = !inFlight) {
+                                Text("Remove", color = Color(0xFFFF3B30))
+                            }
+                        }
+                    }
+                    if (editState.step == WalletViewModel.EditProfileStep.UPLOADING_BANNER) {
+                        Spacer(Modifier.height(8.dp))
+                        InscribeProgressRow("Uploading banner...")
+                    }
+                }
+            }
+
+            SettingsSection(title = "Profile") {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    EditProfileTextField("Bio", bio, { bio = it }, enabled = !inFlight, singleLine = false)
+                    EditProfileTextField("X", x, { x = it }, enabled = !inFlight)
+                    EditProfileTextField("Website", website, { website = it }, enabled = !inFlight)
+                    EditProfileTextField("Telegram", telegram, { telegram = it }, enabled = !inFlight)
+                    EditProfileTextField("Discord", discord, { discord = it }, enabled = !inFlight)
+                    EditProfileTextField("Email", email, { email = it }, enabled = !inFlight)
+                    EditProfileTextField("GitHub", github, { github = it }, enabled = !inFlight)
+                    EditProfileTextField("Redirect", redirect, { redirect = it }, enabled = !inFlight)
+                }
+            }
+
+            if (editState.step == WalletViewModel.EditProfileStep.SUBMITTING_FIELD) {
+                InscribeProgressRow("Submitting ${editState.currentFieldLabel}...")
+            }
+            if (editState.step == WalletViewModel.EditProfileStep.SUCCESS) {
+                Text(
+                    if (editState.fieldResults.isEmpty()) "Nothing to save." else "Saved.",
+                    color = Color(0xFF4CD964),
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            if (editState.step == WalletViewModel.EditProfileStep.PARTIAL_FAILURE) {
+                Column {
+                    Text("Some changes failed to save:", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                    editState.fieldResults.filter { !it.success }.forEach {
+                        Text("${it.fieldKey}: ${it.errorMessage ?: "failed"}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            if (editState.step == WalletViewModel.EditProfileStep.FAILED) {
+                Text(
+                    editState.fieldResults.firstOrNull { !it.success }?.errorMessage ?: "Save failed",
+                    color = Color(0xFFFF3B30)
+                )
+            }
+
+            Spacer(Modifier.height(60.dp))
+        }
+    }
+}
+
+@Composable
+private fun EditProfileTextField(label: String, value: String, onValueChange: (String) -> Unit, enabled: Boolean, singleLine: Boolean = true) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        singleLine = singleLine,
+        enabled = enabled,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = Color.White,
+            unfocusedTextColor = Color.White,
+            disabledTextColor = Color.Gray,
+            focusedBorderColor = KaspaTeal,
+            unfocusedBorderColor = Color.Gray,
+            focusedLabelColor = KaspaTeal,
+            unfocusedLabelColor = Color.Gray
+        ),
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
@@ -771,30 +1925,63 @@ fun SeedPhraseScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
     }
 }
 
+/** Unwraps a Compose [android.content.Context] (often a ContextWrapper) to find the real hosting Activity — needed for Credential Manager / Drive authorization, which require an Activity, not just any Context. */
+private tailrec fun android.content.Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     navController: NavController,
     walletViewModel: WalletViewModel = hiltViewModel(),
     connectionViewModel: ConnectionViewModel = hiltViewModel(),
-    chatViewModel: ChatViewModel = hiltViewModel()
+    chatViewModel: ChatViewModel = hiltViewModel(),
+    settingsViewModel: SettingsViewModel = hiltViewModel()
 ) {
-    val balance by walletViewModel.balance.collectAsState()
-    val connStatus by connectionViewModel.status.collectAsState()
+    val balance by walletViewModel.fullBalance.collectAsState()
+    val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val estimateFees by chatViewModel.estimateFeesEnabled.collectAsState()
+    val hideAutoCreatedPaymentChats by chatViewModel.hideAutoCreatedPaymentChats.collectAsState()
+    val showContactBalance by chatViewModel.showContactBalance.collectAsState()
+    val notificationsEnabled by settingsViewModel.notificationsEnabled.collectAsState()
+    val syncSystemContactsEnabled by chatViewModel.syncSystemContactsEnabled.collectAsState()
+    val autoCreateSystemContactsEnabled by chatViewModel.autoCreateSystemContactsEnabled.collectAsState()
     val archivedCount by chatViewModel.archivedCount.collectAsState()
+    val exportChatHistoryState by chatViewModel.exportState.collectAsState()
+    val importChatHistoryState by chatViewModel.importState.collectAsState()
     val scrollState = rememberScrollState()
+    val context = LocalContext.current
+
+    val syncContactsPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val autoCreatePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { }
+    val importChatHistoryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) chatViewModel.importChatHistory(uri)
+    }
+
+    LaunchedEffect(Unit) {
+        walletViewModel.refreshBalance()
+    }
 
     Scaffold(
         containerColor = Color.Black,
         topBar = {
-            Column(modifier = Modifier.background(Color.Black).padding(horizontal = 16.dp)) {
+            Column(
+                modifier = Modifier
+                    .background(Color.Black)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp)
+            ) {
                 Spacer(modifier = Modifier.height(16.dp))
                 TopStatusBar(
                     balance = balance,
                     onStatusClick = { navController.navigate("connection_status") },
                     onAddClick = { navController.navigate("create_chat") },
-                    connectionStatus = connStatus
+                    dotColorHex = dotColorHex
                 )
                 Spacer(modifier = Modifier.height(8.dp))
             }
@@ -813,11 +2000,20 @@ fun SettingsScreen(
                     chatViewModel.updateEstimateFees(it)
                 }
                 SettingsDivider()
-                SettingsSwitchItem("Hide auto-created payment chats", false)
+                SettingsSwitchItem("Hide auto-created payment chats", hideAutoCreatedPaymentChats) {
+                    chatViewModel.updateHideAutoCreatedPaymentChats(it)
+                }
                 SettingsDivider()
-                SettingsSwitchItem("Show contact balance", true)
+                SettingsSwitchItem("Show contact balance", showContactBalance) {
+                    chatViewModel.updateShowContactBalance(it)
+                }
                 SettingsDivider()
-                SettingsNavigationItem("Notifications", Icons.Default.NotificationsNone, "Remote push")
+                SettingsNavigationItem(
+                    "Notifications",
+                    Icons.Default.NotificationsNone,
+                    if (notificationsEnabled) "On" else "Off",
+                    onClick = { navController.navigate("notification_settings") }
+                )
                 SettingsDivider()
                 SettingsNavigationItem("Archived Chats", Icons.Outlined.Inventory2, archivedCount.toString(), onClick = {
                     navController.navigate("archived_chats")
@@ -825,24 +2021,187 @@ fun SettingsScreen(
             }
 
             SettingsSection(title = "Contacts") {
-                SettingsSwitchItem("Sync system contacts", true)
+                SettingsSwitchItem("Sync system contacts", syncSystemContactsEnabled) { enabled ->
+                    chatViewModel.setSyncSystemContactsEnabled(enabled)
+                    if (enabled) syncContactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                }
                 SettingsDivider()
-                SettingsSwitchItem("Autocreate system contacts", false)
+                SettingsSwitchItem("Autocreate system contacts", autoCreateSystemContactsEnabled) { enabled ->
+                    chatViewModel.setAutoCreateSystemContactsEnabled(enabled)
+                    if (enabled) {
+                        autoCreatePermissionLauncher.launch(
+                            arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS)
+                        )
+                    }
+                }
                 SettingsFooter("Uses your device contacts to match and enrich Kaspa contacts.")
             }
 
             SettingsSection(title = "Storage") {
-                SettingsSwitchItem("Store encrypted messages in Google Drive", true)
-                SettingsFooter("Required for cross-device sync and backup of sent messages.")
-                SettingsDivider()
-                SettingsNavigationItem("Message retention", null, "30 days", showIcon = false)
-                SettingsFooter("Storage used: 436 KB")
+                val googleBackupEnabled by chatViewModel.googleBackupEnabled.collectAsState()
+                val googleBackupOpState by chatViewModel.googleBackupOpState.collectAsState()
+                val restoreState by chatViewModel.restoreState.collectAsState()
+                val pendingConsentIntent by chatViewModel.pendingConsentIntent.collectAsState()
+                val activity = LocalContext.current.findActivity()
+
+                val consentLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.StartIntentSenderForResult()
+                ) { result ->
+                    chatViewModel.consentIntentLaunched()
+                    result.data?.let { chatViewModel.completeGoogleDriveAuthorization(it) }
+                }
+
+                LaunchedEffect(pendingConsentIntent) {
+                    pendingConsentIntent?.let { pendingIntent ->
+                        consentLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+                    }
+                }
+
+                val backupInFlight = googleBackupOpState.status == ChatViewModel.GoogleBackupOpStatus.IN_PROGRESS
+                val restoreInFlight = restoreState.status == ChatViewModel.ChatHistoryOpStatus.IN_PROGRESS
+
+                SettingsSwitchItem(
+                    "Back Up to Google Drive",
+                    checked = googleBackupEnabled,
+                    onCheckedChange = { checked ->
+                        if (checked) {
+                            activity?.let { chatViewModel.enableGoogleDriveBackup(it) }
+                        } else {
+                            chatViewModel.disableGoogleDriveBackup()
+                        }
+                    }
+                )
+                val backupFooterText = when {
+                    backupInFlight -> "Working..."
+                    googleBackupOpState.status == ChatViewModel.GoogleBackupOpStatus.FAILED -> googleBackupOpState.message ?: "Something went wrong"
+                    googleBackupEnabled && googleBackupOpState.signedInEmail != null -> "Signed in as ${googleBackupOpState.signedInEmail}"
+                    else -> "Off by default. Backs up chat history to your own Google Drive — hidden storage, not visible in your regular Drive files."
+                }
+                SettingsFooter(backupFooterText)
+
+                if (googleBackupEnabled) {
+                    SettingsDivider()
+                    SettingsActionItem(
+                        label = if (backupInFlight) "Backing Up..." else "Back Up Now",
+                        icon = Icons.Default.CloudUpload,
+                        color = if (backupInFlight) Color.Gray else KaspaTeal
+                    ) {
+                        if (!backupInFlight) chatViewModel.backupNow()
+                    }
+                    SettingsDivider()
+                    SettingsActionItem(
+                        label = if (restoreInFlight) "Restoring..." else "Restore from Google Drive",
+                        icon = Icons.Default.CloudDownload,
+                        color = if (restoreInFlight) Color.Gray else KaspaTeal
+                    ) {
+                        if (!restoreInFlight) chatViewModel.restoreFromGoogleDrive()
+                    }
+                    if (restoreState.status == ChatViewModel.ChatHistoryOpStatus.SUCCESS) {
+                        SettingsFooter(restoreState.message ?: "Restore complete.")
+                    }
+                    if (restoreState.status == ChatViewModel.ChatHistoryOpStatus.FAILED) {
+                        SettingsFooter(restoreState.message ?: "Restore failed.")
+                    }
+
+                    SettingsDivider()
+
+                    val backupRetention by chatViewModel.backupRetention.collectAsState()
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Retention", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.height(8.dp))
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            val options = listOf(
+                                Triple("Forever", BackupRetention.FOREVER, 0),
+                                Triple("30 Days", BackupRetention.DAYS_30, 1),
+                                Triple("90 Days", BackupRetention.DAYS_90, 2)
+                            )
+                            options.forEach { (label, value, index) ->
+                                SegmentedButton(
+                                    selected = backupRetention == value,
+                                    onClick = { chatViewModel.setBackupRetention(value) },
+                                    shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
+                                    colors = SegmentedButtonDefaults.colors(
+                                        activeContainerColor = Color(0xFF2C2C2E),
+                                        activeContentColor = Color.White,
+                                        inactiveContainerColor = Color(0xFF1C1C1E),
+                                        inactiveContentColor = Color.Gray
+                                    )
+                                ) {
+                                    Text(label, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = if (backupRetention == BackupRetention.FOREVER) {
+                                "Chat history is kept forever and backed up as-is."
+                            } else {
+                                "Messages older than ${backupRetention.days} days are permanently deleted from this device — not just excluded from the backup. This cannot be undone."
+                            },
+                            color = if (backupRetention == BackupRetention.FOREVER) Color.Gray else Color(0xFFFF3B30),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
             }
 
             SettingsSection(title = "Chat History") {
-                SettingsActionItem("Export Chat History", Icons.Default.FileUpload, KaspaTeal)
+                val exportInFlight = exportChatHistoryState.status == ChatViewModel.ChatHistoryOpStatus.IN_PROGRESS
+                val importInFlight = importChatHistoryState.status == ChatViewModel.ChatHistoryOpStatus.IN_PROGRESS
+
+                SettingsActionItem(
+                    label = if (exportInFlight) "Exporting..." else "Export Chat History",
+                    icon = Icons.Default.FileUpload,
+                    color = if (exportInFlight) Color.Gray else KaspaTeal
+                ) {
+                    if (!exportInFlight) {
+                        chatViewModel.exportChatHistory { uri ->
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "application/json"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Export Chat History"))
+                        }
+                    }
+                }
+                if (exportChatHistoryState.status == ChatViewModel.ChatHistoryOpStatus.FAILED) {
+                    Text(
+                        exportChatHistoryState.message ?: "Export failed",
+                        color = Color(0xFFFF3B30),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+
                 SettingsDivider()
-                SettingsActionItem("Import Chat History", Icons.Default.FileDownload, KaspaTeal)
+
+                SettingsActionItem(
+                    label = if (importInFlight) "Importing..." else "Import Chat History",
+                    icon = Icons.Default.FileDownload,
+                    color = if (importInFlight) Color.Gray else KaspaTeal
+                ) {
+                    if (!importInFlight) {
+                        importChatHistoryLauncher.launch(arrayOf("application/json"))
+                    }
+                }
+                if (importChatHistoryState.status == ChatViewModel.ChatHistoryOpStatus.SUCCESS) {
+                    Text(
+                        importChatHistoryState.message ?: "Import complete",
+                        color = Color(0xFF4CD964),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+                if (importChatHistoryState.status == ChatViewModel.ChatHistoryOpStatus.FAILED) {
+                    Text(
+                        importChatHistoryState.message ?: "Import failed",
+                        color = Color(0xFFFF3B30),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+                SettingsFooter("Exports a plaintext JSON file of your decrypted chat history for this account — not encrypted, so only share it somewhere you trust. Importing merges into your existing history without overwriting anything.")
             }
 
             SettingsSection(title = "Connection") {
@@ -852,23 +2211,162 @@ fun SettingsScreen(
             }
 
             SettingsSection(title = "About") {
-                SettingsInfoItem("Version", "1.1.1 (202602271119)")
+                SettingsInfoItem("Version", "1.0")
                 SettingsDivider()
-                SettingsInfoItem("Website", "kachat.app", KaspaTeal)
+                SettingsInfoItem(
+                    "Website",
+                    "https://linktr.ee/Kachat_",
+                    KaspaTeal,
+                    onClick = {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://linktr.ee/Kachat_")))
+                        } catch (e: Exception) { /* no browser available */ }
+                    }
+                )
                 SettingsDivider()
-                SettingsInfoItem("Support Email", "support@kachat.app", KaspaTeal)
-            }
-
-            SettingsSection(title = "Diagnostics") {
-                SettingsActionItem("Export Diagnostics Archive", Icons.Default.FileUpload, KaspaTeal)
+                SettingsInfoItem(
+                    "Support Email",
+                    "kaspasilver@gmail.com",
+                    KaspaTeal,
+                    onClick = {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:kaspasilver@gmail.com")))
+                        } catch (e: Exception) { /* no email app available */ }
+                    }
+                )
             }
 
             SettingsSection(title = "Danger Zone") {
-                SettingsActionItem("Wipe and re-sync incoming messages", Icons.Default.Cached, Color.Red)
+                val activeAddress by walletViewModel.address.collectAsState()
+                val wipeIncomingState by chatViewModel.wipeIncomingState.collectAsState()
+                val wipeAccountState by chatViewModel.wipeAccountState.collectAsState()
+                var showWipeIncomingConfirm by remember { mutableStateOf(false) }
+                var showWipeAccountConfirm by remember { mutableStateOf(false) }
+                var showWipeAccountCloudConfirm by remember { mutableStateOf(false) }
+
+                val wipeIncomingInFlight = wipeIncomingState.status == ChatViewModel.DangerZoneOpStatus.IN_PROGRESS
+                val wipeAccountInFlight = wipeAccountState.status == ChatViewModel.DangerZoneOpStatus.IN_PROGRESS
+
+                SettingsActionItem(
+                    label = if (wipeIncomingInFlight) "Wiping..." else "Wipe and re-sync incoming messages",
+                    icon = Icons.Default.Cached,
+                    color = if (wipeIncomingInFlight) Color.Gray else Color.Red
+                ) {
+                    if (!wipeIncomingInFlight) showWipeIncomingConfirm = true
+                }
+                if (wipeIncomingState.status == ChatViewModel.DangerZoneOpStatus.SUCCESS || wipeIncomingState.status == ChatViewModel.DangerZoneOpStatus.FAILED) {
+                    SettingsFooter(wipeIncomingState.message ?: "Done")
+                }
                 SettingsDivider()
-                SettingsActionItem("Wipe account & messages", Icons.Default.PersonRemoveAlt1, Color.Red)
+                SettingsActionItem(
+                    label = if (wipeAccountInFlight) "Wiping..." else "Wipe account & messages",
+                    icon = Icons.Default.PersonRemoveAlt1,
+                    color = if (wipeAccountInFlight) Color.Gray else Color.Red
+                ) {
+                    if (!wipeAccountInFlight && activeAddress != null) showWipeAccountConfirm = true
+                }
                 SettingsDivider()
-                SettingsActionItem("Wipe account & messages & Cloud", Icons.Default.CloudOff, Color.Red)
+                SettingsActionItem(
+                    label = if (wipeAccountInFlight) "Wiping..." else "Wipe account & messages & Cloud",
+                    icon = Icons.Default.CloudOff,
+                    color = if (wipeAccountInFlight) Color.Gray else Color.Red
+                ) {
+                    if (!wipeAccountInFlight && activeAddress != null) showWipeAccountCloudConfirm = true
+                }
+                if (wipeAccountState.status == ChatViewModel.DangerZoneOpStatus.FAILED) {
+                    SettingsFooter(wipeAccountState.message ?: "Failed")
+                }
+
+                if (showWipeIncomingConfirm) {
+                    AlertDialog(
+                        onDismissRequest = { showWipeIncomingConfirm = false },
+                        containerColor = Color(0xFF1C1C1E),
+                        title = { Text("Wipe and re-sync incoming messages", color = Color.White) },
+                        text = {
+                            Text(
+                                "This removes all incoming messages locally, then re-syncs them from the blockchain. Your account info and sent messages are preserved.",
+                                color = Color.Gray
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showWipeIncomingConfirm = false
+                                chatViewModel.wipeIncomingMessages()
+                            }) {
+                                Text("Wipe Incoming Messages", color = Color.Red, fontWeight = FontWeight.Bold)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showWipeIncomingConfirm = false }) {
+                                Text("Cancel", color = Color.Gray)
+                            }
+                        }
+                    )
+                }
+
+                if (showWipeAccountConfirm) {
+                    val address = activeAddress
+                    AlertDialog(
+                        onDismissRequest = { showWipeAccountConfirm = false },
+                        containerColor = Color(0xFF1C1C1E),
+                        title = { Text("Wipe account & messages", color = Color.White) },
+                        text = {
+                            Text(
+                                "This permanently deletes this account's wallet keys and all its local messages and contacts from this device. This cannot be undone unless you have saved your seed phrase — without it, any remaining balance is unrecoverable.",
+                                color = Color.Gray
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showWipeAccountConfirm = false
+                                if (address != null) {
+                                    chatViewModel.wipeAccountAndMessages(address, alsoDeleteCloud = false) {
+                                        walletViewModel.deleteWallet(address)
+                                    }
+                                }
+                            }) {
+                                Text("Wipe Account", color = Color.Red, fontWeight = FontWeight.Bold)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showWipeAccountConfirm = false }) {
+                                Text("Cancel", color = Color.Gray)
+                            }
+                        }
+                    )
+                }
+
+                if (showWipeAccountCloudConfirm) {
+                    val address = activeAddress
+                    AlertDialog(
+                        onDismissRequest = { showWipeAccountCloudConfirm = false },
+                        containerColor = Color(0xFF1C1C1E),
+                        title = { Text("Wipe account & messages & Cloud", color = Color.White) },
+                        text = {
+                            Text(
+                                "This permanently deletes this account's wallet keys, all its local messages and contacts, and its Google Drive backup. This cannot be undone unless you have saved your seed phrase — without it, any remaining balance is unrecoverable.",
+                                color = Color.Gray
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showWipeAccountCloudConfirm = false
+                                if (address != null) {
+                                    chatViewModel.wipeAccountAndMessages(address, alsoDeleteCloud = true) {
+                                        walletViewModel.deleteWallet(address)
+                                    }
+                                }
+                            }) {
+                                Text("Wipe Everything", color = Color.Red, fontWeight = FontWeight.Bold)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showWipeAccountCloudConfirm = false }) {
+                                Text("Cancel", color = Color.Gray)
+                            }
+                        }
+                    )
+                }
             }
             
             Spacer(modifier = Modifier.height(100.dp))
@@ -956,10 +2454,11 @@ fun SettingsActionItem(label: String, icon: ImageVector, color: Color, onClick: 
 }
 
 @Composable
-fun SettingsInfoItem(label: String, value: String, valueColor: Color = Color.Gray) {
+fun SettingsInfoItem(label: String, value: String, valueColor: Color = Color.Gray, onClick: (() -> Unit)? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
@@ -986,16 +2485,12 @@ fun SettingsFooter(text: String) {
 
 @Composable
 fun TopStatusBar(
-    balance: String, 
+    balance: String,
     onStatusClick: () -> Unit,
     onAddClick: () -> Unit = {},
-    connectionStatus: ConnStatus = ConnStatus.CONNECTED
+    dotColorHex: Long = 0xFF4CD964
 ) {
-    val statusColor = when (connectionStatus) {
-        ConnStatus.CONNECTED -> Color(0xFF4CD964)
-        ConnStatus.WEAK -> Color(0xFFF39C12)
-        ConnStatus.DISCONNECTED -> Color.Red
-    }
+    val statusColor = Color(dotColorHex)
 
     Row(
         modifier = Modifier.fillMaxWidth().height(56.dp),
@@ -1046,10 +2541,33 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
     val network by viewModel.network.collectAsState()
     val indexerUrl by viewModel.indexerUrl.collectAsState()
     val pushIndexerUrl by viewModel.pushIndexerUrl.collectAsState()
-    
+
     val activeNodes by viewModel.activeNodes.collectAsState()
     val allNodes by viewModel.allNodes.collectAsState()
+    val status by viewModel.status.collectAsState()
+    val dotColorHex by viewModel.dotColorHex.collectAsState()
+    val lastSyncAt by viewModel.lastSyncAt.collectAsState()
     val scrollState = rememberScrollState()
+
+    // status is derived from the exact same latency thresholds as dotColorHex, so
+    // the text here can never contradict the dot's color: green only says
+    // Connected/Healthy, orange only says Degraded, red only says Weak/Unhealthy.
+    val statusColor = Color(dotColorHex)
+    val statusText = when (status) {
+        ConnStatus.CONNECTED -> "Connected"
+        ConnStatus.DEGRADED -> "Degraded"
+        ConnStatus.WEAK -> "Weak"
+        ConnStatus.DISCONNECTED -> "Disconnected"
+    }
+    val poolHealthText = when (status) {
+        ConnStatus.CONNECTED -> "Healthy"
+        ConnStatus.DEGRADED -> "Degraded"
+        ConnStatus.WEAK -> "Weak"
+        ConnStatus.DISCONNECTED -> "Unhealthy"
+    }
+    // "Verified" = currently reachable at all (Active or Suspect), a broader real count
+    // than "Active" (Active additionally requires being in-sync and not recently failing).
+    val verifiedCount = allNodes.count { it.status == "Active" || it.status == "Suspect" }
 
     Scaffold(
         containerColor = Color.Black,
@@ -1074,23 +2592,23 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
             SettingsSection(title = "Connection Status") {
-                ConnectionInfoRow("Status", "Connected", Color(0xFF4CD964))
+                ConnectionInfoRow("Status", statusText, statusColor)
                 SettingsDivider()
                 ConnectionInfoRow("Protocol", "gRPC (plaintext)")
                 SettingsDivider()
                 ConnectionInfoRow("Connected Node", activeNodes.firstOrNull()?.ip ?: "None")
                 SettingsDivider()
-                ConnectionInfoRow("Latency", "52 ms", Color(0xFF4CD964))
+                ConnectionInfoRow("Latency", activeNodes.firstOrNull()?.latency ?: "—", statusColor)
                 SettingsDivider()
-                ConnectionInfoRow("Distance", "0.8k km")
+                ConnectionInfoRow("Distance", "Unknown")
                 SettingsDivider()
-                ConnectionInfoRow("Country", "US")
+                ConnectionInfoRow("Country", "Unknown")
                 SettingsDivider()
                 ConnectionInfoRow("Indexer", indexerUrl.substringAfter("://").substringBefore("/"))
                 SettingsDivider()
                 ConnectionInfoRow("Push Register", pushIndexerUrl.substringAfter("://").substringBefore("/"))
                 SettingsDivider()
-                ConnectionInfoRow("Last Sync", "51s ago")
+                ConnectionInfoRow("Last Sync", lastSyncAt)
             }
 
             SettingsSection(title = "Pool Status") {
@@ -1098,27 +2616,27 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     horizontalArrangement = Arrangement.SpaceAround
                 ) {
-                    PoolStatItem("Active", "12", Color(0xFF4CD964))
-                    PoolStatItem("Verified", "27", Color(0xFF2196F3))
-                    PoolStatItem("Total", "380", Color.Gray)
+                    PoolStatItem("Active", activeNodes.size.toString(), Color(0xFF4CD964))
+                    PoolStatItem("Verified", verifiedCount.toString(), Color(0xFF2196F3))
+                    PoolStatItem("Total", allNodes.size.toString(), Color.Gray)
                 }
                 SettingsDivider()
                 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Pool Health", color = Color.White)
-                    Text("Healthy", color = Color(0xFF4CD964))
+                    Text(poolHealthText, color = statusColor)
                 }
             }
 
             SettingsSection(title = "Actions") {
-                SettingsActionItem("Refresh Pool", Icons.Default.Refresh, KaspaTeal)
+                SettingsActionItem("Refresh Pool", Icons.Default.Refresh, KaspaTeal, onClick = { viewModel.refreshPool() })
                 SettingsDivider()
-                SettingsActionItem("Clear Connection Pool", Icons.Default.DeleteSweep, Color.Red)
+                SettingsActionItem("Clear Connection Pool", Icons.Default.DeleteSweep, Color.Red, onClick = { viewModel.clearPool() })
                 SettingsDivider()
-                SettingsActionItem("Reconnect", Icons.Default.Replay, KaspaTeal)
+                SettingsActionItem("Reconnect", Icons.Default.Replay, KaspaTeal, onClick = { viewModel.reconnect() })
             }
 
             Text(
-                text = "Primary: 67.235.212.32",
+                text = "Primary: ${activeNodes.firstOrNull()?.ip ?: "None"}",
                 color = Color.Gray,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(start = 8.dp)
@@ -1133,7 +2651,7 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
                     TextField(
                         value = endpoint,
                         onValueChange = { endpoint = it },
-                        placeholder = { Text("grpc://host:port", color = Color.DarkGray) },
+                        placeholder = { Text("host:port", color = Color.DarkGray) },
                         modifier = Modifier.weight(1f).height(50.dp).clip(RoundedCornerShape(12.dp)),
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = Color(0xFF2C2C2E),
@@ -1147,7 +2665,12 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
                     )
                     Spacer(Modifier.width(12.dp))
                     IconButton(
-                        onClick = { },
+                        onClick = {
+                            if (endpoint.isNotBlank()) {
+                                viewModel.addManualEndpoint(endpoint)
+                                endpoint = ""
+                            }
+                        },
                         modifier = Modifier.size(40.dp).background(KaspaTeal, CircleShape)
                     ) {
                         Icon(Icons.Default.Add, null, tint = Color.Black)
@@ -1172,7 +2695,7 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
                     Spacer(Modifier.width(8.dp))
                     Text(text = "Active Nodes", style = MaterialTheme.typography.titleMedium, color = Color.White)
                 }
-                Text(text = "12", color = Color.Gray)
+                Text(text = activeNodes.size.toString(), color = Color.Gray)
             }
             Column(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xFF1C1C1E))
@@ -1193,7 +2716,7 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
                     Spacer(Modifier.width(8.dp))
                     Text(text = "Other Nodes", style = MaterialTheme.typography.titleMedium, color = Color.White)
                 }
-                Text(text = "380", color = Color.Gray)
+                Text(text = allNodes.size.toString(), color = Color.Gray)
             }
             Column(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xFF1C1C1E))
@@ -1212,6 +2735,108 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
             )
             
             Spacer(modifier = Modifier.height(100.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NotificationSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
+    val notificationsEnabled by viewModel.notificationsEnabled.collectAsState()
+    val soundEnabled by viewModel.notificationSoundEnabled.collectAsState()
+    val vibrationEnabled by viewModel.notificationVibrationEnabled.collectAsState()
+
+    val context = LocalContext.current
+    var permissionGranted by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        permissionGranted = granted
+    }
+
+    Scaffold(
+        containerColor = Color.Black,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("Notifications", color = Color.White, fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBackIos, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
+        ) {
+            Spacer(Modifier.height(8.dp))
+
+            if (!permissionGranted) {
+                Surface(
+                    color = Color(0xFF2C1C1C),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Notifications are off in system settings", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "KaChat can't show notifications until you allow them for this app.",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(onClick = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            } else {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                )
+                            }
+                        }) {
+                            Text("Open Settings", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            SettingsSection(title = "Push Notifications") {
+                SettingsSwitchItem("Notifications", notificationsEnabled && permissionGranted) {
+                    viewModel.setNotificationsEnabled(it)
+                }
+                SettingsFooter(
+                    if (notificationsEnabled && permissionGranted)
+                        "Receive notifications when contacts send messages while KaChat is running. There's no remote push server yet, so nothing arrives once the app has been fully closed by the system."
+                    else
+                        "Notifications are disabled."
+                )
+            }
+
+            if (notificationsEnabled && permissionGranted) {
+                SettingsSection(title = "Sound & Vibration") {
+                    SettingsSwitchItem("Play sound", soundEnabled) {
+                        viewModel.setNotificationSoundEnabled(it)
+                    }
+                    SettingsDivider()
+                    SettingsSwitchItem("Vibration", vibrationEnabled) {
+                        viewModel.setNotificationVibrationEnabled(it)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(40.dp))
         }
     }
 }
@@ -1279,22 +2904,22 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
             }
 
             SettingsSection(title = "KaChat Indexer") {
-                ConnectionUrlField(label = "Indexer URL", value = indexerUrl, onValueChange = { viewModel.setIndexerUrl(it) })
+                ConnectionUrlField(label = "Indexer URL", value = indexerUrl)
                 SettingsFooter("Message indexer service for chat functionality")
             }
 
             SettingsSection(title = "Push Registration") {
-                ConnectionUrlField(label = "Push Indexer URL", value = pushIndexerUrl, onValueChange = { viewModel.setPushIndexerUrl(it) })
+                ConnectionUrlField(label = "Push Indexer URL", value = pushIndexerUrl)
                 SettingsFooter("Used only for push registration and updates")
             }
 
             SettingsSection(title = "Kaspa Name Service") {
-                ConnectionUrlField(label = "KNS API URL", value = knsApiUrl, onValueChange = { viewModel.setKnsApiUrl(it) })
+                ConnectionUrlField(label = "KNS API URL", value = knsApiUrl)
                 SettingsFooter("KNS domain resolution service")
             }
 
             SettingsSection(title = "Kaspa Explorer API") {
-                ConnectionUrlField(label = "Kaspa REST API URL", value = kaspaRestApiUrl, onValueChange = { viewModel.setKaspaRestApiUrl(it) })
+                ConnectionUrlField(label = "Kaspa REST API URL", value = kaspaRestApiUrl)
                 SettingsFooter("REST API for transaction history and balance lookups")
             }
 
@@ -1433,24 +3058,16 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
     }
 }
 
+/** Read-only for now — editing these let a mistyped URL crash the whole app (fixed at the NetworkService layer too, but not editable at all is safer). */
 @Composable
-fun ConnectionUrlField(label: String, value: String, onValueChange: (String) -> Unit) {
+fun ConnectionUrlField(label: String, value: String) {
     Column(modifier = Modifier.padding(16.dp)) {
         Text(label, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-        TextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier.fillMaxWidth(),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent,
-                unfocusedContainerColor = Color.Transparent,
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White,
-                cursorColor = KaspaTeal,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent
-            ),
-            textStyle = MaterialTheme.typography.bodyLarge
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = value,
+            color = Color.White,
+            style = MaterialTheme.typography.bodyLarge
         )
     }
 }
@@ -1585,7 +3202,34 @@ fun CreateChatScreen(
 ) {
     var address by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
-    val isValidAddress = remember(address) { KaspaAddress.isValid(address) }
+    var showScanner by remember { mutableStateOf(false) }
+    val isValidRawAddress = remember(address) { KaspaAddress.isValid(address) }
+    val looksLikeKnsDomain = remember(address) { com.kachat.app.services.KnsService.looksLikeDomain(address) }
+
+    val knsResolvedAddress by chatViewModel.knsResolvedAddress.collectAsState()
+    val isResolvingKns by chatViewModel.isResolvingKns.collectAsState()
+    val knsError by chatViewModel.knsError.collectAsState()
+
+    LaunchedEffect(address) {
+        chatViewModel.onCreateChatAddressChanged(address)
+    }
+
+    // The address actually used to create the contact — the resolved owner address
+    // when the input is a KNS domain, otherwise whatever was typed directly.
+    val effectiveAddress = if (looksLikeKnsDomain) knsResolvedAddress else address
+    val isValidAddress = if (looksLikeKnsDomain) knsResolvedAddress != null else isValidRawAddress
+
+    if (showScanner) {
+        BackHandler { showScanner = false }
+        QrScannerOverlay(
+            onScanned = { scanned ->
+                address = scanned
+                showScanner = false
+            },
+            onDismiss = { showScanner = false }
+        )
+        return
+    }
 
     Scaffold(
         containerColor = Color.Black,
@@ -1599,9 +3243,14 @@ fun CreateChatScreen(
                 },
                 actions = {
                     TextButton(
-                        onClick = { 
-                            chatViewModel.addContact(address, name)
-                            onChatCreated(address)
+                        onClick = {
+                            val resolvedAddress = effectiveAddress ?: return@TextButton
+                            chatViewModel.addContact(
+                                address = resolvedAddress,
+                                name = name,
+                                knsName = if (looksLikeKnsDomain) com.kachat.app.services.KnsService.normalizeDomain(address) else null
+                            )
+                            onChatCreated(resolvedAddress)
                         },
                         enabled = isValidAddress
                     ) {
@@ -1658,7 +3307,33 @@ fun CreateChatScreen(
                     singleLine = true
                 )
                 
-                if (isValidAddress) {
+                if (looksLikeKnsDomain && isResolvingKns) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = KaspaTeal, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Resolving domain…", color = Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                } else if (looksLikeKnsDomain && knsError != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF3B30), modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(knsError ?: "", color = Color(0xFFFF3B30), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                } else if (looksLikeKnsDomain && knsResolvedAddress != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CD964), modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "Resolved to ${knsResolvedAddress?.takeLast(12)}",
+                            color = Color(0xFF4CD964),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                } else if (isValidAddress) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             imageVector = Icons.Default.CheckCircle,
@@ -1685,7 +3360,7 @@ fun CreateChatScreen(
                 ) {
                     CreateChatActionItem(Icons.Default.PersonAddAlt1, "Import") { }
                     CreateChatActionItem(Icons.Default.ContentPaste, "Paste") { }
-                    CreateChatActionItem(Icons.Default.QrCodeScanner, "Scan QR") { }
+                    CreateChatActionItem(Icons.Default.QrCodeScanner, "Scan QR") { showScanner = true }
                 }
             }
             
@@ -1753,17 +3428,44 @@ fun ChatInfoScreen(
     val messages by chatViewModel.getMessages(contactId).collectAsState(initial = emptyList())
     val contactBalances by chatViewModel.contactBalances.collectAsState()
     val contactBalance = contactBalances[contactId] ?: "0.00000000"
-    
+    val showContactBalance by chatViewModel.showContactBalance.collectAsState()
+    val knsProfile = chatViewModel.knsProfiles.collectAsState().value[contactId]
+    val systemContactId = conversation?.contact?.systemContactId
+    val systemContactName = conversation?.contact?.systemContactName
+
     var contactName by remember { mutableStateOf("") }
 
     // Synchronize local state with database when it loads
     LaunchedEffect(conversation?.contact?.alias) {
         contactName = conversation?.contact?.alias ?: ""
     }
-    
+
+    LaunchedEffect(contactId) {
+        chatViewModel.refreshKnsProfile(contactId)
+    }
+
     val scrollState = rememberScrollState()
     val clipboardManager = LocalClipboardManager.current
     var showQr by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val pickContactLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        context.contentResolver.query(
+            uri,
+            arrayOf(ContactsContract.Contacts.LOOKUP_KEY, ContactsContract.Contacts.DISPLAY_NAME_PRIMARY),
+            null, null, null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val lookupKey = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.LOOKUP_KEY))
+                val displayName = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME_PRIMARY))
+                if (lookupKey != null && displayName != null) {
+                    contactName = displayName
+                    chatViewModel.linkSystemContact(contactId, lookupKey, displayName)
+                }
+            }
+        }
+    }
 
     Scaffold(
         containerColor = Color.Black,
@@ -1807,19 +3509,13 @@ fun ChatInfoScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(60.dp)
-                            .background(Color(0xFF2C2C2E), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = (conversation?.contact?.alias ?: contactId.takeLast(8)).take(2).uppercase(),
-                            color = KaspaTeal,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
-                        )
-                    }
+                    ContactAvatar(
+                        imageUrl = knsProfile?.profile?.avatarUrl,
+                        fallbackText = conversation?.contact?.alias ?: contactId.takeLast(8),
+                        size = 60.dp,
+                        backgroundColor = Color(0xFF2C2C2E),
+                        fontSize = 20.sp
+                    )
                     Spacer(Modifier.width(16.dp))
                     Column {
                         TextField(
@@ -1908,6 +3604,49 @@ fun ChatInfoScreen(
                 }
             }
 
+            SettingsSection(title = "System Contact") {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    if (systemContactId != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Linked", color = Color.White)
+                            Text(systemContactName ?: "", color = Color.Gray)
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                        Spacer(Modifier.height(12.dp))
+                    } else {
+                        Text("Not linked", color = Color.Gray)
+                        Spacer(Modifier.height(12.dp))
+                    }
+
+                    Row(
+                        modifier = Modifier.clickable { pickContactLauncher.launch(null) },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.PersonAddAlt1, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Link from Contacts", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                    }
+
+                    if (systemContactId != null) {
+                        Spacer(Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.clickable { chatViewModel.unlinkSystemContact(contactId) },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.RemoveCircleOutline, null, tint = Color(0xFFFF3B30), modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Unlink", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            if (showContactBalance) {
             SettingsSection(title = "Balance") {
                 Row(
                     modifier = Modifier.padding(16.dp).fillMaxWidth(),
@@ -1920,17 +3659,91 @@ fun ChatInfoScreen(
                     }
                 }
             }
+            }
 
-            SettingsSection(title = "System Contact") {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Not linked", color = Color.Gray)
-                    Spacer(Modifier.height(12.dp))
-                    HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
-                    Spacer(Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.PersonAddAlt1, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Link from Contacts", color = KaspaTeal, fontWeight = FontWeight.Bold)
+            val knsFields = knsProfile?.profile
+            val hasKnsProfile = knsFields != null && listOf(
+                knsFields.bio, knsFields.x, knsFields.website, knsFields.telegram,
+                knsFields.discord, knsFields.contactEmail, knsFields.github
+            ).any { !it.isNullOrBlank() }
+
+            if (hasKnsProfile) {
+                SettingsSection(title = "KNS Profile") {
+                    val context = LocalContext.current
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        knsFields?.bio?.takeIf { it.isNotBlank() }?.let { bio ->
+                            Text(
+                                text = bio,
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.clickable { clipboardManager.setText(AnnotatedString(bio)) }
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                            Spacer(Modifier.height(12.dp))
+                        }
+
+                        val socialLinks = listOfNotNull(
+                            knsFields?.x?.takeIf { it.isNotBlank() }?.let { "X" to it },
+                            knsFields?.website?.takeIf { it.isNotBlank() }?.let { "Website" to it },
+                            knsFields?.telegram?.takeIf { it.isNotBlank() }?.let { "Telegram" to it },
+                            knsFields?.discord?.takeIf { it.isNotBlank() }?.let { "Discord" to it },
+                            knsFields?.contactEmail?.takeIf { it.isNotBlank() }?.let { "Email" to it },
+                            knsFields?.github?.takeIf { it.isNotBlank() }?.let { "GitHub" to it }
+                        )
+                        socialLinks.forEachIndexed { index, (label, value) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val url = if (value.startsWith("http")) value else "https://$value"
+                                        try {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                        } catch (e: Exception) { /* no browser available */ }
+                                    }
+                                    .padding(vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(label, color = Color.Gray, style = MaterialTheme.typography.bodyMedium)
+                                Text(value, color = KaspaTeal, style = MaterialTheme.typography.bodyMedium)
+                            }
+                            if (index < socialLinks.lastIndex) {
+                                HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                            }
+                        }
+                    }
+                }
+            }
+
+            val ownedDomains = knsProfile?.ownedDomains.orEmpty()
+            if (ownedDomains.isNotEmpty()) {
+                SettingsSection(title = "KNS Domains") {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        ownedDomains.forEachIndexed { index, domain ->
+                            val isSelected = domain == knsProfile?.selectedDomain
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { chatViewModel.selectKnsDomain(contactId, domain) }
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(domain, color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                                if (isSelected) {
+                                    Box(
+                                        modifier = Modifier
+                                            .background(KaspaTeal.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("Selected", color = KaspaTeal, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                            if (index < ownedDomains.lastIndex) {
+                                HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                            }
+                        }
                     }
                 }
             }

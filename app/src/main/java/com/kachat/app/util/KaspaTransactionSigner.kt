@@ -43,6 +43,34 @@ object KaspaTransactionSigner {
         return rawTx.copy(inputs = signedInputs)
     }
 
+    /**
+     * Signs a KNS reveal transaction's single input, which spends a P2SH commit output. The
+     * sighash still hashes the commit output's real scriptPublicKey (the P2SH hash-script) — same
+     * as [signTransaction] — the redeem script is never part of the sighash, only of the
+     * signature script that reveals it. Verified against the iOS reference's
+     * `signKNSRevealTransaction` (`KaChatTransactionBuilder.swift:1088-1131`).
+     */
+    fun signRevealInput(
+        rawTx: RawTransaction,
+        commitUtxo: UtxoEntry,
+        redeemScript: ByteArray,
+        privateKey: ByteArray
+    ): RawTransaction {
+        val hash = calculateSighash(rawTx, 0, commitUtxo.utxoEntry.amount, commitUtxo.utxoEntry.scriptPublicKey.scriptPublicKey)
+        val signature = Schnorr.sign(hash, privateKey) // 64 bytes
+
+        // signatureScript = push(sig+sighashType) || canonicalPush(redeemScript)
+        val redeemPush = KnsInscriptionScript.canonicalPush(redeemScript)
+        val sigScript = ByteArray(66 + redeemPush.size)
+        sigScript[0] = 0x41
+        signature.copyInto(sigScript, 1)
+        sigScript[65] = 0x01
+        redeemPush.copyInto(sigScript, 66)
+
+        val signedInput = rawTx.inputs[0].copy(signatureScript = sigScript.toHexString())
+        return rawTx.copy(inputs = listOf(signedInput))
+    }
+
     private fun keyedBlake2b(data: ByteArray): ByteArray {
         val digest = Blake2bDigest(SIGNING_KEY, 32, null, null)
         digest.update(data, 0, data.size)

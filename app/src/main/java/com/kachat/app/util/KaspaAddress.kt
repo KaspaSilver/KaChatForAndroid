@@ -73,25 +73,23 @@ object KaspaAddress {
      */
     fun getScriptPublicKey(address: String): String {
         val (version, payload) = decode(address)
-        // Kaspa script: <payload_length> <payload> <opcode_checks_sig>
-        // For version 0 (Schnorr): 20 <payload_hex> ac
-        // For version 1 (ECDSA): 21 <payload_hex> ab
-        
         val payloadHex = payload.joinToString("") { "%02x".format(it) }
-        
-        val prefix = when (version.toInt()) {
-            0 -> "20"
-            1 -> "21"
-            8 -> "aa" // P2SH
+
+        return when (version.toInt()) {
+            // Version 0 (Schnorr): <push-32> <32-byte pubkey> OP_CHECKSIG. The push opcode
+            // (0x20 = "push the next 32 bytes") doubles as the length byte here since it's a
+            // direct push (opcodes 0x01-0x4b directly encode their own byte count).
+            0 -> "20" + payloadHex + "ac"
+            // Version 1 (ECDSA): <push-33> <33-byte pubkey> OP_CHECKSIG(ECDSA)
+            1 -> "21" + payloadHex + "ab"
+            // Version 8 (P2SH): OP_BLAKE2B <push-N> <N-byte script hash> OP_EQUAL — unlike the
+            // P2PK cases, OP_BLAKE2B (0xAA) is a real opcode, not a push, so the push-length byte
+            // must be explicit. Verified against the iOS reference's identical construction
+            // (`Bech32.swift`'s `scriptPublicKey(from:)`, `.scriptHash` case) — this was missing
+            // here and caused the network to reject every P2SH output as "non-standard script form".
+            8 -> "aa" + "%02x".format(payload.size) + payloadHex + "87"
             else -> throw IllegalArgumentException("Unsupported address version: $version")
         }
-        val suffix = when (version.toInt()) {
-            0 -> "ac"
-            1 -> "ab"
-            8 -> "87"
-            else -> ""
-        }
-        return prefix + payloadHex + suffix
     }
 
     private fun calculateChecksum(prefix: String, data: ByteArray): ByteArray {

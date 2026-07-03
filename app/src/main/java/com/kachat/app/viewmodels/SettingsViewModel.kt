@@ -30,8 +30,18 @@ class SettingsViewModel @Inject constructor(
     val kaspaRestUrl = settings.kaspaRestUrl
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettingsRepository.DEFAULT_KASPA_REST_URL)
 
+    val notificationsEnabled = settings.notificationsEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val notificationSoundEnabled = settings.notificationSoundEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val notificationVibrationEnabled = settings.notificationVibrationEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
     fun saveNetwork(value: String) = viewModelScope.launch { settings.setNetwork(value) }
     fun saveIndexerUrl(value: String) = viewModelScope.launch { settings.setIndexerUrl(value) }
     fun saveKnsApiUrl(value: String) = viewModelScope.launch { settings.setKnsApiUrl(value) }
     fun saveKaspaRestUrl(value: String) = viewModelScope.launch { settings.setKaspaRestUrl(value) }
+    fun setNotificationsEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationsEnabled(value) }
+    fun setNotificationSoundEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationSoundEnabled(value) }
+    fun setNotificationVibrationEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationVibrationEnabled(value) }
 }

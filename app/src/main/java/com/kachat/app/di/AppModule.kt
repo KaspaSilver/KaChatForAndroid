@@ -1,6 +1,7 @@
 package com.kachat.app.di
 
 import android.content.Context
+import com.kachat.app.BuildConfig
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
@@ -77,7 +78,11 @@ object AppModule {
             .writeTimeout(15, TimeUnit.SECONDS)
             .addInterceptor(
                 HttpLoggingInterceptor().apply {
-                    level = HttpLoggingInterceptor.Level.BODY
+                    // Request/response bodies include encrypted message payloads and signed
+                    // transaction data — full body logging is only useful for local debugging
+                    // and must never ship in a release build (logcat is readable by anything
+                    // with log access on a rooted device, or captured in bug reports).
+                    level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE
                 }
             )
             .build()

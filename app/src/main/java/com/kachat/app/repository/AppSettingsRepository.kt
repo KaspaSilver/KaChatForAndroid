@@ -4,7 +4,10 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.google.gson.Gson
+import com.kachat.app.models.PendingKnsCommit
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
@@ -30,8 +33,8 @@ class AppSettingsRepository @Inject constructor(
 
         // Defaults matching the iOS app
         const val DEFAULT_NETWORK        = "mainnet"
-        const val DEFAULT_INDEXER_URL    = "https://api.kasia.io"
-        const val DEFAULT_KNS_API_URL    = "https://api.kns.kaspa.org"
+        const val DEFAULT_INDEXER_URL    = "https://indexer.kasia.fyi"
+        const val DEFAULT_KNS_API_URL    = "https://api.knsdomains.org/mainnet/api/v1"
         const val DEFAULT_KASPA_REST_URL = "https://api.kaspa.org"
 
         // Wallet (just a flag — actual keys live in Keystore)
@@ -39,6 +42,26 @@ class AppSettingsRepository @Inject constructor(
         val KEY_ACTIVE_ADDRESS   = stringPreferencesKey("active_address")
         
         val KEY_ESTIMATE_FEES    = booleanPreferencesKey("estimate_fees")
+        val KEY_HIDE_AUTO_PAYMENT_CHATS = booleanPreferencesKey("hide_auto_payment_chats")
+        val KEY_SHOW_CONTACT_BALANCE = booleanPreferencesKey("show_contact_balance")
+
+        // Notifications — mirrors iOS's notificationMode/sound/vibration settings, minus
+        // the remote-push mode (there's no FCM/APNs-equivalent registration wired up yet,
+        // see NotificationHelper — only local notifications while the app process is alive).
+        val KEY_NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
+        val KEY_NOTIFICATION_SOUND    = booleanPreferencesKey("notification_sound_enabled")
+        val KEY_NOTIFICATION_VIBRATION = booleanPreferencesKey("notification_vibration_enabled")
+
+        // System contacts sync — matches iOS's "Sync system contacts"/"Autocreate system contacts".
+        val KEY_SYNC_SYSTEM_CONTACTS = booleanPreferencesKey("sync_system_contacts")
+        val KEY_AUTOCREATE_SYSTEM_CONTACTS = booleanPreferencesKey("autocreate_system_contacts")
+
+        // A single in-flight KNS commit awaiting its reveal — see PendingKnsCommit.
+        val KEY_PENDING_KNS_COMMIT = stringPreferencesKey("pending_kns_commit")
+
+        // Google Drive chat-history backup — off by default, unlike iOS's iCloud sync.
+        val KEY_GOOGLE_BACKUP_ENABLED = booleanPreferencesKey("google_backup_enabled")
+        val KEY_BACKUP_RETENTION = stringPreferencesKey("backup_retention")
     }
 
     // -------------------------------------------------------------------------
@@ -73,6 +96,63 @@ class AppSettingsRepository @Inject constructor(
         it[KEY_ESTIMATE_FEES] ?: true
     }
 
+    val hideAutoCreatedPaymentChats: Flow<Boolean> = dataStore.data.map {
+        it[KEY_HIDE_AUTO_PAYMENT_CHATS] ?: false
+    }
+
+    val showContactBalance: Flow<Boolean> = dataStore.data.map {
+        it[KEY_SHOW_CONTACT_BALANCE] ?: true
+    }
+
+    val notificationsEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_NOTIFICATIONS_ENABLED] ?: true
+    }
+
+    val notificationSoundEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_NOTIFICATION_SOUND] ?: true
+    }
+
+    val notificationVibrationEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_NOTIFICATION_VIBRATION] ?: true
+    }
+
+    val syncSystemContactsEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_SYNC_SYSTEM_CONTACTS] ?: false
+    }
+
+    val autoCreateSystemContactsEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_AUTOCREATE_SYSTEM_CONTACTS] ?: false
+    }
+
+    /** Off by default — the user must explicitly turn this on, unlike iOS's iCloud sync. */
+    val googleBackupEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_GOOGLE_BACKUP_ENABLED] ?: false
+    }
+
+    val backupRetention: Flow<com.kachat.app.models.BackupRetention> = dataStore.data.map {
+        com.kachat.app.models.BackupRetention.fromName(it[KEY_BACKUP_RETENTION])
+    }
+
+    val pendingKnsCommit: Flow<PendingKnsCommit?> = dataStore.data.map { prefs ->
+        prefs[KEY_PENDING_KNS_COMMIT]?.let { json ->
+            try {
+                Gson().fromJson(json, PendingKnsCommit::class.java)
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    /**
+     * The first moment payment-sync ever ran for this wallet address, so historical
+     * payments from before the user started using KaChat never turn into auto-created
+     * chats — only payments received after that moment do. Keyed per-address since a
+     * device can hold multiple saved accounts, each with its own real payment history.
+     */
+    fun paymentSyncBaseline(address: String): Flow<Long?> = dataStore.data.map {
+        it[paymentSyncBaselineKey(address)]
+    }
+
     // -------------------------------------------------------------------------
     // Write helpers (suspend — call from coroutine / ViewModel)
     // -------------------------------------------------------------------------
@@ -84,4 +164,18 @@ class AppSettingsRepository @Inject constructor(
     suspend fun setHasWallet(value: Boolean) = dataStore.edit { it[KEY_HAS_WALLET] = value }
     suspend fun setActiveAddress(value: String) = dataStore.edit { it[KEY_ACTIVE_ADDRESS] = value }
     suspend fun setEstimateFees(value: Boolean) = dataStore.edit { it[KEY_ESTIMATE_FEES] = value }
+    suspend fun setHideAutoCreatedPaymentChats(value: Boolean) = dataStore.edit { it[KEY_HIDE_AUTO_PAYMENT_CHATS] = value }
+    suspend fun setShowContactBalance(value: Boolean) = dataStore.edit { it[KEY_SHOW_CONTACT_BALANCE] = value }
+    suspend fun setNotificationsEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATIONS_ENABLED] = value }
+    suspend fun setNotificationSoundEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATION_SOUND] = value }
+    suspend fun setNotificationVibrationEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATION_VIBRATION] = value }
+    suspend fun setSyncSystemContactsEnabled(value: Boolean) = dataStore.edit { it[KEY_SYNC_SYSTEM_CONTACTS] = value }
+    suspend fun setGoogleBackupEnabled(value: Boolean) = dataStore.edit { it[KEY_GOOGLE_BACKUP_ENABLED] = value }
+    suspend fun setBackupRetention(value: com.kachat.app.models.BackupRetention) = dataStore.edit { it[KEY_BACKUP_RETENTION] = value.name }
+    suspend fun setAutoCreateSystemContactsEnabled(value: Boolean) = dataStore.edit { it[KEY_AUTOCREATE_SYSTEM_CONTACTS] = value }
+    suspend fun setPendingKnsCommit(commit: PendingKnsCommit) = dataStore.edit { it[KEY_PENDING_KNS_COMMIT] = Gson().toJson(commit) }
+    suspend fun clearPendingKnsCommit() = dataStore.edit { it.remove(KEY_PENDING_KNS_COMMIT) }
+    suspend fun setPaymentSyncBaseline(address: String, value: Long) = dataStore.edit { it[paymentSyncBaselineKey(address)] = value }
+
+    private fun paymentSyncBaselineKey(address: String) = longPreferencesKey("payment_sync_baseline_$address")
 }

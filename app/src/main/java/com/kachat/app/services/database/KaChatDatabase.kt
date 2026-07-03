@@ -17,7 +17,7 @@ import com.kachat.app.models.MessageEntity
         MessageEntity::class,
         ContactEntity::class,
     ],
-    version = 2,
+    version = 9,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {

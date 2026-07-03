@@ -31,4 +31,9 @@
     <!-- Errors -->
     <string name="error_network">Network error. Please try again.</string>
     <string name="error_decryption">Could not decrypt message.</string>
+
+    <!-- Google Drive backup — OAuth 2.0 "Web application" client ID from Google Cloud Console.
+         This is intentionally NOT the Android client ID; Credential Manager's Google Sign-In
+         flow requires the Web client ID as the token audience even for an Android app. -->
+    <string name="google_oauth_web_client_id" translatable="false">1037094663882-r4k15589u3avbvaf98447b28d0434k1e.apps.googleusercontent.com</string>
 </resources>

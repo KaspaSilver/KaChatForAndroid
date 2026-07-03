@@ -1,8 +1,12 @@
 package com.kachat.app.services
 
-import retrofit2.http.GET
-import retrofit2.http.POST
+import com.google.gson.annotations.SerializedName
+import okhttp3.MultipartBody
 import retrofit2.http.Body
+import retrofit2.http.GET
+import retrofit2.http.Multipart
+import retrofit2.http.POST
+import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -16,22 +20,29 @@ data class BalanceResponse(
     val balance: Long   // in sompi (1 KAS = 100_000_000 sompi)
 )
 
+// Field names verified live against api.kaspa.org's real response (snake_case) —
+// a bare Gson converter (no naming policy) needs explicit @SerializedName for these.
 data class TransactionResponse(
-    val transactionId: String,
+    @SerializedName("transaction_id") val transactionId: String,
     val inputs: List<TransactionInput>,
     val outputs: List<TransactionOutput>,
-    val blockTime: Long?,
+    @SerializedName("block_time") val blockTime: Long?,
     val payload: String?  // hex-encoded — contains ciph_msg:1:* for KaChat messages
 )
 
 data class TransactionInput(
-    val previousOutpoint: Outpoint,
-    val signatureScript: String
+    @SerializedName("previous_outpoint_hash") val previousOutpointHash: String,
+    @SerializedName("previous_outpoint_index") val previousOutpointIndex: Int,
+    // Only populated when the request passes resolve_previous_outpoints — the address
+    // that owned the spent UTXO, i.e. the real sender of this transaction.
+    @SerializedName("previous_outpoint_address") val previousOutpointAddress: String?,
+    @SerializedName("signature_script") val signatureScript: String
 )
 
 data class TransactionOutput(
     val amount: Long,
-    val scriptPublicKey: ScriptPublicKey
+    @SerializedName("script_public_key") val scriptPublicKey: String,
+    @SerializedName("script_public_key_address") val scriptPublicKeyAddress: String?
 )
 
 data class Outpoint(
@@ -82,7 +93,8 @@ interface KaspaRestApi {
     suspend fun getTransactions(
         @Path("address") address: String,
         @Query("limit") limit: Int = 50,
-        @Query("offset") offset: Int = 0
+        @Query("offset") offset: Int = 0,
+        @Query("resolve_previous_outpoints") resolvePreviousOutpoints: String = "light"
     ): List<TransactionResponse>
 
     @POST("transactions")
@@ -94,10 +106,17 @@ interface KaspaRestApi {
     suspend fun getFeeEstimate(): FeeEstimateResponse
 }
 
+// Real shape confirmed against api.kaspa.org (matches rusty-kaspa's FeerateEstimate JSON):
+// {"priorityBucket":{"feerate":100,"estimatedSeconds":...},"normalBuckets":[...],"lowBuckets":[...]}
 data class FeeEstimateResponse(
-    val priorityBucket: Double,
-    val normalBucket: Double,
-    val lowBucket: Double
+    val priorityBucket: FeeBucket,
+    val normalBuckets: List<FeeBucket>,
+    val lowBuckets: List<FeeBucket>
+)
+
+data class FeeBucket(
+    val feerate: Double,
+    val estimatedSeconds: Double
 )
 
 data class PostTransactionRequest(
@@ -141,37 +160,240 @@ data class PostTransactionResponse(
 )
 
 // -------------------------------------------------------------------------
-// Retrofit interface — Kasia Indexer API
-// Phase 3 will add POST for sending messages and registering push addresses
+// Retrofit interface — Kasia Indexer API (indexer.kasia.fyi)
+// Verified against the real indexer response shape and the Kasia web client's
+// actual query usage — payments/self-stash/bcast endpoints are out of scope
+// for now, only handshake + contextual-message (comm) receive is implemented.
 // -------------------------------------------------------------------------
 
 interface KasiaIndexerApi {
 
-    @GET("messages/{address}")
-    suspend fun getMessages(
-        @Path("address") address: String,
-        @Query("after_block") afterBlock: Long? = null
-    ): List<TransactionResponse>
+    @GET("handshakes/by-receiver")
+    suspend fun getHandshakesByReceiver(
+        @Query("address") address: String,
+        @Query("limit") limit: Int = 50
+    ): List<HandshakeIndexerResponse>
+
+    /** [aliasHex] is the SENDER's own alias (from their handshake), UTF-8-encoded then hex-encoded. */
+    @GET("contextual-messages/by-sender")
+    suspend fun getContextualMessagesBySender(
+        @Query("address") address: String,
+        @Query("alias") aliasHex: String,
+        @Query("limit") limit: Int = 50
+    ): List<ContextualMessageIndexerResponse>
 }
 
+data class HandshakeIndexerResponse(
+    @SerializedName("tx_id") val txId: String,
+    val sender: String,
+    val receiver: String,
+    @SerializedName("block_time") val blockTime: Long,
+    @SerializedName("message_payload") val messagePayload: String
+)
+
+data class ContextualMessageIndexerResponse(
+    @SerializedName("tx_id") val txId: String,
+    val sender: String,
+    val alias: String? = null,
+    @SerializedName("block_time") val blockTime: Long,
+    @SerializedName("message_payload") val messagePayload: String
+)
+
 // -------------------------------------------------------------------------
-// Retrofit interface — KNS API
+// Retrofit interface — KNS (Kaspa Name Service) API, api.knsdomains.org
+// Verified live against the real API — {success, data, message?, error?}
+// envelope, 404 for "not found" (a domain with no owner, or an address with
+// no primary name set), not an error condition.
 // -------------------------------------------------------------------------
 
-data class KnsResolveResponse(
-    val address: String?,
-    val name: String?
+data class KnsOwnerResponse(
+    val success: Boolean,
+    val data: KnsOwnerData?,
+    val message: String? = null,
+    val error: String? = null
+)
+
+data class KnsOwnerData(
+    val id: String?,
+    val assetId: String?,
+    val asset: String?,
+    val owner: String?
+)
+
+data class KnsPrimaryNameResponse(
+    val success: Boolean,
+    val data: KnsPrimaryNameData?,
+    val message: String? = null,
+    val error: String? = null
+)
+
+data class KnsPrimaryNameData(
+    val ownerAddress: String?,
+    val domain: KnsDomainInfo?
+)
+
+data class KnsDomainInfo(
+    val fullName: String?
+)
+
+data class KnsAssetsResponse(
+    val success: Boolean,
+    val data: KnsAssetsData?,
+    val message: String? = null,
+    val error: String? = null
+)
+
+data class KnsAssetsData(
+    val assets: List<KnsAsset>?
+)
+
+data class KnsAsset(
+    val assetId: String?,
+    val asset: String?,
+    val owner: String?,
+    val isDomain: Boolean?,
+    val isVerifiedDomain: Boolean?,
+    val creationBlockTime: String?
+)
+
+data class KnsProfileResponse(
+    val success: Boolean,
+    val data: KnsProfileData?,
+    val message: String? = null,
+    val error: String? = null
+)
+
+data class KnsProfileData(
+    val assetId: String?,
+    val name: String?,
+    val profile: KnsProfileFields?
+)
+
+data class KnsProfileFields(
+    val bio: String?,
+    val avatarUrl: String?,
+    val x: String?,
+    val website: String?,
+    val telegram: String?,
+    val discord: String?,
+    val contactEmail: String?,
+    val github: String?,
+    val redirectUrl: String? = null,
+    val bannerUrl: String? = null
 )
 
 interface KnsApi {
 
-    @GET("names/{domain}/address")
-    suspend fun resolveName(
+    /** Forward resolution: "alice.kas" -> owning Kaspa address. */
+    @GET("{domain}/owner")
+    suspend fun resolveDomain(
         @Path("domain") domain: String
-    ): KnsResolveResponse
+    ): KnsOwnerResponse
 
-    @GET("addresses/{address}/names")
-    suspend fun reverseResolve(
+    /** Reverse resolution: Kaspa address -> its primary KNS domain, for contact display. */
+    @GET("primary-name/{address}")
+    suspend fun getPrimaryName(
         @Path("address") address: String
-    ): KnsResolveResponse
+    ): KnsPrimaryNameResponse
+
+    /** All verified domains an address owns — a contact may have more than one. */
+    @GET("assets")
+    suspend fun getAssetsByOwner(
+        @Query("owner") owner: String,
+        @Query("type") type: String = "domain",
+        @Query("pageSize") pageSize: Int = 100
+    ): KnsAssetsResponse
+
+    /** Avatar/bio/social-links profile attached to a specific owned domain. */
+    @GET("domain/{assetId}/profile")
+    suspend fun getDomainProfile(
+        @Path("assetId") assetId: String
+    ): KnsProfileResponse
+
+    /** Inscription fee tiers in KAS, keyed by label length 1-5 (5 means "5+ characters"). */
+    @GET("fee")
+    suspend fun getInscribeFee(): KnsFeeResponse
+
+    /** Checks whether a domain is available to register. */
+    @POST("domains/check")
+    suspend fun checkDomainAvailability(
+        @Body request: KnsDomainCheckRequest
+    ): KnsDomainCheckResponse
+
+    /** Uploads a profile avatar/banner image, authenticated by a wallet-signed message rather than the image data itself. */
+    @Multipart
+    @POST("upload/image")
+    suspend fun uploadImage(
+        @Part("signMessage") signMessage: okhttp3.RequestBody,
+        @Part("signature") signature: okhttp3.RequestBody,
+        @Part image: MultipartBody.Part
+    ): KnsImageUploadResponse
+
+    /** Marks one of the wallet's owned domains as its primary (reverse-resolution) name — off-chain, authenticated by a wallet-signed message, no on-chain transaction. */
+    @POST("domain/primary-name")
+    suspend fun setPrimaryDomain(
+        @Body request: KnsSetPrimaryNameRequest
+    ): KnsBasicResponse
 }
+
+data class KnsFeeResponse(
+    val success: Boolean,
+    val data: KnsFeeData?,
+    val message: String? = null,
+    val error: String? = null
+)
+
+data class KnsFeeData(
+    val fee: Map<String, Double>?
+)
+
+data class KnsDomainCheckRequest(
+    val address: String,
+    val domainNames: List<String>
+)
+
+data class KnsDomainCheckResponse(
+    val success: Boolean,
+    val data: KnsDomainCheckData?,
+    val message: String? = null,
+    val error: String? = null
+)
+
+data class KnsDomainCheckData(
+    val domains: List<KnsDomainCheckEntry>?
+)
+
+data class KnsDomainCheckEntry(
+    val domain: String,
+    val available: Boolean,
+    val isReservedDomain: Boolean = false
+)
+
+// Real shape confirmed against api.knsdomains.org/upload/image — doubly-nested, and the URL
+// field is "imageUrl", not the "resolvedImageURL" iOS's own decoded model happens to call it:
+// {"success":true,"data":{"success":true,"message":"...","data":{"imageUrl":"https://...","assetId":"...","uploadType":"avatar","fileSize":150059,"mimeType":"image/png"}}}
+data class KnsImageUploadResponse(
+    val success: Boolean,
+    val data: KnsImageUploadOuterData?,
+    val message: String? = null,
+    val error: String? = null
+)
+
+data class KnsImageUploadOuterData(
+    val success: Boolean,
+    val message: String? = null,
+    val data: KnsImageUploadInnerData?
+)
+
+data class KnsImageUploadInnerData(
+    val imageUrl: String?
+)
+
+/** {signMessage, signature} — POSTs the signed message string itself plus the signature, matching iOS's KNSSetPrimaryNameRequest exactly. */
+data class KnsSetPrimaryNameRequest(val signMessage: String, val signature: String)
+
+data class KnsBasicResponse(
+    val success: Boolean,
+    val message: String? = null,
+    val error: String? = null
+)
