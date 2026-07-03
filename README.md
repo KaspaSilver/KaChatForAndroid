@@ -1,120 +1,43 @@
-# KaChat Android
+# KaChat
 
-Android port of [KaChat iOS](https://github.com/vsmirn0v/KaChat) — encrypted peer-to-peer messaging and payments on the Kaspa blockchain.
+KaChat is an encrypted, peer-to-peer messaging app built directly on the Kaspa blockchain. There
+are no servers, no accounts, and no phone numbers — your identity is your Kaspa wallet, and every
+message is end-to-end encrypted and sent as a transaction on-chain. You can chat and send KAS
+payments to anyone from the same app.
 
-**Language:** Kotlin  
-**UI:** Jetpack Compose + Material 3  
-**Min SDK:** 26 (Android 8.0)  
-**Architecture:** MVVM + Repository, Hilt DI
+This is the Android version, a companion to [KaChat on iOS](https://github.com/vsmirn0v/KaChat).
 
----
+## Features
 
-## Phase Status
+- End-to-end encrypted messaging — no central server, nothing to trust but the blockchain
+- Send and receive KAS payments right inside a chat
+- Voice messages
+- KNS domain names (send to a human-readable name instead of a raw address)
+- Multiple wallet accounts on one device
+- Optional, off-by-default backup of your chat history to your own Google Drive
+- QR code scanning for addresses and contacts
 
-| Phase | Description                      | Status      |
-|-------|----------------------------------|-------------|
-| 1     | Project scaffold & navigation    | ✅ Complete  |
-| 2     | Wallet & crypto core             | ✅ Complete  |
-| 3     | Networking layer (REST + gRPC)   | 🚧 In Progress |
-| 4     | Messaging core (ciph_msg)        | 🔲 Planned   |
-| 5     | Chat UI                          | 🔲 Planned   |
-| 6     | Voice messages                   | 🔲 Planned   |
-| 7     | Push notifications (FCM)         | 🔲 Planned   |
-| 8     | Multi-device sync                | 🔲 Planned   |
-| 9     | Polish & Play Store release      | 🔲 Planned   |
+## Download
 
----
+1. Go to the [Releases page](../../releases) and download the latest `.apk` file.
+2. On your Android phone, open the downloaded file. If you're prompted to allow installing from
+   this source, allow it — this is expected for an app installed outside the Play Store.
+3. Open KaChat and either create a new wallet or import an existing one with your seed phrase.
 
-## Project Structure
+Your seed phrase is the only way to recover your wallet — write it down and keep it somewhere
+safe. Nobody, including the developers, can recover it for you if it's lost.
 
-```
-app/src/main/java/com/kachat/app/
-├── KaChatApplication.kt       # Hilt application class
-├── MainActivity.kt            # Single activity
-├── ui/
-│   ├── KaChatApp.kt           # Root composable + navigation
-│   ├── theme/
-│   │   ├── Theme.kt           # Material 3 color scheme (Kaspa brand)
-│   │   └── Typography.kt
-│   └── screens/
-│       ├── OnboardingScreen.kt
-│       ├── ChatsScreen.kt
-│       └── Screens.kt         # ChatThread, Contacts, Wallet, Settings
-├── viewmodels/
-│   └── SettingsViewModel.kt
-├── services/
-│   ├── WalletManager.kt       # Keystore-backed key management
-│   ├── KaspaApiClient.kt      # Retrofit API interfaces
-│   └── database/
-│       └── KaChatDatabase.kt  # Room database
-├── repository/
-│   └── AppSettingsRepository.kt  # DataStore wrapper
-├── models/
-│   └── Models.kt              # Room entities + in-memory models
-├── di/
-│   └── AppModule.kt           # Hilt DI providers
-└── util/
-    └── MessageProtocol.kt     # ciph_msg encode/decode
-```
-
----
-
-## Getting Started
-
-### Prerequisites
-- Android Studio Ladybug (2024.2) or newer
-- JDK 17
-- Android SDK 35
-
-### Build
+## Building from source
 
 ```bash
-# Open in Android Studio
-# OR build from command line:
-
+git clone https://github.com/KaspaSilver/KaChatForAndroid.git
+cd KaChatForAndroid
 ./gradlew assembleDebug
-
-# Run tests
-./gradlew test
-
-# Install on connected device
-./gradlew installDebug
 ```
 
-### First Run
-The app will show the **onboarding screen** since no wallet exists yet.  
-Wallet creation is implemented in Phase 2.  
-To skip onboarding during UI development, set `hasWallet = true` in `KaChatApp.kt`.
+Requires JDK 17 and the Android SDK (compileSdk 35). The resulting APK is at
+`app/build/outputs/apk/debug/app-debug.apk`.
 
----
+## Support
 
-## Architecture Notes
-
-### iOS → Android mapping
-
-| iOS                        | Android                        |
-|----------------------------|--------------------------------|
-| SwiftUI                    | Jetpack Compose                |
-| `@EnvironmentObject`       | Hilt `@Inject` + ViewModel     |
-| Core Data + CloudKit       | Room + (Phase 8: Drive/Firebase) |
-| Secure Enclave             | Android Keystore (TEE/StrongBox) |
-| UserDefaults               | DataStore Preferences          |
-| URLSession                 | Retrofit + OkHttp              |
-| gRPC Swift                 | grpc-kotlin                    |
-| `*.lproj` localization     | `res/values-*/strings.xml`     |
-
-### Key design decisions
-- **Single Activity** — all screens are Compose composables, navigation via NavHost
-- **Hilt** for DI — mirrors the `@EnvironmentObject` singleton pattern from iOS
-- **Room** for local storage — entities mirror iOS Core Data models
-- **DataStore** for settings — typed, coroutine-friendly, replaces SharedPreferences
-- **Android Keystore** for key security — hardware-backed, equivalent to Secure Enclave
-
----
-
-## Protocol Reference
-
-See the iOS repo for protocol documentation:
-- [MESSAGING.md](https://github.com/vsmirn0v/KaChat/blob/main/MESSAGING.md) — ciph_msg protocol
-- [POOLS_v2.md](https://github.com/vsmirn0v/KaChat/blob/main/POOLS_v2.md) — node pool architecture
-- [PUSH_NOTIFICATIONS.md](https://github.com/vsmirn0v/KaChat/blob/main/PUSH_NOTIFICATIONS.md) — push design
+Questions or issues: [kaspasilver@gmail.com](mailto:kaspasilver@gmail.com)
