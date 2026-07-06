@@ -142,10 +142,15 @@ class NodePoolManager @Inject constructor() {
     }
 
     private suspend fun probeCycle() {
-        // Only bother resolving while the pool actually looks unhealthy — once enough nodes are
-        // reachable there's no need to keep querying DNS.
-        val healthyCount = registry.snapshot().count { registry.statusOf(it) != "Quarantined" }
-        if (healthyCount < 3) {
+        // Gated on truly *Active* count, not just "not yet Quarantined" — a fresh/unprobed seed
+        // starts out "Suspect" rather than Quarantined, so gating on non-Quarantined meant this
+        // never fired until the hardcoded seeds above had each racked up 3 full failed cycles
+        // (~90s) to formally flip to Quarantined. If those seeds are all actually dead (as they
+        // periodically seem to go), that's 90 seconds of zero connectivity on every fresh launch
+        // before the DNS fallback ever got a chance to run. Checking Active directly means this
+        // fires on the very first cycle whenever there isn't already a healthy pool.
+        val activeCount = registry.snapshot().count { registry.statusOf(it) == "Active" }
+        if (activeCount < 3) {
             resolveDnsSeedsIfNeeded()
         }
 
