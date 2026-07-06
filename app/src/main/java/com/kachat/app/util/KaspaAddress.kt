@@ -92,6 +92,26 @@ object KaspaAddress {
         }
     }
 
+    /**
+     * Inverse of [getScriptPublicKey]'s version-0 (Schnorr) case: recovers the address from a raw
+     * scriptPublicKey hex string of the standard `<push-32><32-byte pubkey>OP_CHECKSIG` form.
+     * Used to resolve a broadcast message's sender — a broadcast is a self-stash transaction, so
+     * its own output's scriptPublicKey directly encodes the sender's address. Returns null for
+     * anything else (ECDSA/P2SH outputs, or malformed scripts) — broadcast senders are expected to
+     * use ordinary Schnorr addresses like any other KaChat/Kasia wallet.
+     */
+    fun addressFromScriptPublicKey(scriptPublicKeyHex: String, prefix: String = "kaspa"): String? {
+        if (scriptPublicKeyHex.length != 68) return null // "20" + 64 hex chars + "ac" = 68
+        if (!scriptPublicKeyHex.startsWith("20") || !scriptPublicKeyHex.endsWith("ac")) return null
+        val pubKeyHex = scriptPublicKeyHex.substring(2, 66)
+        val pubKeyBytes = try {
+            pubKeyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        } catch (e: Exception) {
+            return null
+        }
+        return encode(prefix, 0x00, pubKeyBytes)
+    }
+
     private fun calculateChecksum(prefix: String, data: ByteArray): ByteArray {
         val expandedPrefix = expandPrefix(prefix)
         val polyInput = expandedPrefix + byteArrayOf(0) + data + ByteArray(8)

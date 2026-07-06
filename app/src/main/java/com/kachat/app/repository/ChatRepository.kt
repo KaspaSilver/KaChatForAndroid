@@ -20,6 +20,7 @@ import com.kachat.app.services.database.KaChatDatabase
 import com.kachat.app.util.KaspaAddress
 import com.kachat.app.util.KasiaCipher
 import com.kachat.app.util.MessageProtocol
+import com.kachat.app.util.MessageReply
 import com.kachat.app.util.VoiceMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -370,10 +371,16 @@ class ChatRepository @Inject constructor(
             )
         )
 
+        val replyContent = MessageReply.parseOrNull(plaintext)
+        val notificationText = when {
+            replyContent != null -> "Replied to \"${replyContent.replyToPreview}\""
+            VoiceMessage.parseOrNull(plaintext) != null -> "🎤 Audio message"
+            else -> plaintext
+        }
         notificationHelper.show(
             contactId = contact.id,
             title = contact.alias ?: contact.id.takeLast(8),
-            text = if (VoiceMessage.parseOrNull(plaintext) != null) "🎤 Audio message" else plaintext
+            text = notificationText
         )
     }
 

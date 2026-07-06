@@ -59,8 +59,25 @@ class NodePoolManager @Inject constructor() {
         "198.52.142.150:16110"
     )
 
+    // Same DNS seeders the iOS reference app (KaChat) uses — see NodeModels.swift's
+    // mainnetDNSSeeds. Each hostname resolves to multiple A records run by independent
+    // Kaspa community operators, so unlike the fixed IP list above this can recover on
+    // its own if some/all of those hardcoded IPs go stale or become unreachable.
+    private val dnsSeedHostnames = listOf(
+        "n.seeder1.kaspad.net",
+        "n.seeder2.kaspad.net",
+        "n.seeder3.kaspad.net",
+        "n.seeder4.kaspad.net",
+        "kaspadns.kaspacalc.net",
+        "n-mainnet.kaspa.ws",
+        "kaspa.aspectron.org"
+    )
+    private val dnsSeedPort = 16110
+
     private val manualEndpoints = mutableSetOf<String>()
     private val discoveredEndpoints = mutableSetOf<String>()
+    private val dnsResolvedEndpoints = mutableSetOf<String>()
+    private var lastDnsResolveAt = 0L
 
     // Real mainnet nodes' GetPeerAddresses responses can list dozens-to-hundreds of
     // peers, and with only 1/6 seeds typically fully "Active" the discovery trigger
@@ -68,6 +85,11 @@ class NodePoolManager @Inject constructor() {
     // persistent connection opened per address) grew unbounded and caused a real
     // OutOfMemoryError crash on-device after a few minutes of runtime.
     private val maxDiscoveredEndpoints = 20
+    private val maxDnsResolvedEndpoints = 20
+
+    // Don't re-resolve DNS on every unhealthy 30s probe cycle — a resolver failure/slowness
+    // shouldn't turn into a hot loop of lookups; matches iOS's periodic-not-per-cycle refresh.
+    private val dnsResolveCooldownMillis = 60_000L
 
     private var probeJob: Job? = null
 
@@ -89,8 +111,50 @@ class NodePoolManager @Inject constructor() {
     private fun connectionFor(address: String): KaspadConnection =
         connections.getOrPut(address) { KaspadConnection(address, scope).also { it.connect() } }
 
+    /**
+     * Resolves [dnsSeedHostnames] to IP addresses (mirrors iOS's NodeProfiler.refreshDNSSeeds) —
+     * the hardcoded [seeds] IPs above have no way to recover if they go stale/unreachable, so this
+     * gives the pool an independent way to find fresh nodes without an app update. Cooldown-gated
+     * so a run of unhealthy 30s probe cycles doesn't turn into a DNS-lookup hot loop.
+     */
+    private suspend fun resolveDnsSeedsIfNeeded() {
+        val now = System.currentTimeMillis()
+        if (now - lastDnsResolveAt < dnsResolveCooldownMillis) return
+        lastDnsResolveAt = now
+        for (hostname in dnsSeedHostnames) {
+            if (dnsResolvedEndpoints.size >= maxDnsResolvedEndpoints) break
+            try {
+                // IPv4 only, matching iOS's resolveDNSSeed (hints.ai_family = AF_INET) — an IPv6
+                // literal's own colons would collide with the ":port" suffix below, and
+                // KaspadConnection's plaintext gRPC target string isn't set up to bracket them.
+                java.net.InetAddress.getAllByName(hostname)
+                    .filterIsInstance<java.net.Inet4Address>()
+                    .forEach { addr ->
+                        if (dnsResolvedEndpoints.size < maxDnsResolvedEndpoints) {
+                            dnsResolvedEndpoints.add("${addr.hostAddress}:$dnsSeedPort")
+                        }
+                    }
+            } catch (e: Exception) {
+                // This seed's DNS lookup failed (resolver down, host unreachable, etc.) — try
+                // the rest; the cooldown above means all of them get retried again shortly.
+            }
+        }
+    }
+
     private suspend fun probeCycle() {
-        val addresses = (seeds + manualEndpoints + discoveredEndpoints).distinct()
+        // Gated on truly *Active* count, not just "not yet Quarantined" — a fresh/unprobed seed
+        // starts out "Suspect" rather than Quarantined, so gating on non-Quarantined meant this
+        // never fired until the hardcoded seeds above had each racked up 3 full failed cycles
+        // (~90s) to formally flip to Quarantined. If those seeds are all actually dead (as they
+        // periodically seem to go), that's 90 seconds of zero connectivity on every fresh launch
+        // before the DNS fallback ever got a chance to run. Checking Active directly means this
+        // fires on the very first cycle whenever there isn't already a healthy pool.
+        val activeCount = registry.snapshot().count { registry.statusOf(it) == "Active" }
+        if (activeCount < 3) {
+            resolveDnsSeedsIfNeeded()
+        }
+
+        val addresses = (seeds + manualEndpoints + discoveredEndpoints + dnsResolvedEndpoints).distinct()
 
         // Drop connections for addresses no longer tracked (e.g. after clearPool()).
         connections.keys.filter { it !in addresses }.forEach { addr -> connections.remove(addr)?.close() }
@@ -111,29 +175,40 @@ class NodePoolManager @Inject constructor() {
             val type = when {
                 seeds.contains(result.address) -> "Seed"
                 manualEndpoints.contains(result.address) -> "Manual"
+                dnsResolvedEndpoints.contains(result.address) -> "DNS"
                 else -> "Discovered"
             }
             registry.update(result.address, type, result)
         }
 
-        // Prune discovered nodes that have gone bad, freeing room for potentially
+        // Prune discovered/DNS-resolved nodes that have gone bad, freeing room for potentially
         // better ones and bounding long-term resource usage — never prune Seed/Manual,
         // those are always intentionally tracked regardless of health.
         registry.snapshot()
-            .filter { it.type == "Discovered" && registry.statusOf(it) == "Quarantined" }
+            .filter { (it.type == "Discovered" || it.type == "DNS") && registry.statusOf(it) == "Quarantined" }
             .forEach { record ->
                 discoveredEndpoints.remove(record.address)
+                dnsResolvedEndpoints.remove(record.address)
                 connections.remove(record.address)?.close()
                 registry.remove(record.address)
             }
 
-        // Discovery: only kick in while the pool is unhealthy, reusing an existing
-        // healthy connection rather than opening a new one just for this — the entire
-        // v1 discovery mechanism (no DNS seed resolution, no aggressive/conservative pacing).
+        // Peer-gossip discovery: only kick in while the pool is unhealthy, reusing an existing
+        // connection rather than opening a new one just for this — combined with DNS-seed
+        // resolution above, this is the full v1 discovery mechanism (no aggressive/conservative
+        // pacing beyond the cooldown/cap already in place).
+        //
+        // Bootstraps from the best *reachable* node (Active or Suspect), not just a fully
+        // "Active" one — GetPeerAddresses only needs a live gRPC response, not a fully synced
+        // node, and requiring Active here meant discovery could never get off the ground at
+        // all if every seed was reachable-but-unsynced (Suspect) rather than cleanly Active.
         val activeSeedCount = registry.snapshot()
             .count { seeds.contains(it.address) && registry.statusOf(it) == "Active" }
         if (activeSeedCount < 3 && discoveredEndpoints.size < maxDiscoveredEndpoints) {
-            val discoverFrom = registry.snapshot().firstOrNull { registry.statusOf(it) == "Active" }?.address
+            val discoverFrom = registry.snapshot()
+                .filter { registry.statusOf(it) != "Quarantined" }
+                .minByOrNull { it.lastProbe?.latencyMs ?: Long.MAX_VALUE }
+                ?.address
             val conn = discoverFrom?.let { connections[it] }
             if (conn != null) {
                 try {
@@ -175,8 +250,6 @@ class NodePoolManager @Inject constructor() {
             ip = record.address,
             type = record.type,
             latency = record.lastProbe?.latencyMs?.let { "${it}ms" } ?: "—",
-            distance = "Unknown", // no geolocation data source exists or is in scope — not fabricated
-            country = "Unknown",
             daaScore = record.lastProbe?.virtualDaaScore?.toString() ?: "N/A",
             status = status,
             color = color
@@ -190,9 +263,9 @@ class NodePoolManager @Inject constructor() {
      * Returns a connection to a currently healthy node, for broadcasting a transaction
      * via gRPC SubmitTransaction — bypasses the REST gateway, which mishandles
      * payload-carrying transactions (see KaspadConnection.submitTransaction). Prefers
-     * the best-known Active node; falls back to the first seed directly if the pool
-     * hasn't found an Active node yet (e.g. right after app launch, before the first
-     * probe cycle completes).
+     * the best-known Active node; falls back to a DNS-resolved address if one's already
+     * been found (more likely to actually be reachable than the static seed list if
+     * those have gone stale), and only as a last resort to the first hardcoded seed.
      */
     fun getBroadcastConnection(): KaspadConnection {
         val bestActive = registry.snapshot()
@@ -201,7 +274,8 @@ class NodePoolManager @Inject constructor() {
         if (bestActive != null) {
             connections[bestActive.address]?.let { return it }
         }
-        return connectionFor(seeds.first())
+        val fallbackAddress = dnsResolvedEndpoints.firstOrNull() ?: seeds.first()
+        return connectionFor(fallbackAddress)
     }
 
     /** Triggers an immediate out-of-cycle probe pass — "Refresh Pool". */
@@ -209,10 +283,12 @@ class NodePoolManager @Inject constructor() {
         scope.launch { probeCycle() }
     }
 
-    /** Drops discovered/manual nodes and all connections, resets to just the seed list — "Clear Connection Pool". */
+    /** Drops discovered/DNS-resolved/manual nodes and all connections, resets to just the seed list — "Clear Connection Pool". */
     fun clearPool() {
         manualEndpoints.clear()
         discoveredEndpoints.clear()
+        dnsResolvedEndpoints.clear()
+        lastDnsResolveAt = 0L
         connections.values.forEach { it.close() }
         connections.clear()
         registry.resetTo(seeds, "Seed")

@@ -17,6 +17,7 @@ import com.kachat.app.services.KnsProfileFields
 import com.kachat.app.services.KnsService
 import com.kachat.app.services.SystemContactsSyncService
 import com.kachat.app.services.VoiceRecorderService
+import com.kachat.app.util.MessageReply
 import com.kachat.app.util.VoiceMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -552,6 +553,19 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /** "Donate" from Settings -> About: resolves the app's donation KNS domain and hands back its address so the caller can navigate straight into a chat, pre-armed to send a payment. */
+    fun startDonationChat(onResolved: (String) -> Unit, onError: () -> Unit) {
+        viewModelScope.launch {
+            val address = knsService.resolve(DONATION_KNS_DOMAIN)
+            if (address == null) {
+                onError()
+                return@launch
+            }
+            addContact(address = address, name = null, knsName = DONATION_KNS_DOMAIN)
+            onResolved(address)
+        }
+    }
+
     data class KnsProfileUiState(
         val ownedDomains: List<String> = emptyList(),
         val selectedDomain: String? = null,
@@ -728,12 +742,33 @@ class ChatViewModel @Inject constructor(
      * failure it flips to "failed" in place and stays visible with a Retry option —
      * matches iOS ChatService+Conversations' optimistic send flow.
      */
+    // The message currently being replied to (double-tap on its bubble to set this), shown as a
+    // banner above the compose field — cleared automatically once the reply actually sends.
+    private val _replyingTo = MutableStateFlow<MessageEntity?>(null)
+    val replyingTo: StateFlow<MessageEntity?> = _replyingTo.asStateFlow()
+
+    fun startReplyTo(message: MessageEntity) {
+        _replyingTo.value = message
+    }
+
+    fun cancelReply() {
+        _replyingTo.value = null
+    }
+
     fun sendMessage(contactId: String, text: String) {
         if (text.isEmpty()) return
+        val reply = _replyingTo.value
         viewModelScope.launch {
             val pendingId = "pending_${java.util.UUID.randomUUID()}"
             try {
                 val myAddress = walletManager.getAddress()
+                val payload = if (reply != null) {
+                    val preview = VoiceMessage.parseOrNull(reply.plaintextBody)?.let { "🎤 Audio message" } ?: (reply.plaintextBody ?: "")
+                    val replyToSender = if (reply.direction == "sent") myAddress else contactId
+                    MessageReply.encode(replyToId = reply.id, replyToSender = replyToSender, replyToPreview = preview, text = text)
+                } else {
+                    text
+                }
                 chatRepository.insertMessage(
                     MessageEntity(
                         id = pendingId,
@@ -741,7 +776,7 @@ class ChatViewModel @Inject constructor(
                         walletAddress = myAddress,
                         type = com.kachat.app.util.MessageProtocol.TYPE_COMM,
                         direction = "sent",
-                        plaintextBody = text,
+                        plaintextBody = payload,
                         encryptedPayload = "",
                         amountSompi = 0,
                         blockTimestamp = System.currentTimeMillis(),
@@ -750,7 +785,7 @@ class ChatViewModel @Inject constructor(
                 )
 
                 // Encrypt + send handshake (if needed) + encrypted message
-                val result = walletService.sendKasiaMessage(contactId, text)
+                val result = walletService.sendKasiaMessage(contactId, payload)
 
                 chatRepository.deleteMessage(pendingId)
                 chatRepository.insertMessage(
@@ -760,13 +795,14 @@ class ChatViewModel @Inject constructor(
                         walletAddress = myAddress,
                         type = com.kachat.app.util.MessageProtocol.TYPE_COMM,
                         direction = "sent",
-                        plaintextBody = text,
+                        plaintextBody = payload,
                         encryptedPayload = result.payloadHex,
                         amountSompi = 0,
                         blockTimestamp = System.currentTimeMillis(),
                         deliveryStatus = "sent"
                     )
                 )
+                _replyingTo.value = null
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error sending message", e)
                 chatRepository.updateMessageStatus(pendingId, "failed")
@@ -962,6 +998,9 @@ class ChatViewModel @Inject constructor(
     }
 
     companion object {
+        /** KNS domain shown as "Donate" in Settings -> About — see [startDonationChat]. */
+        const val DONATION_KNS_DOMAIN = "kachat.kas"
+
         /**
          * We've reached out with no handshake (deterministic-alias messaging) and haven't
          * heard back yet — matches iOS's `shouldShowUnnotifiedWarning`: at least one sent

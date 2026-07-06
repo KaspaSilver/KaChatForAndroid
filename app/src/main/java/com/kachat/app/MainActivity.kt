@@ -24,11 +24,13 @@ import dagger.hilt.android.AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     private var pendingContactId by mutableStateOf<String?>(null)
+    private var pendingChannelName by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         pendingContactId = intent?.getStringExtra(NotificationHelper.EXTRA_CONTACT_ID)
+        pendingChannelName = intent?.getStringExtra(NotificationHelper.EXTRA_CHANNEL_NAME)
         setContent {
             KaChatTheme {
                 Surface(
@@ -37,7 +39,9 @@ class MainActivity : ComponentActivity() {
                 ) {
                     KaChatApp(
                         pendingContactId = pendingContactId,
-                        onPendingContactHandled = { pendingContactId = null }
+                        onPendingContactHandled = { pendingContactId = null },
+                        pendingChannelName = pendingChannelName,
+                        onPendingChannelHandled = { pendingChannelName = null }
                     )
                 }
             }
@@ -48,5 +52,6 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         pendingContactId = intent.getStringExtra(NotificationHelper.EXTRA_CONTACT_ID)
+        pendingChannelName = intent.getStringExtra(NotificationHelper.EXTRA_CHANNEL_NAME)
     }
 }

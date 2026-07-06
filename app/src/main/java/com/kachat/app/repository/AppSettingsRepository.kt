@@ -62,6 +62,21 @@ class AppSettingsRepository @Inject constructor(
         // Google Drive chat-history backup — off by default, unlike iOS's iCloud sync.
         val KEY_GOOGLE_BACKUP_ENABLED = booleanPreferencesKey("google_backup_enabled")
         val KEY_BACKUP_RETENTION = stringPreferencesKey("backup_retention")
+
+        // Broadcasts — whether the "Popular" tab (curated rooms, see FeaturedBroadcastChannels)
+        // shows at all, toggled from the gear icon next to Broadcasts' join button.
+        val KEY_BROADCAST_POPULAR_ENABLED = booleanPreferencesKey("broadcast_popular_enabled")
+        // Whether senders' KNS profile pictures render in broadcast rooms, or every sender just
+        // shows fallback initials instead — also toggled from that same gear icon.
+        val KEY_BROADCAST_SHOW_KNS_AVATARS = booleanPreferencesKey("broadcast_show_kns_avatars")
+        // Whether the app automatically looks up a broadcast sender's KNS avatar at all. A KNS
+        // profile's avatarUrl is an arbitrary attacker-controlled string written via a
+        // permissionless on-chain inscription (see updateKnsProfileField) — since this fetch
+        // fires just from a message rendering on screen, with no tap or other user action, an
+        // attacker can use it as a tracking pixel to learn a viewer's IP/timing/fingerprint just
+        // from them opening a channel. Defaults to false (opt-in) for this reason, unlike the
+        // display-only toggle above.
+        val KEY_BROADCAST_AUTO_AVATAR_SEARCH = booleanPreferencesKey("broadcast_auto_avatar_search")
     }
 
     // -------------------------------------------------------------------------
@@ -102,6 +117,18 @@ class AppSettingsRepository @Inject constructor(
 
     val showContactBalance: Flow<Boolean> = dataStore.data.map {
         it[KEY_SHOW_CONTACT_BALANCE] ?: true
+    }
+
+    val broadcastPopularEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_BROADCAST_POPULAR_ENABLED] ?: true
+    }
+
+    val broadcastShowKnsAvatars: Flow<Boolean> = dataStore.data.map {
+        it[KEY_BROADCAST_SHOW_KNS_AVATARS] ?: true
+    }
+
+    val broadcastAutoAvatarSearch: Flow<Boolean> = dataStore.data.map {
+        it[KEY_BROADCAST_AUTO_AVATAR_SEARCH] ?: false
     }
 
     val notificationsEnabled: Flow<Boolean> = dataStore.data.map {
@@ -166,6 +193,9 @@ class AppSettingsRepository @Inject constructor(
     suspend fun setEstimateFees(value: Boolean) = dataStore.edit { it[KEY_ESTIMATE_FEES] = value }
     suspend fun setHideAutoCreatedPaymentChats(value: Boolean) = dataStore.edit { it[KEY_HIDE_AUTO_PAYMENT_CHATS] = value }
     suspend fun setShowContactBalance(value: Boolean) = dataStore.edit { it[KEY_SHOW_CONTACT_BALANCE] = value }
+    suspend fun setBroadcastPopularEnabled(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_POPULAR_ENABLED] = value }
+    suspend fun setBroadcastShowKnsAvatars(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_SHOW_KNS_AVATARS] = value }
+    suspend fun setBroadcastAutoAvatarSearch(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_AUTO_AVATAR_SEARCH] = value }
     suspend fun setNotificationsEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATIONS_ENABLED] = value }
     suspend fun setNotificationSoundEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATION_SOUND] = value }
     suspend fun setNotificationVibrationEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATION_VIBRATION] = value }

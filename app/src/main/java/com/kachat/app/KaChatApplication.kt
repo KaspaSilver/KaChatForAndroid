@@ -6,8 +6,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.kachat.app.services.BroadcastScanningService
 import com.kachat.app.services.SyncForegroundService
 import dagger.hilt.android.HiltAndroidApp
+import javax.inject.Inject
 
 /**
  * Application class — required by Hilt for dependency injection.
@@ -15,6 +17,14 @@ import dagger.hilt.android.HiltAndroidApp
  */
 @HiltAndroidApp
 class KaChatApplication : Application() {
+
+    // @Singleton instances are otherwise only created lazily the first time something actually
+    // requests them — field-injecting this here forces it to exist from app startup, so its
+    // self-observing "start/stop scanning based on the setting" logic (see its init block) runs
+    // for the app's whole lifetime rather than only after the user happens to open a broadcast
+    // screen.
+    @Inject
+    lateinit var broadcastScanningService: BroadcastScanningService
 
     override fun onCreate() {
         super.onCreate()

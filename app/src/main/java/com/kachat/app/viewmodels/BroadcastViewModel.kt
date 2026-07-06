@@ -1,0 +1,459 @@
+package com.kachat.app.viewmodels
+
+import android.util.Log
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.kachat.app.models.BroadcastChannelEntity
+import com.kachat.app.models.BroadcastMessageEntity
+import com.kachat.app.models.ContactEntity
+import com.kachat.app.repository.AppSettingsRepository
+import com.kachat.app.repository.BroadcastRepository
+import com.kachat.app.repository.ChatRepository
+import com.kachat.app.services.BroadcastScanningService
+import com.kachat.app.services.KnsService
+import com.kachat.app.services.NetworkService
+import com.kachat.app.services.NotificationHelper
+import com.kachat.app.services.UtxoEntry
+import com.kachat.app.services.VoiceRecorderService
+import com.kachat.app.services.WalletManager
+import com.kachat.app.util.MessageReply
+import com.kachat.app.util.KaspaMass
+import com.kachat.app.util.MessageProtocol
+import com.kachat.app.util.VoiceMessage
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+@HiltViewModel
+class BroadcastViewModel @Inject constructor(
+    private val broadcastRepository: BroadcastRepository,
+    private val broadcastScanningService: BroadcastScanningService,
+    private val voiceRecorderService: VoiceRecorderService,
+    private val networkService: NetworkService,
+    private val walletManager: WalletManager,
+    private val settings: AppSettingsRepository,
+    private val knsService: KnsService,
+    private val chatRepository: ChatRepository,
+    private val notificationHelper: NotificationHelper
+) : ViewModel() {
+
+    // Address -> KNS avatar URL (or null if fetched but no avatar/domain exists) for whoever's
+    // posted in a channel — broadcast senders usually aren't saved contacts, so this can't reuse
+    // ChatRepository's per-contact knsAvatarUrl caching and instead looks up arbitrary addresses
+    // directly via KnsService. A key's mere presence means "already fetched" (avoids re-fetching
+    // on every recomposition), regardless of whether the value itself is null.
+    private val _senderProfiles = MutableStateFlow<Map<String, String?>>(emptyMap())
+    val senderProfiles: StateFlow<Map<String, String?>> = _senderProfiles.asStateFlow()
+
+    // Address -> active KNS domain name (or null if fetched but the address owns no domain),
+    // fetched alongside the avatar above — used as a fallback name label for senders the active
+    // account hasn't saved a contact name for (see contactAliases below, which always wins first).
+    private val _senderKnsNames = MutableStateFlow<Map<String, String?>>(emptyMap())
+    val senderKnsNames: StateFlow<Map<String, String?>> = _senderKnsNames.asStateFlow()
+
+    /**
+     * Address -> locally-set contact alias, for whichever senders the active account has
+     * renamed via "View Profile" — reactive (not a one-shot fetch like the KNS lookups above) so
+     * editing a name on the chat-info screen and coming back to the broadcast reflects it
+     * immediately. Takes priority over a sender's KNS name wherever both are shown, since a name
+     * you deliberately set for someone should win over their public on-chain domain name.
+     */
+    val contactAliases: StateFlow<Map<String, String>> = chatRepository.getContacts()
+        .map { contacts -> contacts.mapNotNull { c -> c.alias?.takeIf { it.isNotBlank() }?.let { c.id to it } }.toMap() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    fun ensureSenderProfileFetched(address: String) {
+        if (_senderProfiles.value.containsKey(address)) return
+        _senderProfiles.value = _senderProfiles.value + (address to null)
+        viewModelScope.launch {
+            try {
+                val ownedAssets = knsService.getOwnedDomains(address)
+                if (ownedAssets.isEmpty()) return@launch
+                val ownedNames = ownedAssets.mapNotNull { it.asset }
+                val primary = knsService.reverseResolve(address)
+                val activeName = KnsService.pickActiveDomain(ownedNames, null, primary)
+                _senderKnsNames.value = _senderKnsNames.value + (address to activeName)
+
+                // Avatar lookup is opt-in (see autoAvatarSearchEnabled) — an avatarUrl is an
+                // arbitrary attacker-controlled string, and fetching it just from a message
+                // rendering on screen (no user action) is a real tracking risk. Name resolution
+                // above carries no such risk (it only ever talks to KNS's own indexer, never an
+                // attacker-supplied URL), so it stays unconditional. The viewer's own address is
+                // always exempt from the gate — it's your own profile, so there's no attacker or
+                // tracking risk in fetching it, and your own picture should keep showing normally
+                // in broadcast rooms regardless of this setting.
+                if (!autoAvatarSearchEnabled.value && address != walletManager.getAddress()) return@launch
+
+                // The active/primary domain's own profile might have no avatar even though a
+                // different domain the same address owns does — Edit Profile always writes
+                // avatar/bio fields to the address's first owned domain regardless of which one
+                // is separately marked "primary", so anyone whose primary differs from their
+                // first owned domain would otherwise never show a picture here. Check the
+                // active domain first, then fall through the rest of their owned domains for
+                // the first one that actually has an avatar set.
+                val activeAsset = ownedAssets.firstOrNull { it.asset == activeName }
+                val checkOrder = listOfNotNull(activeAsset) + ownedAssets.filterNot { it.asset == activeName }
+                val avatarUrl = checkOrder.firstNotNullOfOrNull { asset ->
+                    asset.assetId?.let { knsService.getProfile(it) }?.avatarUrl
+                }
+                if (avatarUrl != null) {
+                    _senderProfiles.value = _senderProfiles.value + (address to avatarUrl)
+                }
+            } catch (e: Exception) {
+                Log.w("BroadcastViewModel", "Could not fetch KNS profile for $address", e)
+            }
+        }
+    }
+
+    /** Broadcast senders often aren't saved contacts yet — creates a minimal one first (same as how an unknown address is handled elsewhere) so the existing chat-info screen has something to show. */
+    fun openSenderProfile(address: String, onReady: (String) -> Unit) {
+        viewModelScope.launch {
+            if (chatRepository.getContact(address) == null) {
+                chatRepository.addContact(
+                    ContactEntity(id = address, walletAddress = walletManager.getAddress(), alias = null, knsName = null, publicKeyHex = null)
+                )
+            }
+            onReady(address)
+        }
+    }
+
+    private val _messageText = MutableStateFlow("")
+    val messageText: StateFlow<String> = _messageText.asStateFlow()
+    fun setMessageText(text: String) { _messageText.value = text }
+
+    val estimateFeesEnabled: StateFlow<Boolean> = settings.estimateFees
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
+
+    private val _currentUtxos = MutableStateFlow<List<UtxoEntry>>(emptyList())
+    private val _networkFeeRate = MutableStateFlow(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble())
+
+    // Declared here (ahead of the combine() below that references it) rather than down in the
+    // "Voice messages" section further down — combine()'s flow arguments are evaluated
+    // immediately when the enclosing val initializes, in textual property-declaration order, so
+    // voiceRecordingState must already exist by the time previewPayloadSize is constructed.
+    enum class VoiceRecordingStatus { IDLE, RECORDING }
+    data class VoiceRecordingState(val status: VoiceRecordingStatus = VoiceRecordingStatus.IDLE, val elapsedMs: Long = 0L)
+
+    private val _voiceRecordingState = MutableStateFlow(VoiceRecordingState())
+    val voiceRecordingState: StateFlow<VoiceRecordingState> = _voiceRecordingState.asStateFlow()
+
+    /**
+     * The payload byte count to price the live fee preview off of: the real typed-text length
+     * while composing, or a rough elapsed-time-based estimate of the final encoded size while
+     * recording a voice message — same approach as 1:1 chats, applies equally to both since a
+     * broadcast's content is never encrypted (no extra encryption overhead to account for).
+     */
+    private val previewPayloadSize = combine(_messageText, voiceRecordingState) { text, recording ->
+        if (recording.status == VoiceRecordingStatus.RECORDING) {
+            VoiceMessage.estimatedWirePayloadSize(recording.elapsedMs)
+        } else {
+            text.toByteArray().size
+        }
+    }
+
+    /**
+     * A broadcast is always a zero-amount self-stash send, same shape as a 1:1 "comm" message —
+     * so this is the same local KaspaMass calculation, just without any payment-amount branch.
+     * Preview only, assuming 2 standard 34-byte P2PK outputs (recipient + change); the actual
+     * send path computes this precisely against the real scriptPublicKey lengths.
+     */
+    val estimatedFeeSompi: StateFlow<Long?> = combine(previewPayloadSize, _currentUtxos, estimateFeesEnabled, _networkFeeRate) { payloadSize, utxos, enabled, rate ->
+        if (!enabled || payloadSize == 0) return@combine null
+
+        var total = 0L
+        var count = 0
+        for (utxo in utxos) {
+            total += utxo.utxoEntry.amount
+            count++
+            if (total >= 1000) break
+        }
+
+        val mass = KaspaMass.calculateMass(
+            numInputs = count.coerceAtLeast(1),
+            outputScriptLens = listOf(34, 34),
+            payloadSize = payloadSize
+        )
+        KaspaMass.calculateFee(mass, rate.toLong())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
+
+    fun refreshUtxos() {
+        viewModelScope.launch {
+            try {
+                val address = walletManager.getAddress()
+                val api = networkService.kaspaRestApi.value ?: return@launch
+                try {
+                    val feeInfo = api.getFeeEstimate()
+                    _networkFeeRate.value = feeInfo.normalBuckets.firstOrNull()?.feerate
+                        ?: KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble()
+                } catch (e: Exception) {
+                    Log.w("BroadcastViewModel", "Could not fetch fee estimate, using network minimum")
+                }
+                _currentUtxos.value = api.getUtxos(address)
+            } catch (e: Exception) {
+                Log.w("BroadcastViewModel", "Could not refresh UTXOs for fee estimate", e)
+            }
+        }
+    }
+
+    // Held only while a channel screen is actually on screen — see startLiveViewing(). A fresh
+    // BroadcastViewModel instance is created per nav back-stack entry, so this never leaks across
+    // different channel screens; onCleared() is the safety net if a screen never explicitly
+    // calls stopLiveViewing() (e.g. process death skipping the DisposableEffect's onDispose).
+    private var liveViewingHandle: AutoCloseable? = null
+
+    /** Lets messages appear live in a broadcast channel screen without requiring that channel to be marked always-listen — call from a DisposableEffect keyed on the channel, paired with [stopLiveViewing]. */
+    fun startLiveViewing(channelName: String) {
+        liveViewingHandle?.close()
+        liveViewingHandle = broadcastScanningService.startLiveViewing(channelName)
+        notificationHelper.setActiveChannel(channelName) // suppress a notification for the channel already on screen
+    }
+
+    fun stopLiveViewing() {
+        liveViewingHandle?.close()
+        liveViewingHandle = null
+        notificationHelper.setActiveChannel(null)
+    }
+
+    override fun onCleared() {
+        stopLiveViewing()
+        // Avoid leaking a live MediaRecorder if the screen/ViewModel is torn down mid-recording.
+        if (_voiceRecordingState.value.status == VoiceRecordingStatus.RECORDING) {
+            voiceRecorderService.cancelRecording()
+        }
+    }
+
+    val joinedChannels: StateFlow<List<BroadcastChannelEntity>> = broadcastRepository.getJoinedChannels()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** Whether the Popular tab shows at all — toggled from the gear icon next to the join button. */
+    val popularTabEnabled: StateFlow<Boolean> = settings.broadcastPopularEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setPopularTabEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setBroadcastPopularEnabled(enabled) }
+    }
+
+    /** Whether senders' KNS profile pictures render in broadcast rooms — toggled from the same gear icon; off shows fallback initials for everyone instead. */
+    val showKnsAvatarsEnabled: StateFlow<Boolean> = settings.broadcastShowKnsAvatars
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setShowKnsAvatarsEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setBroadcastShowKnsAvatars(enabled) }
+    }
+
+    /**
+     * Whether [ensureSenderProfileFetched] is allowed to look up a sender's avatar at all —
+     * separate from [showKnsAvatarsEnabled] above, which only controls whether an already-fetched
+     * URL gets rendered. A KNS avatarUrl is an arbitrary attacker-controlled string (see the
+     * comment on KEY_BROADCAST_AUTO_AVATAR_SEARCH), and the fetch fires just from a message
+     * rendering on screen with no user action — so this defaults to off, unlike the display-only
+     * toggle, and the settings UI should warn the user about the tracking risk before enabling it.
+     */
+    val autoAvatarSearchEnabled: StateFlow<Boolean> = settings.broadcastAutoAvatarSearch
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setAutoAvatarSearchEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setBroadcastAutoAvatarSearch(enabled) }
+    }
+
+    /** The active account's hidden sender addresses — set via "Hide User" on a sender's avatar. */
+    val hiddenSenderAddresses: StateFlow<Set<String>> = broadcastRepository.getHiddenSenderAddresses()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    fun hideSender(senderAddress: String) {
+        viewModelScope.launch { broadcastRepository.hideSender(senderAddress) }
+    }
+
+    fun unhideSender(senderAddress: String) {
+        viewModelScope.launch { broadcastRepository.unhideSender(senderAddress) }
+    }
+
+    /** Per-channel opt-in to background scanning — toggled via the speaker icon next to a channel. */
+    fun setAlwaysListen(channelName: String, alwaysListen: Boolean) {
+        viewModelScope.launch { broadcastRepository.setAlwaysListen(channelName, alwaysListen) }
+    }
+
+    /** Per-channel opt-in to a system notification for new messages — toggled via the bell icon next to a channel. */
+    fun setNotifyEnabled(channelName: String, notifyEnabled: Boolean) {
+        viewModelScope.launch { broadcastRepository.setNotifyEnabled(channelName, notifyEnabled) }
+    }
+
+    /** Per-channel local message retention override — set via the settings icon next to a channel, capped at 3 days. */
+    fun setRetentionMillis(channelName: String, retentionMillis: Long) {
+        viewModelScope.launch { broadcastRepository.setRetentionMillis(channelName, retentionMillis) }
+    }
+
+    // SUCCESS is distinct from the initial IDLE so a LaunchedEffect watching for "just joined"
+    // can tell "nothing attempted yet" apart from "just succeeded" — collapsing both into IDLE
+    // made the join dialog close itself the instant it opened, before the user typed anything.
+    enum class JoinChannelStatus { IDLE, SUCCESS, FAILED }
+    data class JoinChannelUiState(val status: JoinChannelStatus = JoinChannelStatus.IDLE, val message: String? = null)
+
+    private val _joinChannelState = MutableStateFlow(JoinChannelUiState())
+    val joinChannelState: StateFlow<JoinChannelUiState> = _joinChannelState.asStateFlow()
+
+    fun joinChannel(rawName: String) {
+        val name = MessageProtocol.normalizeChannelName(rawName)
+        if (!MessageProtocol.isValidChannelName(name)) {
+            _joinChannelState.value = JoinChannelUiState(
+                status = JoinChannelStatus.FAILED,
+                message = "Channel names can't be blank, contain spaces or colons, or exceed ${MessageProtocol.MAX_BROADCAST_CHANNEL_NAME_LENGTH} characters."
+            )
+            return
+        }
+        viewModelScope.launch {
+            broadcastRepository.joinChannel(name)
+            _joinChannelState.value = JoinChannelUiState(status = JoinChannelStatus.SUCCESS)
+        }
+    }
+
+    fun resetJoinChannelState() {
+        _joinChannelState.value = JoinChannelUiState()
+    }
+
+    fun leaveChannel(channelName: String) {
+        viewModelScope.launch { broadcastRepository.leaveChannel(channelName) }
+    }
+
+    fun getMessages(channelName: String) = broadcastRepository.getMessages(channelName)
+
+    // The message currently being replied to (double-tap on its bubble to set this), shown as a
+    // banner above the compose field — cleared automatically once the reply actually sends.
+    private val _replyingTo = MutableStateFlow<BroadcastMessageEntity?>(null)
+    val replyingTo: StateFlow<BroadcastMessageEntity?> = _replyingTo.asStateFlow()
+
+    fun startReplyTo(message: BroadcastMessageEntity) {
+        _replyingTo.value = message
+    }
+
+    fun cancelReply() {
+        _replyingTo.value = null
+    }
+
+    enum class SendBroadcastStatus { IDLE, SENDING, FAILED }
+    data class SendBroadcastUiState(val status: SendBroadcastStatus = SendBroadcastStatus.IDLE, val message: String? = null)
+
+    private val _sendBroadcastState = MutableStateFlow(SendBroadcastUiState())
+    val sendBroadcastState: StateFlow<SendBroadcastUiState> = _sendBroadcastState.asStateFlow()
+
+    fun sendBroadcast(channelName: String, content: String) {
+        if (content.isBlank()) return
+        if (_sendBroadcastState.value.status == SendBroadcastStatus.SENDING) return
+        val reply = _replyingTo.value
+        val payload = if (reply != null) {
+            val preview = VoiceMessage.parseOrNull(reply.content)?.let { "🎤 Audio message" } ?: reply.content
+            MessageReply.encode(replyToId = reply.id, replyToSender = reply.senderAddress, replyToPreview = preview, text = content)
+        } else {
+            content
+        }
+        viewModelScope.launch {
+            _sendBroadcastState.value = SendBroadcastUiState(status = SendBroadcastStatus.SENDING)
+            try {
+                broadcastRepository.sendBroadcast(channelName, payload)
+                _replyingTo.value = null
+                _sendBroadcastState.value = SendBroadcastUiState()
+            } catch (e: Exception) {
+                Log.e("BroadcastViewModel", "Error sending broadcast", e)
+                _sendBroadcastState.value = SendBroadcastUiState(
+                    status = SendBroadcastStatus.FAILED,
+                    message = e.message ?: "Failed to send"
+                )
+            }
+        }
+    }
+
+    /** Re-attempts a failed broadcast — shown via a "Retry Send" option on a failed message's own dropdown menu, matching 1:1 chat's retry. */
+    fun retryBroadcast(message: BroadcastMessageEntity) {
+        viewModelScope.launch {
+            try {
+                broadcastRepository.retryBroadcast(message)
+            } catch (e: Exception) {
+                Log.e("BroadcastViewModel", "Error retrying broadcast", e)
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Voice messages — same VoiceMessage codec and VoiceRecorderService as 1:1 chats, embedded
+    // directly as the broadcast's plaintext content (never encrypted, matching how broadcasts
+    // work generally) rather than needing a separate transport. VoiceRecordingStatus/State and
+    // _voiceRecordingState itself are declared further up, ahead of the previewPayloadSize
+    // combine() that needs them.
+    // -------------------------------------------------------------------------
+
+    private var recordingTickerJob: Job? = null
+
+    /** Recording (not playback) needs Android 10+ — the mic button should be disabled below that. */
+    val voiceRecordingSupported: Boolean get() = voiceRecorderService.isSupported
+
+    fun startVoiceRecording(channelName: String) {
+        if (_voiceRecordingState.value.status == VoiceRecordingStatus.RECORDING) return
+        try {
+            voiceRecorderService.startRecording()
+        } catch (e: Exception) {
+            Log.e("BroadcastViewModel", "Could not start voice recording", e)
+            return
+        }
+        _voiceRecordingState.value = VoiceRecordingState(status = VoiceRecordingStatus.RECORDING)
+        val startedAt = System.currentTimeMillis()
+        recordingTickerJob = viewModelScope.launch {
+            while (isActive && _voiceRecordingState.value.status == VoiceRecordingStatus.RECORDING) {
+                val elapsed = System.currentTimeMillis() - startedAt
+                _voiceRecordingState.value = _voiceRecordingState.value.copy(elapsedMs = elapsed)
+                if (elapsed >= VoiceRecorderService.MAX_RECORDING_DURATION_MS) {
+                    stopAndSendVoiceRecording(channelName)
+                    break
+                }
+                delay(200)
+            }
+        }
+    }
+
+    /** Stops recording and sends it — unless it was too short to be a real message (a stray tap), in which case it's discarded silently, same as a cancel. */
+    fun stopAndSendVoiceRecording(channelName: String) {
+        if (_voiceRecordingState.value.status != VoiceRecordingStatus.RECORDING) return
+        val elapsed = _voiceRecordingState.value.elapsedMs
+        recordingTickerJob?.cancel()
+        recordingTickerJob = null
+        _voiceRecordingState.value = VoiceRecordingState()
+
+        val file = voiceRecorderService.stopRecording()
+        if (file == null || elapsed < VoiceRecorderService.MIN_RECORDING_DURATION_MS) {
+            file?.delete()
+            return
+        }
+        sendVoiceMessage(channelName, file)
+    }
+
+    fun cancelVoiceRecording() {
+        recordingTickerJob?.cancel()
+        recordingTickerJob = null
+        _voiceRecordingState.value = VoiceRecordingState()
+        voiceRecorderService.cancelRecording()
+    }
+
+    private fun sendVoiceMessage(channelName: String, file: java.io.File) {
+        viewModelScope.launch {
+            try {
+                val bytes = file.readBytes()
+                val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                val json = VoiceMessage.encode(fileName = file.name, sizeBytes = bytes.size.toLong(), base64Audio = base64)
+                sendBroadcast(channelName, json)
+            } catch (e: Exception) {
+                Log.e("BroadcastViewModel", "Error preparing voice message", e)
+            } finally {
+                file.delete()
+            }
+        }
+    }
+}

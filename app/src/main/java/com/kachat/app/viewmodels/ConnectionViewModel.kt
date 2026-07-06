@@ -47,8 +47,6 @@ data class NodeInfo(
     val ip: String,
     val type: String, // Seed, Manual
     val latency: String,
-    val distance: String,
-    val country: String,
     val daaScore: String,
     val status: String, // Active, Quarantined, Suspect, Candidate
     val color: Long // Hex color for status

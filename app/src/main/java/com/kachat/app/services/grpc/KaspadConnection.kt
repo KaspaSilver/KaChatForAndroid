@@ -6,6 +6,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -17,6 +20,7 @@ import protowire.getBlockDagInfoRequestMessage
 import protowire.getInfoRequestMessage
 import protowire.getPeerAddressesRequestMessage
 import protowire.kaspadRequest
+import protowire.notifyBlockAddedRequestMessage
 import protowire.rpcOutpoint
 import protowire.rpcScriptPublicKey
 import protowire.rpcTransaction
@@ -51,15 +55,26 @@ class KaspadConnection internal constructor(
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<Messages.KaspadResponse>>()
     private val nextId = AtomicLong(1)
 
+    // Block-added notifications are unsolicited (no matching pending request id) once the
+    // subscription is active — routed here instead of dropped, for broadcast-message scanning.
+    // extraBufferCapacity keeps a slow/no collector from blocking the shared stream-reading
+    // coroutine; a resumed collector just misses whatever fell off the buffer, which is fine
+    // since broadcast scanning is a best-effort rolling cache, not a delivery guarantee.
+    private val blockAddedNotifications = MutableSharedFlow<Rpc.RpcBlock>(extraBufferCapacity = 64)
+
     private var streamJob: Job? = null
 
     fun connect() {
         streamJob = scope.launch {
             try {
                 stub.messageStream(outbound.receiveAsFlow()).collect { response ->
-                    pending.remove(response.id)?.complete(response)
-                    // Unsolicited notifications (no matching pending id) are ignored in v1 —
-                    // no UTXO/block-added subscriptions are in scope for the connection-status feature.
+                    val matched = pending.remove(response.id)
+                    if (matched != null) {
+                        matched.complete(response)
+                    } else if (response.hasBlockAddedNotification()) {
+                        blockAddedNotifications.tryEmit(response.blockAddedNotification.block)
+                    }
+                    // Any other unsolicited response is still ignored.
                 }
             } catch (e: Exception) {
                 pending.values.forEach { it.completeExceptionally(e) }
@@ -103,6 +118,43 @@ class KaspadConnection internal constructor(
         build = { id -> kaspadRequest { this.id = id; getPeerAddressesRequest = getPeerAddressesRequestMessage {} } },
         extract = { it.getPeerAddressesResponse }
     )
+
+    /**
+     * Subscribes this connection to block-added notifications — used for broadcast-message
+     * scanning, since there's no per-address query for a public "bcast" channel; every new
+     * block's transactions have to be inspected client-side instead. Sends one NOTIFY_START
+     * request and waits for its ack; the returned [Flow] then emits every subsequently-added
+     * [Rpc.RpcBlock] for as long as this connection stays open. The caller is responsible for
+     * calling [unsubscribeFromBlockAdded] when scanning should stop.
+     */
+    suspend fun subscribeToBlockAdded(): Flow<Rpc.RpcBlock> {
+        val response = call(
+            build = { id ->
+                kaspadRequest {
+                    this.id = id
+                    notifyBlockAddedRequest = notifyBlockAddedRequestMessage { command = Rpc.RpcNotifyCommand.NOTIFY_START }
+                }
+            },
+            extract = { it.notifyBlockAddedResponse }
+        )
+        if (response.hasError()) {
+            throw IllegalStateException(response.error.message)
+        }
+        return blockAddedNotifications.asSharedFlow()
+    }
+
+    /** Sends NOTIFY_STOP — must be called to actually halt block-added notifications; closing/dropping the Flow collector alone does not stop the node from sending them. */
+    suspend fun unsubscribeFromBlockAdded() {
+        call(
+            build = { id ->
+                kaspadRequest {
+                    this.id = id
+                    notifyBlockAddedRequest = notifyBlockAddedRequestMessage { command = Rpc.RpcNotifyCommand.NOTIFY_STOP }
+                }
+            },
+            extract = { it.notifyBlockAddedResponse }
+        )
+    }
 
     /**
      * Broadcasts a signed transaction via direct gRPC SubmitTransaction, bypassing the

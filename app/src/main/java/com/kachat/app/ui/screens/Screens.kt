@@ -16,6 +16,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.layout.ContentScale
 import coil.compose.SubcomposeAsyncImage
@@ -24,10 +26,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -38,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
+import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -47,6 +54,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -66,6 +74,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -79,11 +88,14 @@ import com.kachat.app.models.MessageEntity
 import com.kachat.app.ui.theme.KaspaBlue
 import com.kachat.app.ui.theme.KaspaSubtext
 import com.kachat.app.ui.theme.KaspaTeal
+import com.kachat.app.util.ChatTimeFormat
 import com.kachat.app.util.KaspaAddress
+import com.kachat.app.util.MessageReply
 import com.kachat.app.util.TextLinkify
 import com.kachat.app.util.MessageProtocol
 import com.kachat.app.util.VoiceMessage
 import com.kachat.app.util.VoiceMessageContent
+import com.kachat.app.viewmodels.BroadcastViewModel
 import com.kachat.app.viewmodels.ChatViewModel
 import com.kachat.app.viewmodels.ConnectionStatus as ConnStatus
 import com.kachat.app.viewmodels.ConnectionViewModel
@@ -95,11 +107,12 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatThreadScreen(
-    navController: NavController, 
+    navController: NavController,
     contactId: String,
     chatViewModel: ChatViewModel = hiltViewModel(),
     connectionViewModel: ConnectionViewModel = hiltViewModel(),
-    walletViewModel: WalletViewModel = hiltViewModel()
+    walletViewModel: WalletViewModel = hiltViewModel(),
+    startInPaymentMode: Boolean = false
 ) {
     val conversations by chatViewModel.conversations.collectAsState()
     val conversation = conversations.find { it.contact.id == contactId }
@@ -116,8 +129,9 @@ fun ChatThreadScreen(
     val estimateFeesEnabled by chatViewModel.estimateFeesEnabled.collectAsState()
     val messageText by chatViewModel.messageText.collectAsState()
     val voiceRecordingState by chatViewModel.voiceRecordingState.collectAsState()
+    val replyingTo by chatViewModel.replyingTo.collectAsState()
 
-    var paymentMode by remember { mutableStateOf(false) }
+    var paymentMode by remember { mutableStateOf(startInPaymentMode) }
     val clipboardManager = LocalClipboardManager.current
     val micContext = LocalContext.current
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -199,7 +213,11 @@ fun ChatThreadScreen(
             )
         },
         bottomBar = {
-            Column(modifier = Modifier.background(Color.Black).padding(8.dp)) {
+            // navigationBarsPadding() keeps the mic/send row clear of the system nav bar
+            // (gesture pill or 3-button bar) when the keyboard is closed — its height varies
+            // a lot across devices/manufacturers, so a fixed dp padding isn't enough on every
+            // phone. imePadding() on the Scaffold above already handles the keyboard-open case.
+            Column(modifier = Modifier.background(Color.Black).navigationBarsPadding().padding(8.dp)) {
                 if (paymentMode) {
                     Column(
                         modifier = Modifier
@@ -364,6 +382,37 @@ fun ChatThreadScreen(
                     }
                 } else {
                     Column(modifier = Modifier.fillMaxWidth()) {
+                        replyingTo?.let { reply ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 8.dp)
+                                    .background(Color(0xFF1C1C1E), RoundedCornerShape(12.dp))
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "Replying to ${if (reply.direction == "sent") "yourself" else (conversation?.contact?.alias ?: contactId.takeLast(10))}",
+                                        color = KaspaTeal,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        VoiceMessage.parseOrNull(reply.plaintextBody)?.let { "🎤 Audio message" } ?: (reply.plaintextBody ?: ""),
+                                        color = Color.Gray,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                IconButton(onClick = { chatViewModel.cancelReply() }, modifier = Modifier.size(28.dp)) {
+                                    Icon(Icons.Default.Close, contentDescription = "Cancel reply", tint = Color.Gray)
+                                }
+                            }
+                        }
                         if (estimateFeesEnabled && estimatedFee != null && messageText.isNotEmpty()) {
                             Surface(
                                 color = Color(0xFF1C1C1E),
@@ -477,7 +526,25 @@ fun ChatThreadScreen(
             }
         }
 
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+        // Swipe-left-to-reveal-timestamps (iMessage-style) — see the matching implementation in
+        // BroadcastScreens.kt for the full rationale; kept in sync with it.
+        val revealOffsetPx = remember { Animatable(0f) }
+        val maxRevealOffsetPx = with(LocalDensity.current) { 64.dp.toPx() }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .draggable(
+                    orientation = Orientation.Horizontal,
+                    state = rememberDraggableState { delta ->
+                        coroutineScope.launch {
+                            revealOffsetPx.snapTo((revealOffsetPx.value + delta).coerceIn(-maxRevealOffsetPx, 0f))
+                        }
+                    },
+                    onDragStopped = { coroutineScope.launch { revealOffsetPx.animateTo(0f) } }
+                )
+        ) {
             LazyColumn(
                 state = scrollState,
                 modifier = Modifier
@@ -497,7 +564,20 @@ fun ChatThreadScreen(
                         }
                     }
                 } else {
-                    items(messages) { msg ->
+                    itemsIndexed(messages, key = { _, msg -> msg.id }) { index, msg ->
+                        if (index == 0 || !ChatTimeFormat.isSameDay(messages[index - 1].blockTimestamp, msg.blockTimestamp)) {
+                            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                Surface(color = Color(0xFF1C1C1E), shape = RoundedCornerShape(12.dp)) {
+                                    Text(
+                                        ChatTimeFormat.formatDateDivider(msg.blockTimestamp),
+                                        color = Color.Gray,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
                         MessageBubble(
                             message = msg,
                             isPendingRequest = msg.type == MessageProtocol.TYPE_HANDSHAKE &&
@@ -506,7 +586,10 @@ fun ChatThreadScreen(
                             isHandshakeComplete = conversation?.contact?.conversationStatus == "active",
                             onAccept = { chatViewModel.acceptHandshake(contactId) },
                             onDecline = { chatViewModel.declineHandshake(contactId) },
-                            onRetry = { chatViewModel.retrySendMessage(msg) }
+                            onRetry = { chatViewModel.retrySendMessage(msg) },
+                            onReply = { chatViewModel.startReplyTo(msg) },
+                            revealOffsetPx = revealOffsetPx,
+                            maxRevealOffsetPx = maxRevealOffsetPx
                         )
                     }
                     if (ChatViewModel.shouldShowUnnotifiedWarning(messages)) {
@@ -572,16 +655,16 @@ fun MessageBubble(
     isHandshakeComplete: Boolean = false,
     onAccept: () -> Unit = {},
     onDecline: () -> Unit = {},
-    onRetry: () -> Unit = {}
+    onRetry: () -> Unit = {},
+    onReply: () -> Unit = {},
+    revealOffsetPx: Animatable<Float, AnimationVector1D> = remember { Animatable(0f) },
+    maxRevealOffsetPx: Float = 1f
 ) {
     val isSent = message.direction == "sent"
     var showMenu by remember { mutableStateOf(false) }
     val clipboardManager = LocalClipboardManager.current
-    val timestampText = remember(message.blockTimestamp) {
-        java.text.SimpleDateFormat("MM/dd/yyyy h:mma", java.util.Locale.US)
-            .format(java.util.Date(message.blockTimestamp))
-            .lowercase()
-    }
+    val replyContent = remember(message.plaintextBody) { MessageReply.parseOrNull(message.plaintextBody) }
+    val displayBody = replyContent?.text ?: message.plaintextBody
 
     if (isPendingRequest) {
         Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
@@ -637,10 +720,45 @@ fun MessageBubble(
         return
     }
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = if (isSent) Alignment.End else Alignment.Start
-    ) {
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = remember(message.blockTimestamp) { ChatTimeFormat.formatMessageTime(message.blockTimestamp) },
+            color = Color.Gray,
+            fontSize = 11.sp,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 12.dp)
+                .alpha((-revealOffsetPx.value / maxRevealOffsetPx).coerceIn(0f, 1f))
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .offset { IntOffset(revealOffsetPx.value.toInt(), 0) },
+            horizontalAlignment = if (isSent) Alignment.End else Alignment.Start
+        ) {
+        if (replyContent != null) {
+            Surface(
+                color = Color(0xFF2C2C2E),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.padding(bottom = 4.dp).widthIn(max = 240.dp)
+            ) {
+                Column(modifier = Modifier.padding(8.dp)) {
+                    Text(
+                        if (replyContent.replyToSender == message.walletAddress) "You" else "Them",
+                        color = KaspaTeal,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        replyContent.replyToPreview,
+                        color = Color.Gray,
+                        fontSize = 12.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
         Box {
             if (message.type == "pay") {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
@@ -698,14 +816,15 @@ fun MessageBubble(
                         )
                     }
                 }
-            } else if (VoiceMessage.parseOrNull(message.plaintextBody) != null) {
+            } else if (VoiceMessage.parseOrNull(displayBody) != null) {
                 AudioBubble(
-                    voiceContent = VoiceMessage.parseOrNull(message.plaintextBody)!!,
+                    voiceContent = VoiceMessage.parseOrNull(displayBody)!!,
                     isSent = isSent,
-                    onLongPress = { showMenu = true }
+                    onLongPress = { showMenu = true },
+                    onDoubleClick = onReply
                 )
             } else {
-                val bodyText = message.plaintextBody ?: ""
+                val bodyText = displayBody ?: ""
                 val uriHandler = LocalUriHandler.current
                 var textLayoutResult by remember(bodyText) { mutableStateOf<TextLayoutResult?>(null) }
                 val annotatedBody = remember(bodyText) {
@@ -728,6 +847,7 @@ fun MessageBubble(
                             .pointerInput(annotatedBody) {
                                 detectTapGestures(
                                     onLongPress = { showMenu = true },
+                                    onDoubleTap = { onReply() },
                                     onTap = { offset ->
                                         val layout = textLayoutResult ?: return@detectTapGestures
                                         val charOffset = layout.getOffsetForPosition(offset)
@@ -752,7 +872,7 @@ fun MessageBubble(
                     text = { Text("Copy Message", color = Color.White, fontWeight = FontWeight.SemiBold) },
                     leadingIcon = { Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal) },
                     onClick = {
-                        clipboardManager.setText(AnnotatedString(message.plaintextBody ?: ""))
+                        clipboardManager.setText(AnnotatedString(displayBody ?: ""))
                         showMenu = false
                     }
                 )
@@ -777,17 +897,8 @@ fun MessageBubble(
             }
         }
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(top = 4.dp)
-        ) {
-            Text(
-                text = timestampText,
-                color = Color.Gray,
-                fontSize = 11.sp
-            )
-            if (isSent) {
-                Spacer(Modifier.width(4.dp))
+        if (isSent) {
+            Row(modifier = Modifier.padding(top = 4.dp)) {
                 when (message.deliveryStatus) {
                     "failed" -> Icon(
                         imageVector = Icons.Default.Error,
@@ -810,6 +921,7 @@ fun MessageBubble(
                 }
             }
         }
+        }
     }
 }
 
@@ -822,7 +934,7 @@ fun MessageBubble(
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AudioBubble(voiceContent: VoiceMessageContent, isSent: Boolean, onLongPress: () -> Unit) {
+fun AudioBubble(voiceContent: VoiceMessageContent, isSent: Boolean, onLongPress: () -> Unit, onDoubleClick: () -> Unit = {}) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
     var durationMs by remember { mutableStateOf(0) }
@@ -858,7 +970,7 @@ private fun AudioBubble(voiceContent: VoiceMessageContent, isSent: Boolean, onLo
     Surface(
         color = if (isSent) Color(0xFF2C2C2E) else Color(0xFF1C1C1E),
         shape = RoundedCornerShape(20.dp),
-        modifier = Modifier.combinedClickable(onClick = {}, onLongClick = onLongPress)
+        modifier = Modifier.combinedClickable(onClick = {}, onLongClick = onLongPress, onDoubleClick = onDoubleClick)
     ) {
         Row(
             modifier = Modifier
@@ -912,7 +1024,7 @@ fun ChatActionButton(icon: ImageVector, onClick: () -> Unit = {}) {
 }
 
 /** "0:07" — the composer's live recording timer, capped display-wise the same way the recording itself is capped at 10s. */
-private fun formatRecordingElapsed(elapsedMs: Long): String = VoiceMessage.formatDuration(elapsedMs.toInt())
+fun formatRecordingElapsed(elapsedMs: Long): String = VoiceMessage.formatDuration(elapsedMs.toInt())
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -953,6 +1065,8 @@ fun ProfileScreen(
     var showInscribeDialog by remember { mutableStateOf(false) }
     var domainLabelInput by remember { mutableStateOf("") }
     var transferDialogDomain by remember { mutableStateOf<com.kachat.app.services.KnsAsset?>(null) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var nameInput by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         viewModel.refreshBalance()
@@ -988,12 +1102,24 @@ fun ProfileScreen(
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
             SettingsSection(title = "Name") {
-                Text(
-                    text = accountName ?: "No Name",
-                    color = Color.White,
-                    modifier = Modifier.padding(16.dp),
-                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            nameInput = accountName ?: ""
+                            showRenameDialog = true
+                        }
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = accountName ?: "No Name",
+                        color = Color.White,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Icon(Icons.Default.Edit, contentDescription = "Edit name", tint = KaspaTeal)
+                }
             }
 
             if (pendingKnsCommit != null) {
@@ -1252,6 +1378,44 @@ fun ProfileScreen(
 
             Spacer(modifier = Modifier.height(100.dp))
         }
+    }
+
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            containerColor = Color(0xFF1C1C1E),
+            title = { Text("Rename Account", color = Color.White) },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = KaspaTeal,
+                        unfocusedBorderColor = Color.Gray
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = nameInput.isNotBlank(),
+                    onClick = {
+                        viewModel.renameActiveAccount(nameInput)
+                        showRenameDialog = false
+                    }
+                ) {
+                    Text("Save", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
     }
 
     if (showInscribeDialog) {
@@ -1939,7 +2103,8 @@ fun SettingsScreen(
     walletViewModel: WalletViewModel = hiltViewModel(),
     connectionViewModel: ConnectionViewModel = hiltViewModel(),
     chatViewModel: ChatViewModel = hiltViewModel(),
-    settingsViewModel: SettingsViewModel = hiltViewModel()
+    settingsViewModel: SettingsViewModel = hiltViewModel(),
+    broadcastViewModel: BroadcastViewModel = hiltViewModel()
 ) {
     val balance by walletViewModel.fullBalance.collectAsState()
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
@@ -1950,10 +2115,13 @@ fun SettingsScreen(
     val syncSystemContactsEnabled by chatViewModel.syncSystemContactsEnabled.collectAsState()
     val autoCreateSystemContactsEnabled by chatViewModel.autoCreateSystemContactsEnabled.collectAsState()
     val archivedCount by chatViewModel.archivedCount.collectAsState()
+    val hiddenBroadcastUsersCount by broadcastViewModel.hiddenSenderAddresses.collectAsState()
     val exportChatHistoryState by chatViewModel.exportState.collectAsState()
     val importChatHistoryState by chatViewModel.importState.collectAsState()
     val scrollState = rememberScrollState()
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
 
     val syncContactsPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val autoCreatePermissionLauncher = rememberLauncherForActivityResult(
@@ -1969,6 +2137,7 @@ fun SettingsScreen(
 
     Scaffold(
         containerColor = Color.Black,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             Column(
                 modifier = Modifier
@@ -2017,6 +2186,10 @@ fun SettingsScreen(
                 SettingsDivider()
                 SettingsNavigationItem("Archived Chats", Icons.Outlined.Inventory2, archivedCount.toString(), onClick = {
                     navController.navigate("archived_chats")
+                })
+                SettingsDivider()
+                SettingsNavigationItem("Hidden Broadcast Room Users", Icons.Default.VisibilityOff, hiddenBroadcastUsersCount.size.toString(), onClick = {
+                    navController.navigate("hidden_broadcast_users")
                 })
             }
 
@@ -2211,7 +2384,7 @@ fun SettingsScreen(
             }
 
             SettingsSection(title = "About") {
-                SettingsInfoItem("Version", "1.0")
+                SettingsInfoItem("Version", com.kachat.app.BuildConfig.VERSION_NAME)
                 SettingsDivider()
                 SettingsInfoItem(
                     "Website",
@@ -2232,6 +2405,22 @@ fun SettingsScreen(
                         try {
                             context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:kaspasilver@gmail.com")))
                         } catch (e: Exception) { /* no email app available */ }
+                    }
+                )
+                SettingsDivider()
+                SettingsInfoItem(
+                    "Donate",
+                    ChatViewModel.DONATION_KNS_DOMAIN,
+                    KaspaTeal,
+                    onClick = {
+                        chatViewModel.startDonationChat(
+                            onResolved = { address -> navController.navigate("chat/$address?paymentMode=true") },
+                            onError = {
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar("Couldn't reach ${ChatViewModel.DONATION_KNS_DOMAIN} right now — try again later")
+                                }
+                            }
+                        )
                     }
                 )
             }
@@ -2544,10 +2733,16 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
 
     val activeNodes by viewModel.activeNodes.collectAsState()
     val allNodes by viewModel.allNodes.collectAsState()
+    // "Other Nodes" means genuinely other than what's already listed above under Active
+    // Nodes — allNodes includes every known node (active and not), so without this filter
+    // the same active nodes showed up twice, once in each section.
+    val otherNodes = remember(allNodes) { allNodes.filterNot { it.status == "Active" } }
     val status by viewModel.status.collectAsState()
     val dotColorHex by viewModel.dotColorHex.collectAsState()
     val lastSyncAt by viewModel.lastSyncAt.collectAsState()
     val scrollState = rememberScrollState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
 
     // status is derived from the exact same latency thresholds as dotColorHex, so
     // the text here can never contradict the dot's color: green only says
@@ -2571,6 +2766,7 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
 
     Scaffold(
         containerColor = Color.Black,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             CenterAlignedTopAppBar(
                 title = { Text("Connection Status", color = Color.White, fontWeight = FontWeight.Bold) },
@@ -2600,10 +2796,6 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
                 SettingsDivider()
                 ConnectionInfoRow("Latency", activeNodes.firstOrNull()?.latency ?: "—", statusColor)
                 SettingsDivider()
-                ConnectionInfoRow("Distance", "Unknown")
-                SettingsDivider()
-                ConnectionInfoRow("Country", "Unknown")
-                SettingsDivider()
                 ConnectionInfoRow("Indexer", indexerUrl.substringAfter("://").substringBefore("/"))
                 SettingsDivider()
                 ConnectionInfoRow("Push Register", pushIndexerUrl.substringAfter("://").substringBefore("/"))
@@ -2628,11 +2820,20 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
             }
 
             SettingsSection(title = "Actions") {
-                SettingsActionItem("Refresh Pool", Icons.Default.Refresh, KaspaTeal, onClick = { viewModel.refreshPool() })
+                SettingsActionItem("Refresh Pool", Icons.Default.Refresh, KaspaTeal, onClick = {
+                    viewModel.refreshPool()
+                    coroutineScope.launch { snackbarHostState.showSnackbar("Refreshing pool…") }
+                })
                 SettingsDivider()
-                SettingsActionItem("Clear Connection Pool", Icons.Default.DeleteSweep, Color.Red, onClick = { viewModel.clearPool() })
+                SettingsActionItem("Clear Connection Pool", Icons.Default.DeleteSweep, Color.Red, onClick = {
+                    viewModel.clearPool()
+                    coroutineScope.launch { snackbarHostState.showSnackbar("Pool cleared — reconnecting to seed nodes") }
+                })
                 SettingsDivider()
-                SettingsActionItem("Reconnect", Icons.Default.Replay, KaspaTeal, onClick = { viewModel.reconnect() })
+                SettingsActionItem("Reconnect", Icons.Default.Replay, KaspaTeal, onClick = {
+                    viewModel.reconnect()
+                    coroutineScope.launch { snackbarHostState.showSnackbar("Reconnecting…") }
+                })
             }
 
             Text(
@@ -2716,14 +2917,14 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
                     Spacer(Modifier.width(8.dp))
                     Text(text = "Other Nodes", style = MaterialTheme.typography.titleMedium, color = Color.White)
                 }
-                Text(text = allNodes.size.toString(), color = Color.Gray)
+                Text(text = otherNodes.size.toString(), color = Color.Gray)
             }
             Column(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xFF1C1C1E))
             ) {
-                allNodes.forEachIndexed { index, node ->
+                otherNodes.forEachIndexed { index, node ->
                     AllNodeRow(node)
-                    if (index < allNodes.size - 1) SettingsDivider()
+                    if (index < otherNodes.size - 1) SettingsDivider()
                 }
             }
 
@@ -3121,12 +3322,6 @@ fun ActiveNodeRow(node: NodeInfo) {
                 Text(node.type, color = Color(0xFF2196F3), fontSize = 10.sp)
                 Spacer(Modifier.width(8.dp))
                 Text(node.latency, color = Color(0xFFF39C12), fontSize = 10.sp)
-                Spacer(Modifier.width(8.dp))
-                Text(node.distance, color = Color.Gray, fontSize = 10.sp)
-                Spacer(Modifier.width(8.dp))
-                Text(node.country, color = Color.Gray, fontSize = 10.sp)
-                Spacer(Modifier.width(4.dp))
-                Text("9✓", color = Color(0xFF4CD964), fontSize = 10.sp)
             }
             Text("DAA: ${node.daaScore}", color = Color.Gray, fontSize = 10.sp)
         }
@@ -3148,10 +3343,6 @@ fun AllNodeRow(node: NodeInfo) {
             Text(node.ip, color = Color.White, fontSize = 12.sp)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(node.country, color = Color.Gray, fontSize = 10.sp)
-            Spacer(Modifier.width(8.dp))
-            Text(node.distance, color = Color.Gray, fontSize = 10.sp)
-            Spacer(Modifier.width(8.dp))
             Text(node.latency, color = Color(0xFFF39C12), fontSize = 10.sp)
             Spacer(Modifier.width(8.dp))
             Box(modifier = Modifier.background(Color(0x33FF3B30), RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 2.dp)) {
@@ -3203,6 +3394,8 @@ fun CreateChatScreen(
     var address by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var showScanner by remember { mutableStateOf(false) }
+    var importErrorMessage by remember { mutableStateOf<String?>(null) }
+    val clipboardManager = LocalClipboardManager.current
     val isValidRawAddress = remember(address) { KaspaAddress.isValid(address) }
     val looksLikeKnsDomain = remember(address) { com.kachat.app.services.KnsService.looksLikeDomain(address) }
 
@@ -3210,7 +3403,54 @@ fun CreateChatScreen(
     val isResolvingKns by chatViewModel.isResolvingKns.collectAsState()
     val knsError by chatViewModel.knsError.collectAsState()
 
+    val context = LocalContext.current
+    // Reads the picked contact's data via the /entities sub-path of the URI the system picker
+    // itself returns — covered by the temporary read grant that comes with that URI, so no
+    // READ_CONTACTS runtime permission is needed (matches ChatInfoScreen's "Link from Contacts"
+    // picker, which relies on the same grant for its own, narrower query).
+    val importContactMimeTypes = setOf(
+        ContactsContract.CommonDataKinds.Website.CONTENT_ITEM_TYPE,
+        ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE,
+        ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE,
+        ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE
+    )
+    val pickContactForImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val entityUri = Uri.withAppendedPath(uri, ContactsContract.Contacts.Entity.CONTENT_DIRECTORY)
+        var foundAddress: String? = null
+        var displayName: String? = null
+        context.contentResolver.query(
+            entityUri,
+            arrayOf(
+                ContactsContract.Contacts.Entity.MIMETYPE,
+                ContactsContract.Contacts.Entity.DATA1,
+                ContactsContract.Contacts.DISPLAY_NAME_PRIMARY
+            ),
+            null, null, null
+        )?.use { cursor ->
+            val mimeIdx = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.Entity.MIMETYPE)
+            val dataIdx = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.Entity.DATA1)
+            val nameIdx = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME_PRIMARY)
+            while (cursor.moveToNext()) {
+                if (displayName == null) displayName = cursor.getString(nameIdx)
+                if (foundAddress != null) continue
+                val mime = cursor.getString(mimeIdx) ?: continue
+                if (mime !in importContactMimeTypes) continue
+                val value = cursor.getString(dataIdx) ?: continue
+                foundAddress = com.kachat.app.services.SystemContactsSyncService.extractKaspaAddresses(value).firstOrNull()
+            }
+        }
+        if (foundAddress != null) {
+            address = foundAddress!!
+            if (name.isBlank()) name = displayName ?: ""
+            importErrorMessage = null
+        } else {
+            importErrorMessage = "No Kaspa address found in ${displayName ?: "that contact"}"
+        }
+    }
+
     LaunchedEffect(address) {
+        importErrorMessage = null
         chatViewModel.onCreateChatAddressChanged(address)
     }
 
@@ -3358,12 +3598,25 @@ fun CreateChatScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceAround
                 ) {
-                    CreateChatActionItem(Icons.Default.PersonAddAlt1, "Import") { }
-                    CreateChatActionItem(Icons.Default.ContentPaste, "Paste") { }
+                    CreateChatActionItem(Icons.Default.PersonAddAlt1, "Import") {
+                        pickContactForImportLauncher.launch(null)
+                    }
+                    CreateChatActionItem(Icons.Default.ContentPaste, "Paste") {
+                        clipboardManager.getText()?.text?.let { address = it.trim() }
+                    }
                     CreateChatActionItem(Icons.Default.QrCodeScanner, "Scan QR") { showScanner = true }
                 }
+
+                importErrorMessage?.let { message ->
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF3B30), modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(message, color = Color(0xFFFF3B30), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
-            
+
             Spacer(modifier = Modifier.height(12.dp))
             
             Text(
@@ -3422,7 +3675,8 @@ fun CreateChatActionItem(icon: ImageVector, label: String, onClick: () -> Unit) 
 fun ChatInfoScreen(
     contactId: String,
     onBack: () -> Unit,
-    chatViewModel: ChatViewModel = hiltViewModel()
+    chatViewModel: ChatViewModel = hiltViewModel(),
+    fromBroadcast: Boolean = false
 ) {
     val conversation = chatViewModel.conversations.collectAsState().value.find { it.contact.id == contactId }
     val messages by chatViewModel.getMessages(contactId).collectAsState(initial = emptyList())
@@ -3442,6 +3696,11 @@ fun ChatInfoScreen(
 
     LaunchedEffect(contactId) {
         chatViewModel.refreshKnsProfile(contactId)
+        // Not fetched anywhere else when arriving here directly (e.g. from a broadcast avatar's
+        // "View Profile", which never visits the 1:1 chat thread that would otherwise trigger
+        // this) — without it the Balance section below silently shows the "0.00000000" fallback
+        // instead of a real balance.
+        chatViewModel.refreshContactBalance(contactId)
     }
 
     val scrollState = rememberScrollState()
@@ -3471,7 +3730,7 @@ fun ChatInfoScreen(
         containerColor = Color.Black,
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("Chat Info", color = Color.White, fontWeight = FontWeight.Bold) },
+                title = { Text(if (fromBroadcast) "User Info" else "Chat Info", color = Color.White, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     TextButton(onClick = onBack) {
                         Text("Cancel", color = KaspaTeal, fontWeight = FontWeight.Bold)
@@ -3544,16 +3803,18 @@ fun ChatInfoScreen(
                 }
             }
 
-            SettingsSection(title = "Incoming Notifications") {
-                Row(
-                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Default (Sound)", color = KaspaTeal)
-                    Icon(Icons.Default.UnfoldMore, null, tint = Color.Gray, modifier = Modifier.size(16.dp))
+            if (!fromBroadcast) {
+                SettingsSection(title = "Incoming Notifications") {
+                    Row(
+                        modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Default (Sound)", color = KaspaTeal)
+                        Icon(Icons.Default.UnfoldMore, null, tint = Color.Gray, modifier = Modifier.size(16.dp))
+                    }
+                    SettingsFooter("Default follows Settings > Notifications. Off disables notifications for this contact.")
                 }
-                SettingsFooter("Default follows Settings > Notifications. Off disables notifications for this contact.")
             }
 
             SettingsSection(title = "Address") {
@@ -3748,40 +4009,42 @@ fun ChatInfoScreen(
                 }
             }
 
-            SettingsSection(title = "Info") {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    val addedDate = remember(conversation) {
-                        conversation?.contact?.addedAt?.let {
-                            java.text.SimpleDateFormat("MMMM dd, yyyy", java.util.Locale.US).format(java.util.Date(it))
-                        } ?: "Unknown"
-                    }
-                    
-                    val lastMessageTime = remember(messages) {
-                        messages.firstOrNull()?.blockTimestamp?.let {
-                            val diff = System.currentTimeMillis() - it
-                            val hours = diff / (1000 * 60 * 60)
-                            val minutes = (diff / (1000 * 60)) % 60
-                            if (hours > 0) "${hours} hr, ${minutes} min" else "${minutes} min"
-                        } ?: "None"
-                    }
+            if (!fromBroadcast) {
+                SettingsSection(title = "Info") {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        val addedDate = remember(conversation) {
+                            conversation?.contact?.addedAt?.let {
+                                java.text.SimpleDateFormat("MMMM dd, yyyy", java.util.Locale.US).format(java.util.Date(it))
+                            } ?: "Unknown"
+                        }
 
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Added", color = Color.White)
-                        Text(addedDate, color = Color.Gray)
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
-                    Spacer(Modifier.height(12.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Last Message", color = Color.White)
-                        Text(lastMessageTime, color = Color.Gray)
-                    }
-                    Spacer(Modifier.height(24.dp))
-                    
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-                        InfoStatItem(label = "Sent", value = messages.count { it.direction == "sent" }.toString())
-                        InfoStatItem(label = "Received", value = messages.count { it.direction == "received" }.toString())
-                        InfoStatItem(label = "Total", value = messages.size.toString())
+                        val lastMessageTime = remember(messages) {
+                            messages.firstOrNull()?.blockTimestamp?.let {
+                                val diff = System.currentTimeMillis() - it
+                                val hours = diff / (1000 * 60 * 60)
+                                val minutes = (diff / (1000 * 60)) % 60
+                                if (hours > 0) "${hours} hr, ${minutes} min" else "${minutes} min"
+                            } ?: "None"
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Added", color = Color.White)
+                            Text(addedDate, color = Color.Gray)
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                        Spacer(Modifier.height(12.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Last Message", color = Color.White)
+                            Text(lastMessageTime, color = Color.Gray)
+                        }
+                        Spacer(Modifier.height(24.dp))
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                            InfoStatItem(label = "Sent", value = messages.count { it.direction == "sent" }.toString())
+                            InfoStatItem(label = "Received", value = messages.count { it.direction == "received" }.toString())
+                            InfoStatItem(label = "Total", value = messages.size.toString())
+                        }
                     }
                 }
             }

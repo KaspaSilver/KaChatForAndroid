@@ -188,6 +188,12 @@ class WalletManager @Inject constructor(
         return getActiveAccount()?.name ?: "My Account"
     }
 
+    /** Renames a saved account in place — used from the Profile screen's editable account name. */
+    fun renameAccount(address: String, newName: String) {
+        val accounts = getAccounts().map { if (it.address == address) it.copy(name = newName) else it }
+        saveAccounts(accounts)
+    }
+
     fun getActiveMnemonic(): String? {
         return getActiveAccount()?.mnemonic
     }

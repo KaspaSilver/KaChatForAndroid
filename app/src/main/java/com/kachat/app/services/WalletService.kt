@@ -92,6 +92,17 @@ class WalletService @Inject constructor(
     }
 
     /**
+     * Sends a broadcast message to a public channel — a "bcast" self-stash transaction, same
+     * shape as [sendKasiaMessage] but never encrypted (broadcasts are plaintext by design, since
+     * they're public one-to-many channels rather than a 1:1 conversation — matches Kasia).
+     */
+    suspend fun sendBroadcast(channel: String, content: String): SendResult {
+        val payloadBytes = MessageProtocol.buildBcastPayload(channel, content)
+        val txId = sendKaspa(toAddress = walletManager.getAddress(), amountSompi = 0, payloadBytes = payloadBytes)
+        return SendResult(txId, payloadBytes.toHexString())
+    }
+
+    /**
      * Sends a "handshake" transaction (0.2 KAS to the recipient) carrying our alias
      * and encrypted for their address-derived public key.
      *

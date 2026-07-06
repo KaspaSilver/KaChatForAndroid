@@ -66,4 +66,50 @@ class MessageProtocolTest {
         assertNull(MessageProtocol.parseCommPayload("not a payload".toByteArray()))
         assertTrue(!MessageProtocol.isKaChatPayload("random bytes".toByteArray()))
     }
+
+    @Test
+    fun `bcast payload builds and parses back to the original channel and content`() {
+        val payloadBytes = MessageProtocol.buildBcastPayload("general", "hey everyone")
+
+        assertTrue(MessageProtocol.isKaChatPayload(payloadBytes))
+        assertEquals("ciph_msg:1:bcast:general:hey everyone", String(payloadBytes, Charsets.UTF_8))
+
+        val parsed = MessageProtocol.parseBcastPayload(payloadBytes)!!
+        assertEquals("general", parsed.channel)
+        assertEquals("hey everyone", parsed.content)
+    }
+
+    @Test
+    fun `bcast content containing colons round-trips intact`() {
+        val payloadBytes = MessageProtocol.buildBcastPayload("general", "time is 10:30:00, right?")
+        val parsed = MessageProtocol.parseBcastPayload(payloadBytes)!!
+        assertEquals("general", parsed.channel)
+        assertEquals("time is 10:30:00, right?", parsed.content)
+    }
+
+    @Test
+    fun `parseBcastPayload rejects a comm payload and vice versa`() {
+        val recipientPriv = randomScalarBytes()
+        val recipientPub = Schnorr.publicKeyXOnly(recipientPriv)
+        val commPayload = MessageProtocol.buildCommPayload("alice", MessageProtocol.encrypt("hi", recipientPub))
+        val bcastPayload = MessageProtocol.buildBcastPayload("general", "hi")
+
+        assertNull(MessageProtocol.parseBcastPayload(commPayload))
+        assertNull(MessageProtocol.parseCommPayload(bcastPayload))
+    }
+
+    @Test
+    fun `normalizeChannelName lowercases and trims`() {
+        assertEquals("general", MessageProtocol.normalizeChannelName("  General  "))
+    }
+
+    @Test
+    fun `isValidChannelName rejects blank, whitespace, colons, and over-length names`() {
+        assertTrue(MessageProtocol.isValidChannelName("general"))
+        assertTrue(!MessageProtocol.isValidChannelName(""))
+        assertTrue(!MessageProtocol.isValidChannelName("has space"))
+        assertTrue(!MessageProtocol.isValidChannelName("has:colon"))
+        assertTrue(!MessageProtocol.isValidChannelName("a".repeat(37)))
+        assertTrue(MessageProtocol.isValidChannelName("a".repeat(36)))
+    }
 }
