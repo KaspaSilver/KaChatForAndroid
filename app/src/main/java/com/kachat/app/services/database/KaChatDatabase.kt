@@ -2,7 +2,10 @@ package com.kachat.app.services.database
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import com.kachat.app.models.BroadcastChannelEntity
+import com.kachat.app.models.BroadcastMessageEntity
 import com.kachat.app.models.ContactEntity
+import com.kachat.app.models.HiddenBroadcastSenderEntity
 import com.kachat.app.models.MessageEntity
 
 /**
@@ -16,11 +19,15 @@ import com.kachat.app.models.MessageEntity
     entities = [
         MessageEntity::class,
         ContactEntity::class,
+        BroadcastChannelEntity::class,
+        BroadcastMessageEntity::class,
+        HiddenBroadcastSenderEntity::class,
     ],
-    version = 9,
+    version = 15,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun contactDao(): ContactDao
+    abstract fun broadcastDao(): BroadcastDao
 }

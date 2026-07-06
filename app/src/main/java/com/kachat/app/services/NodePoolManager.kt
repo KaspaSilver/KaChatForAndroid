@@ -250,8 +250,6 @@ class NodePoolManager @Inject constructor() {
             ip = record.address,
             type = record.type,
             latency = record.lastProbe?.latencyMs?.let { "${it}ms" } ?: "—",
-            distance = "Unknown", // no geolocation data source exists or is in scope — not fabricated
-            country = "Unknown",
             daaScore = record.lastProbe?.virtualDaaScore?.toString() ?: "N/A",
             status = status,
             color = color

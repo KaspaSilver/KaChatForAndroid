@@ -34,6 +34,9 @@ class NotificationHelper @Inject constructor(
     // set by ChatViewModel as ChatThreadScreen opens/closes.
     private val activeContactId = MutableStateFlow<String?>(null)
 
+    // Same idea for broadcast channels — set by BroadcastViewModel's startLiveViewing/stopLiveViewing.
+    private val activeChannelName = MutableStateFlow<String?>(null)
+
     init {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // A channel's sound/vibration is fixed by the OS once created — the app can't
@@ -55,6 +58,10 @@ class NotificationHelper @Inject constructor(
 
     fun setActiveContact(contactId: String?) {
         activeContactId.value = contactId
+    }
+
+    fun setActiveChannel(channelName: String?) {
+        activeChannelName.value = channelName
     }
 
     suspend fun show(contactId: String, title: String, text: String) {
@@ -98,9 +105,50 @@ class NotificationHelper @Inject constructor(
         }
     }
 
+    /** Per-channel opt-in notification for a new broadcast message — see [EXTRA_CHANNEL_NAME]/BroadcastScanningService. */
+    suspend fun showBroadcast(channelName: String, title: String, text: String) {
+        if (activeChannelName.value == channelName) return // already looking at this channel
+        if (!settings.notificationsEnabled.first()) return
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_CHANNEL_NAME, channelName)
+        }
+        // Stable per-channel request code, same reasoning as the per-contact one above.
+        val notificationId = channelName.hashCode()
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val soundEnabled = settings.notificationSoundEnabled.first()
+        val vibrationEnabled = settings.notificationVibrationEnabled.first()
+        val channelId = channelFor(soundEnabled, vibrationEnabled)
+        val notification = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_kachat_logo)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setSilent(!soundEnabled && !vibrationEnabled)
+            .setVibrate(if (vibrationEnabled) longArrayOf(0, 250, 250, 250) else longArrayOf(0))
+            .apply { if (!soundEnabled) setSound(null) }
+            .build()
+
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, notification)
+        } catch (e: SecurityException) {
+            // POST_NOTIFICATIONS not granted — skip rather than crash.
+        }
+    }
+
     companion object {
         const val CHANNEL_ID = "kachat_messages_sound_vibrate"
         const val EXTRA_CONTACT_ID = "contact_id"
+        const val EXTRA_CHANNEL_NAME = "channel_name"
 
         // (channelId, soundEnabled, vibrationEnabled)
         private val CHANNELS = listOf(

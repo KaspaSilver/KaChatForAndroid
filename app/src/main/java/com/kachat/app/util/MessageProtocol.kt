@@ -17,6 +17,9 @@ object MessageProtocol {
     const val TYPE_HANDSHAKE  = "handshake"
     const val TYPE_COMM       = "comm"
     const val TYPE_PAY        = "pay"
+    const val TYPE_BCAST      = "bcast"
+
+    const val MAX_BROADCAST_CHANNEL_NAME_LENGTH = 36
 
     private val HANDSHAKE_PREFIX_BYTES = "$PREFIX:$VERSION:$TYPE_HANDSHAKE:".toByteArray(Charsets.US_ASCII)
 
@@ -87,4 +90,33 @@ object MessageProtocol {
 
     fun decrypt(encrypted: KasiaCipher.EncryptedMessage, privateKey: ByteArray): String =
         KasiaCipher.decrypt(encrypted, privateKey)
+
+    data class BroadcastMessage(val channel: String, val content: String)
+
+    /**
+     * Builds "ciph_msg:1:bcast:<channel>:<content>" — broadcasts are never encrypted (matches
+     * Kasia: a broadcast is a public, one-to-many channel, so pairwise ECDH encryption doesn't
+     * apply the same way it does to a 1:1 message). [channel] should already be normalized via
+     * [normalizeChannelName]/[isValidChannelName] before calling this.
+     */
+    fun buildBcastPayload(channel: String, content: String): ByteArray =
+        "$PREFIX:$VERSION:$TYPE_BCAST:$channel:$content".toByteArray(Charsets.UTF_8)
+
+    /** Parses a "bcast" payload, returning the channel name and plaintext content. */
+    fun parseBcastPayload(rawBytes: ByteArray): BroadcastMessage? {
+        val text = try { String(rawBytes, Charsets.UTF_8) } catch (e: Exception) { return null }
+        // ["ciph_msg", "1", "bcast", channel, content] — same shape as parseCommPayload.
+        val parts = text.split(":", limit = 5)
+        if (parts.size != 5 || parts[0] != PREFIX || parts[1] != VERSION || parts[2] != TYPE_BCAST) return null
+        return BroadcastMessage(channel = parts[3], content = parts[4])
+    }
+
+    /** Lowercases and trims a user-entered channel name — the canonical form used for storage/comparison/on-chain payloads. */
+    fun normalizeChannelName(name: String): String = name.trim().lowercase()
+
+    /** Matches Kasia's channel-name rules: non-blank, no whitespace, no colons (the payload delimiter), within the length cap. */
+    fun isValidChannelName(name: String): Boolean {
+        if (name.isEmpty() || name.length > MAX_BROADCAST_CHANNEL_NAME_LENGTH) return false
+        return name.none { it.isWhitespace() || it == ':' }
+    }
 }

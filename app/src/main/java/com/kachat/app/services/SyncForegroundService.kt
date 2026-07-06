@@ -10,6 +10,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.kachat.app.R
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 /**
  * Exists purely to keep this process exempt from Android's background app freezer —
@@ -18,10 +19,15 @@ import dagger.hilt.android.AndroidEntryPoint
  * new-message/handshake/payment notifications from ever firing. This service does no
  * work of its own; ChatRepository's existing singleton-scoped poll loop keeps running
  * in the same process as long as a foreground service is active, so just holding the
- * required persistent notification here is enough.
+ * required persistent notification here is enough. BroadcastScanningService's block-scanning
+ * loop (when the user has opted in) benefits from the same process-priority protection for
+ * free — the notification text below just reflects that it's also running.
  */
 @AndroidEntryPoint
 class SyncForegroundService : Service() {
+
+    @Inject
+    lateinit var broadcastScanningService: BroadcastScanningService
 
     override fun onCreate() {
         super.onCreate()
@@ -34,10 +40,15 @@ class SyncForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val contentText = if (broadcastScanningService.isRunning) {
+            "Checking for new messages and broadcasts"
+        } else {
+            "Checking for new messages"
+        }
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_kachat_logo)
             .setContentTitle("KaChat")
-            .setContentText("Checking for new messages")
+            .setContentText(contentText)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .build()

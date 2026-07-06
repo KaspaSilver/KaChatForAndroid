@@ -102,6 +102,16 @@ class WalletViewModel @Inject constructor(
         _isLoggedIn.value = false
     }
 
+    /** Renames the active account — edited from the Profile screen's "Name" section. */
+    fun renameActiveAccount(newName: String) {
+        val trimmed = newName.trim()
+        val currentAddress = _address.value
+        if (trimmed.isEmpty() || currentAddress == null) return
+        walletManager.renameAccount(currentAddress, trimmed)
+        _accountName.value = trimmed
+        _accounts.value = walletManager.getAllAccounts()
+    }
+
     fun createWallet(name: String, wordCount: Int = 12) {
         viewModelScope.launch {
             val words = walletManager.createWallet(name, wordCount)

@@ -11,3 +11,6 @@
 *.jks
 *.keystore
 keystore.properties
+
+# Local Claude Code session state — not part of the app
+/.claude/

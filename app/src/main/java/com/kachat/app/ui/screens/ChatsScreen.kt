@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -40,12 +41,15 @@ import com.kachat.app.viewmodels.WalletViewModel
 import com.kachat.app.viewmodels.ConnectionViewModel
 import com.kachat.app.viewmodels.ChatViewModel
 import com.kachat.app.models.Conversation
+import com.kachat.app.models.MessageEntity
+import com.kachat.app.util.MessageReply
 import com.kachat.app.util.VoiceMessage
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.filled.PersonAddAlt1
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -73,7 +77,28 @@ fun ChatsScreen(
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val conversations by chatViewModel.conversations.collectAsState()
     val isRefreshing by chatViewModel.isRefreshing.collectAsState()
-    
+    var searchQuery by remember { mutableStateOf("") }
+
+    // Matches on whatever's already shown per row — display name/alias, KNS domain, the raw
+    // address (so pasting/typing part of an address you recognize still finds it), and the last
+    // message preview text (reply/voice-aware, same as what's rendered) — not just the name.
+    val filteredConversations = remember(conversations, searchQuery) {
+        val query = searchQuery.trim()
+        if (query.isBlank()) {
+            conversations
+        } else {
+            conversations.filter { convo ->
+                val contactLabel = convo.contact.alias ?: convo.contact.id.takeLast(8)
+                listOfNotNull(
+                    convo.contact.alias,
+                    convo.contact.knsName,
+                    convo.contact.id,
+                    messagePreviewText(convo.lastMessage, contactLabel)
+                ).any { it.contains(query, ignoreCase = true) }
+            }
+        }
+    }
+
     val pullRefreshState = rememberPullRefreshState(
         refreshing = isRefreshing,
         onRefresh = { chatViewModel.refreshChats() }
@@ -133,24 +158,58 @@ fun ChatsScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 // Search Bar
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(22.dp)),
+                    placeholder = { Text("Search chats", color = Color.Gray) },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+                    },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear search", tint = Color.Gray, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    },
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color(0xFF1C1C1E),
+                        unfocusedContainerColor = Color(0xFF1C1C1E),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = KaspaTeal,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    )
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(44.dp)
-                        .background(Color(0xFF1C1C1E), RoundedCornerShape(22.dp))
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(Color(0xFF1C1C1E))
+                        .clickable { navController.navigate("broadcasts") }
                         .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Search,
+                        imageVector = Icons.Default.RssFeed,
                         contentDescription = null,
-                        tint = Color.Gray,
+                        tint = KaspaTeal,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Search chats",
-                        color = Color.Gray,
+                        text = "Broadcasts",
+                        color = Color.White,
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -213,9 +272,30 @@ fun ChatsScreen(
                         }
                     }
                 }
+            } else if (filteredConversations.isEmpty()) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxSize().padding(bottom = 100.dp)
+                ) {
+                    Text(
+                        text = "No Matching Chats",
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = "No chats match \"$searchQuery\"",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = Color.Gray,
+                        textAlign = TextAlign.Center
+                    )
+                }
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(conversations, key = { it.contact.id }) { convo ->
+                    items(filteredConversations, key = { it.contact.id }) { convo ->
                         val dismissState = rememberSwipeToDismissBoxState(
                             confirmValueChange = {
                                 if (it == SwipeToDismissBoxValue.EndToStart) {
@@ -279,8 +359,18 @@ fun ChatsScreen(
     }
 }
 
-/** A one-line preview of a message body, for the chat list and anywhere else a raw body would otherwise leak the audio-message JSON blob to the user. */
-private fun messagePreviewText(body: String?): String? {
+/**
+ * A one-line preview of a message body, for the chat list and anywhere else a raw body would
+ * otherwise leak the audio-message or reply JSON blob to the user. [contactLabel] names the other
+ * party, used when they're the one who sent a reply ("Alice replied to ..." vs "You replied to ...").
+ */
+private fun messagePreviewText(message: MessageEntity?, contactLabel: String): String? {
+    val body = message?.plaintextBody ?: return null
+    val replyContent = MessageReply.parseOrNull(body)
+    if (replyContent != null) {
+        val who = if (message.direction == "sent") "You" else contactLabel
+        return "$who replied to \"${replyContent.replyToPreview}\""
+    }
     if (VoiceMessage.parseOrNull(body) != null) return "🎤 Audio message"
     return body
 }
@@ -303,16 +393,17 @@ private fun ConversationRow(convo: Conversation, onClick: () -> Unit) {
         Spacer(Modifier.width(16.dp))
 
         Column(modifier = Modifier.weight(1f)) {
+            val contactLabel = convo.contact.alias ?: convo.contact.id.takeLast(8)
             Text(
-                text = convo.contact.alias ?: convo.contact.id.takeLast(8),
+                text = contactLabel,
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White,
                 fontWeight = FontWeight.Bold
             )
             Text(
                 text = when {
-                    convo.contact.conversationStatus == "pending" -> "🤝 ${messagePreviewText(convo.lastMessage?.plaintextBody) ?: "Wants to connect"}"
-                    else -> messagePreviewText(convo.lastMessage?.plaintextBody) ?: "No messages yet"
+                    convo.contact.conversationStatus == "pending" -> "🤝 ${messagePreviewText(convo.lastMessage, contactLabel) ?: "Wants to connect"}"
+                    else -> messagePreviewText(convo.lastMessage, contactLabel) ?: "No messages yet"
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (convo.contact.conversationStatus == "pending") KaspaTeal else Color.Gray,

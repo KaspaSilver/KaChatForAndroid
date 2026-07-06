@@ -6,8 +6,8 @@ import org.junit.Test
 class ConnectionStatusTest {
 
     private fun node(latency: String) = NodeInfo(
-        ip = "1.2.3.4:16110", type = "Seed", latency = latency, distance = "Unknown",
-        country = "Unknown", daaScore = "N/A", status = "Active", color = 0xFF4CD964
+        ip = "1.2.3.4:16110", type = "Seed", latency = latency,
+        daaScore = "N/A", status = "Active", color = 0xFF4CD964
     )
 
     @Test

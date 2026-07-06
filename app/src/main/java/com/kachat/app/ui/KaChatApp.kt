@@ -23,10 +23,12 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.kachat.app.ui.screens.*
 import com.kachat.app.ui.theme.KaspaTeal
 import com.kachat.app.viewmodels.WalletViewModel
@@ -56,7 +58,9 @@ val bottomNavItems = listOf(
 fun KaChatApp(
     walletViewModel: WalletViewModel = hiltViewModel(),
     pendingContactId: String? = null,
-    onPendingContactHandled: () -> Unit = {}
+    onPendingContactHandled: () -> Unit = {},
+    pendingChannelName: String? = null,
+    onPendingChannelHandled: () -> Unit = {}
 ) {
     val isLoggedIn by walletViewModel.isLoggedIn.collectAsState()
     val mnemonic by walletViewModel.mnemonic.collectAsState()
@@ -67,7 +71,9 @@ fun KaChatApp(
         MainShell(
             walletViewModel = walletViewModel,
             pendingContactId = pendingContactId,
-            onPendingContactHandled = onPendingContactHandled
+            onPendingContactHandled = onPendingContactHandled,
+            pendingChannelName = pendingChannelName,
+            onPendingChannelHandled = onPendingChannelHandled
         )
     }
 }
@@ -77,13 +83,18 @@ fun MainShell(
     walletViewModel: WalletViewModel = hiltViewModel(),
     chatViewModel: ChatViewModel = hiltViewModel(),
     pendingContactId: String? = null,
-    onPendingContactHandled: () -> Unit = {}
+    onPendingContactHandled: () -> Unit = {},
+    pendingChannelName: String? = null,
+    onPendingChannelHandled: () -> Unit = {}
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
+    // The broadcasts list isn't one of the three real tabs, but it's still a top-level browsing
+    // screen (like Chats) rather than a "pushed" detail screen — the bottom nav should stay put
+    // and stay functional there, not disappear the way it does for chat/chat_info/etc.
     val onTabRoute = currentDestination?.hierarchy?.any { dest ->
-        bottomNavItems.any { it.route == dest.route }
+        bottomNavItems.any { it.route == dest.route } || dest.route == "broadcasts"
     } == true
 
     // Tapping a notification for a message/handshake/payment jumps straight to that
@@ -93,6 +104,14 @@ fun MainShell(
         if (pendingContactId != null) {
             navController.navigate("chat/$pendingContactId")
             onPendingContactHandled()
+        }
+    }
+
+    // Same idea for a notify-enabled broadcast channel's new message notification.
+    LaunchedEffect(pendingChannelName) {
+        if (pendingChannelName != null) {
+            navController.navigate("broadcast_channel/$pendingChannelName")
+            onPendingChannelHandled()
         }
     }
 
@@ -107,6 +126,11 @@ fun MainShell(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
+                        // navigationBarsPadding() first so the 24dp visual margin sits above
+                        // the system nav bar (gesture pill or 3-button bar) rather than being
+                        // eaten by it — its height isn't the same on every device, so a fixed
+                        // dp value alone left the tab bar sitting under/behind it on some phones.
+                        .navigationBarsPadding()
                         .padding(bottom = 24.dp, start = 24.dp, end = 24.dp),
                     contentAlignment = Alignment.BottomCenter
                 ) {
@@ -128,12 +152,25 @@ fun MainShell(
                                     .weight(1f)
                                     .clip(RoundedCornerShape(32.dp))
                                     .clickable {
-                                        navController.navigate(screen.route) {
-                                            popUpTo(navController.graph.findStartDestination().id) {
-                                                saveState = true
+                                        // Tapping back to the graph's start destination (Chats) from a
+                                        // "pushed" screen like Broadcasts via navigate()+popUpTo alone is
+                                        // silently a no-op in Navigation Compose — popBackStack to the
+                                        // route directly first (it's already on the back stack) actually
+                                        // pops it. Only fall back to navigate() when the tab isn't already
+                                        // present on the stack (first visit to a peer tab).
+                                        val poppedToExisting = navController.popBackStack(
+                                            route = screen.route,
+                                            inclusive = false,
+                                            saveState = true
+                                        )
+                                        if (!poppedToExisting) {
+                                            navController.navigate(screen.route) {
+                                                popUpTo(navController.graph.findStartDestination().id) {
+                                                    saveState = true
+                                                }
+                                                launchSingleTop = true
+                                                restoreState = true
                                             }
-                                            launchSingleTop = true
-                                            restoreState = true
                                         }
                                     },
                                 contentAlignment = Alignment.Center
@@ -229,6 +266,33 @@ fun MainShell(
                 )
             }
 
+            composable("hidden_broadcast_users") {
+                HiddenBroadcastUsersScreen(
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable("broadcasts") {
+                // Now a tab-like route (see onTabRoute above) with the floating bottom nav
+                // visible over it, same bottom-padding treatment as Chats/Settings/Profile so
+                // that overlay doesn't cover the last row of content.
+                Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
+                    BroadcastListScreen(
+                        navController = navController,
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+            }
+
+            composable("broadcast_channel/{channelName}") { backStackEntry ->
+                val channelName = backStackEntry.arguments?.getString("channelName") ?: return@composable
+                BroadcastChannelScreen(
+                    channelName = channelName,
+                    onBack = { navController.popBackStack() },
+                    navController = navController
+                )
+            }
+
             composable("create_chat") {
                 CreateChatScreen(
                     onBack = { navController.popBackStack() },
@@ -241,21 +305,33 @@ fun MainShell(
                 )
             }
 
-            // Chat thread — navigated to from ChatsScreen
-            composable("chat/{contactId}") { backStackEntry ->
+            // Chat thread — navigated to from ChatsScreen. paymentMode is an optional query-style
+            // arg (defaults false) so a "Pay in Kaspa" shortcut elsewhere (e.g. a broadcast
+            // sender's avatar menu) can land the user straight in payment-entry mode.
+            composable(
+                "chat/{contactId}?paymentMode={paymentMode}",
+                arguments = listOf(navArgument("paymentMode") { type = NavType.BoolType; defaultValue = false })
+            ) { backStackEntry ->
                 val contactId = backStackEntry.arguments?.getString("contactId") ?: return@composable
+                val startInPaymentMode = backStackEntry.arguments?.getBoolean("paymentMode") ?: false
                 ChatThreadScreen(
-                    navController = navController, 
+                    navController = navController,
                     contactId = contactId,
-                    chatViewModel = chatViewModel
+                    chatViewModel = chatViewModel,
+                    startInPaymentMode = startInPaymentMode
                 )
             }
 
-            composable("chat_info/{contactId}") { backStackEntry ->
+            composable(
+                "chat_info/{contactId}?fromBroadcast={fromBroadcast}",
+                arguments = listOf(navArgument("fromBroadcast") { type = NavType.BoolType; defaultValue = false })
+            ) { backStackEntry ->
                 val contactId = backStackEntry.arguments?.getString("contactId") ?: return@composable
+                val fromBroadcast = backStackEntry.arguments?.getBoolean("fromBroadcast") ?: false
                 ChatInfoScreen(
                     contactId = contactId,
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    fromBroadcast = fromBroadcast
                 )
             }
         }
