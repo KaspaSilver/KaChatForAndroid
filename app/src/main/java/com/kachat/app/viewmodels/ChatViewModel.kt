@@ -44,6 +44,7 @@ class ChatViewModel @Inject constructor(
     private val knsService: KnsService,
     private val systemContactsSyncService: SystemContactsSyncService,
     private val chatHistoryExportImportService: ChatHistoryExportImportService,
+    private val diagnosticsExportService: com.kachat.app.services.DiagnosticsExportService,
     private val voiceRecorderService: VoiceRecorderService,
     private val googleDriveBackupService: GoogleDriveBackupService
 ) : ViewModel() {
@@ -90,6 +91,25 @@ class ChatViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Chat history export failed", e)
                 _exportState.value = ChatHistoryOpState(status = ChatHistoryOpStatus.FAILED, message = e.message ?: "Export failed")
+            }
+        }
+    }
+
+    private val _diagnosticsExportState = MutableStateFlow(ChatHistoryOpState())
+    val diagnosticsExportState: StateFlow<ChatHistoryOpState> = _diagnosticsExportState.asStateFlow()
+
+    /** Builds the diagnostics zip, then hands its content:// URI to [onReady] — see DiagnosticsExportService. */
+    fun exportDiagnostics(onReady: (Uri) -> Unit) {
+        if (_diagnosticsExportState.value.status == ChatHistoryOpStatus.IN_PROGRESS) return
+        viewModelScope.launch {
+            _diagnosticsExportState.value = ChatHistoryOpState(status = ChatHistoryOpStatus.IN_PROGRESS)
+            try {
+                val uri = diagnosticsExportService.exportDiagnostics()
+                _diagnosticsExportState.value = ChatHistoryOpState(status = ChatHistoryOpStatus.SUCCESS)
+                onReady(uri)
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Diagnostics export failed", e)
+                _diagnosticsExportState.value = ChatHistoryOpState(status = ChatHistoryOpStatus.FAILED, message = e.message ?: "Export failed")
             }
         }
     }
@@ -327,25 +347,9 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { chatRepository.markAsRead(contactId) }
     }
 
-    val archivedConversations: StateFlow<List<Conversation>> = combine(
-        chatRepository.getArchivedContacts(),
-        chatRepository.getLatestMessages()
-    ) { contacts, latestMessages ->
-        val latestByContact = latestMessages.associateBy { it.contactId }
-        contacts.map { contact ->
-            Conversation(contact, latestByContact[contact.id], 0)
-        }.sortedByDescending { it.lastMessage?.blockTimestamp ?: 0L }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyList())
-
-    val archivedCount: StateFlow<Int> = archivedConversations.map { it.size }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), 0)
-
-    fun archiveChat(contactId: String) {
-        viewModelScope.launch { chatRepository.archiveContact(contactId) }
-    }
-
-    fun unarchiveChat(contactId: String) {
-        viewModelScope.launch { chatRepository.unarchiveContact(contactId) }
+    /** Permanently deletes the chat (contact + all local messages) — see ChatRepository.deleteChat. */
+    fun deleteChat(contactId: String) {
+        viewModelScope.launch { chatRepository.deleteChat(contactId) }
     }
 
     fun updateHideAutoCreatedPaymentChats(enabled: Boolean) {
@@ -374,13 +378,9 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /** Purely local — no transaction sent, matches the reference apps' decline behavior. */
+    /** Purely local — no transaction sent. Declining fully deletes the contact (see [deleteChat]) — the same as any other delete, they'd need a fresh handshake to reach you again. */
     fun declineHandshake(contactId: String) {
-        viewModelScope.launch {
-            val contact = chatRepository.getContact(contactId) ?: return@launch
-            chatRepository.addContact(contact.copy(conversationStatus = "rejected"))
-            chatRepository.archiveContact(contactId)
-        }
+        viewModelScope.launch { chatRepository.deleteChat(contactId) }
     }
 
     fun updateContactName(contactId: String, newName: String) {
@@ -545,11 +545,10 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             val existing = chatRepository.getContact(address)
             if (existing != null) {
-                // If contact exists, unarchive it and update name if provided
+                // If contact exists, update name if provided
                 val updated = existing.copy(
                     alias = if (name.isNullOrBlank()) existing.alias else name,
-                    knsName = knsName ?: existing.knsName,
-                    isArchived = false
+                    knsName = knsName ?: existing.knsName
                 )
                 chatRepository.addContact(updated)
             } else {
@@ -558,8 +557,7 @@ class ChatViewModel @Inject constructor(
                     walletAddress = walletManager.getAddress(),
                     alias = if (name.isNullOrBlank()) null else name,
                     knsName = knsName,
-                    publicKeyHex = null,
-                    isArchived = false
+                    publicKeyHex = null
                 )
                 chatRepository.addContact(newContact)
             }

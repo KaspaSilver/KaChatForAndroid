@@ -92,9 +92,12 @@ fun MainShell(
     val currentDestination = navBackStackEntry?.destination
     // The broadcasts list isn't one of the three real tabs, but it's still a top-level browsing
     // screen (like Chats) rather than a "pushed" detail screen — the bottom nav should stay put
-    // and stay functional there, not disappear the way it does for chat/chat_info/etc.
+    // and stay functional there, not disappear the way it does for chat/chat_info/etc. A broadcast
+    // room itself gets the same treatment (unlike a 1:1 chat thread) — it's still just browsing/
+    // participating in a public room, one tap away from Chats/Settings/Profile, not a private
+    // conversation you'd want to maximize screen space for.
     val onTabRoute = currentDestination?.hierarchy?.any { dest ->
-        bottomNavItems.any { it.route == dest.route } || dest.route == "broadcasts"
+        bottomNavItems.any { it.route == dest.route } || dest.route == "broadcasts" || dest.route == "broadcast_channel/{channelName}"
     } == true
 
     // Tapping a notification for a message/handshake/payment jumps straight to that
@@ -259,13 +262,6 @@ fun MainShell(
                 )
             }
 
-            composable("archived_chats") {
-                ArchivedChatsScreen(
-                    navController = navController,
-                    onBack = { navController.popBackStack() }
-                )
-            }
-
             composable("hidden_broadcast_users") {
                 HiddenBroadcastUsersScreen(
                     onBack = { navController.popBackStack() }
@@ -286,11 +282,15 @@ fun MainShell(
 
             composable("broadcast_channel/{channelName}") { backStackEntry ->
                 val channelName = backStackEntry.arguments?.getString("channelName") ?: return@composable
-                BroadcastChannelScreen(
-                    channelName = channelName,
-                    onBack = { navController.popBackStack() },
-                    navController = navController
-                )
+                // Same bottom-padding treatment as "broadcasts" — the floating tab bar sits below
+                // this screen's own message-compose bar rather than overlapping it.
+                Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
+                    BroadcastChannelScreen(
+                        channelName = channelName,
+                        onBack = { navController.popBackStack() },
+                        navController = navController
+                    )
+                }
             }
 
             composable("create_chat") {

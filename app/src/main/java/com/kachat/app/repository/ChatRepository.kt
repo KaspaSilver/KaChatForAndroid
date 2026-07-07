@@ -3,6 +3,7 @@ package com.kachat.app.repository
 import android.util.Log
 import com.google.gson.Gson
 import com.kachat.app.models.ContactEntity
+import com.kachat.app.models.DeletedContactEntity
 import com.kachat.app.models.HandshakePayload
 import com.kachat.app.models.MessageEntity
 import com.kachat.app.models.UnreadCount
@@ -115,19 +116,22 @@ class ChatRepository @Inject constructor(
     }
 
     fun getContacts(): Flow<List<ContactEntity>> {
-        return scopedToActiveAccount({ address -> database.contactDao().getActiveContacts(address) }, emptyList())
+        return scopedToActiveAccount({ address -> database.contactDao().getContacts(address) }, emptyList())
     }
 
-    fun getArchivedContacts(): Flow<List<ContactEntity>> {
-        return scopedToActiveAccount({ address -> database.contactDao().getArchivedContacts(address) }, emptyList())
-    }
-
-    suspend fun archiveContact(id: String) {
-        database.contactDao().updateArchivedStatus(id, walletManager.getAddress(), true)
-    }
-
-    suspend fun unarchiveContact(id: String) {
-        database.contactDao().updateArchivedStatus(id, walletManager.getAddress(), false)
+    /**
+     * Permanently deletes [contactId] and every local message with them — replaces the old
+     * reversible "archive". Talking to them again requires a fresh handshake, same as a stranger.
+     * Records a tombstone first so a future re-handshake's full-history re-sync can't silently
+     * resurrect the deleted conversation (see [DeletedContactEntity]'s doc comment).
+     */
+    suspend fun deleteChat(contactId: String) {
+        val myAddress = walletManager.getAddress()
+        database.contactDao().markContactDeleted(
+            DeletedContactEntity(contactId = contactId, walletAddress = myAddress)
+        )
+        database.messageDao().deleteAllForContact(contactId, myAddress)
+        database.contactDao().deleteContact(contactId, myAddress)
     }
 
     suspend fun addContact(contact: ContactEntity) {
@@ -270,6 +274,14 @@ class ChatRepository @Inject constructor(
     private suspend fun processHandshake(myAddress: String, handshake: HandshakeIndexerResponse) {
         if (!KaspaAddress.isValid(handshake.sender)) return
 
+        // A deleted contact's tombstone outlives the contact row itself — the indexer always
+        // returns a sender's *entire* handshake/message history, not just what's new since last
+        // sync, so without this a deleted chat would silently resurrect the moment this same old
+        // handshake transaction gets re-fetched. Only a handshake sent *after* the deletion
+        // creates a fresh contact/conversation.
+        val deletedAt = database.contactDao().getContactDeletedAt(handshake.sender, myAddress)
+        if (deletedAt != null && handshake.blockTime <= deletedAt) return
+
         val encryptedBytes = handshake.messagePayload.hexToBytes()
         val encryptedMessage = KasiaCipher.EncryptedMessage.fromBytes(encryptedBytes) ?: return
         val decryptedJson = MessageProtocol.decrypt(encryptedMessage, walletManager.getPrivateKeyBytes())
@@ -315,6 +327,11 @@ class ChatRepository @Inject constructor(
         val activeContacts = database.contactDao().getContactsByStatus("active", myAddress)
 
         for (contact in activeContacts) {
+            // See processHandshake's identical check — a re-added contact's tombstone still
+            // outlives the fresh contact row, so old pre-deletion messages from a full-history
+            // re-sync never resurrect, only whatever's genuinely new since the deletion.
+            val deletedAt = database.contactDao().getContactDeletedAt(contact.id, myAddress)
+
             // Legacy: the alias they told us in their handshake reply, if any. Deterministic:
             // derivable purely from both addresses, so it's always tryable even with no
             // handshake at all — see WalletManager.myDeterministicAlias.
@@ -336,6 +353,7 @@ class ChatRepository @Inject constructor(
                 for (message in messages) {
                     try {
                         if (database.messageDao().exists(message.txId, myAddress)) continue
+                        if (deletedAt != null && message.blockTime <= deletedAt) continue
                         processContextualMessage(myAddress, contact, message)
                     } catch (e: Exception) {
                         Log.w("ChatRepository", "Failed to process message ${message.txId}", e)
@@ -431,6 +449,12 @@ class ChatRepository @Inject constructor(
         val receivedSompi = tx.outputs.filter { it.scriptPublicKeyAddress == myAddress }.sumOf { it.amount }
         if (receivedSompi <= 0) return
 
+        // Same tombstone check as processHandshake/syncContextualMessages — an auto-detected
+        // payment can just as easily resurrect a deleted contact as a message can.
+        val blockTime = tx.blockTime ?: System.currentTimeMillis()
+        val deletedAt = database.contactDao().getContactDeletedAt(sender, myAddress)
+        if (deletedAt != null && blockTime <= deletedAt) return
+
         if (database.contactDao().getContact(sender, myAddress) == null) {
             database.contactDao().insert(ContactEntity(id = sender, walletAddress = myAddress, alias = null, knsName = null, publicKeyHex = null))
         }
@@ -446,7 +470,7 @@ class ChatRepository @Inject constructor(
                 plaintextBody = displayText,
                 encryptedPayload = "",
                 amountSompi = receivedSompi,
-                blockTimestamp = tx.blockTime ?: System.currentTimeMillis()
+                blockTimestamp = blockTime
             )
         )
 

@@ -5,6 +5,7 @@ import androidx.room.RoomDatabase
 import com.kachat.app.models.BroadcastChannelEntity
 import com.kachat.app.models.BroadcastMessageEntity
 import com.kachat.app.models.ContactEntity
+import com.kachat.app.models.DeletedContactEntity
 import com.kachat.app.models.HiddenBroadcastSenderEntity
 import com.kachat.app.models.MessageEntity
 
@@ -22,8 +23,9 @@ import com.kachat.app.models.MessageEntity
         BroadcastChannelEntity::class,
         BroadcastMessageEntity::class,
         HiddenBroadcastSenderEntity::class,
+        DeletedContactEntity::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {

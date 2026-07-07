@@ -47,8 +47,7 @@ class ChatHistoryExportImportService @Inject constructor(
      */
     suspend fun buildArchiveJson(): String {
         val myAddress = walletManager.getAddress()
-        val contactsById = (chatRepository.getContacts().first() + chatRepository.getArchivedContacts().first())
-            .associateBy { it.id }
+        val contactsById = chatRepository.getContacts().first().associateBy { it.id }
         val messages = chatRepository.getAllMessages()
 
         val conversations = messages

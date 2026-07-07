@@ -47,7 +47,6 @@ data class ContactEntity(
     val knsName: String?,                   // KNS domain e.g. "alice.kas"
     val publicKeyHex: String?,              // Secp256k1 public key (after handshake)
     val handshakeComplete: Boolean = false,
-    val isArchived: Boolean = false,
     val addedAt: Long = System.currentTimeMillis(),
     val conversationStatus: String = "active", // "pending" | "active" | "rejected"
     val theirAlias: String? = null,         // Alias THEY sent us in their handshake — required to query their self-stashed messages
@@ -56,6 +55,22 @@ data class ContactEntity(
     val systemContactId: String? = null,    // Phone contact's LOOKUP_KEY, once linked via "Link from Contacts" — takes priority over KNS auto-rename
     val systemContactName: String? = null,  // Name snapshot at link time, for the "Linked: X" row
     val systemContactLinkSource: String? = null // "manual" | "autoCreated" — only "autoCreated" shadow contacts get deleted if Autocreate is turned off
+)
+
+/**
+ * A tombstone marking that [contactId] was deleted (by this wallet) at [deletedAt] — survives
+ * the contact's own row being deleted, unlike the old "archive" flag. `syncContextualMessages`/
+ * `processHandshake` check this before ever re-inserting a message or recreating a contact: any
+ * message or handshake with `blockTimestamp <= deletedAt` is skipped, so a full re-sync of that
+ * sender's on-chain history (which the indexer always returns in full, not just "since last seen")
+ * can't silently resurrect a deleted conversation. A genuinely new handshake sent *after*
+ * [deletedAt] still creates a fresh contact/conversation normally.
+ */
+@Entity(tableName = "deleted_contacts", primaryKeys = ["contactId", "walletAddress"])
+data class DeletedContactEntity(
+    val contactId: String,
+    val walletAddress: String,
+    val deletedAt: Long = System.currentTimeMillis()
 )
 
 /**

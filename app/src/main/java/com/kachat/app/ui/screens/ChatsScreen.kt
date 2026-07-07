@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.RssFeed
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -55,8 +56,7 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.rememberSwipeToDismissBoxState
-import androidx.compose.material.icons.filled.Archive
-import androidx.compose.material.icons.filled.Unarchive
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
@@ -145,76 +145,98 @@ fun ChatsScreen(
                 modifier = Modifier
                     .background(Color.Black)
                     .statusBarsPadding()
-                    .padding(horizontal = 16.dp)
             ) {
-                Spacer(modifier = Modifier.height(16.dp))
+                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                TopStatusBar(
-                    balance = balance,
-                    onStatusClick = { navController.navigate("connection_status") },
-                    onAddClick = { navController.navigate("create_chat") },
-                    dotColorHex = dotColorHex
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Search Bar
-                TextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(22.dp)),
-                    placeholder = { Text("Search chats", color = Color.Gray) },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    leadingIcon = {
-                        Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(20.dp))
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear search", tint = Color.Gray, modifier = Modifier.size(18.dp))
-                            }
-                        }
-                    },
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color(0xFF1C1C1E),
-                        unfocusedContainerColor = Color(0xFF1C1C1E),
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        cursorColor = KaspaTeal,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
+                    TopStatusBar(
+                        balance = balance,
+                        onStatusClick = { navController.navigate("connection_status") },
+                        onAddClick = { navController.navigate("create_chat") },
+                        dotColorHex = dotColorHex
                     )
-                )
-                Spacer(modifier = Modifier.height(8.dp))
 
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Search Bar
+                    TextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .clip(RoundedCornerShape(22.dp)),
+                        placeholder = { Text("Search chats", color = Color.Gray) },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+                        },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear search", tint = Color.Gray, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        },
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color(0xFF1C1C1E),
+                            unfocusedContainerColor = Color(0xFF1C1C1E),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            cursorColor = KaspaTeal,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                // Outside the padded inner Column above — sharing the same unpadded layout
+                // context as ConversationRow below (in the un-padded LazyColumn) so this row's
+                // avatar size/position and divider match the real chat rows exactly, pixel for
+                // pixel, rather than sitting inset an extra 16dp from the wrapping Column's own
+                // horizontal padding.
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp)
-                        .clip(RoundedCornerShape(22.dp))
-                        .background(Color(0xFF1C1C1E))
                         .clickable { navController.navigate("broadcasts") }
-                        .padding(horizontal = 16.dp),
+                        .padding(horizontal = 16.dp, vertical = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.RssFeed,
-                        contentDescription = null,
-                        tint = KaspaTeal,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF1C1C1E)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.RssFeed,
+                            contentDescription = null,
+                            tint = KaspaTeal,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
                     Text(
                         text = "Broadcasts",
+                        style = MaterialTheme.typography.titleMedium,
                         color = Color.White,
-                        style = MaterialTheme.typography.bodyMedium
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = Color.Gray,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
-                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider(
+                    modifier = Modifier.padding(start = 72.dp),
+                    color = Color.DarkGray.copy(alpha = 0.5f)
+                )
             }
         }
     ) { padding ->
@@ -295,14 +317,19 @@ fun ChatsScreen(
                     )
                 }
             } else {
+                // Swiping never deletes on its own — it only stages a confirmation below, since
+                // unlike the old archive (reversible, one tap to undo) a delete permanently wipes
+                // local message history and a mis-swipe would be unrecoverable.
+                var contactToDelete by remember { mutableStateOf<String?>(null) }
+
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(filteredConversations, key = { it.contact.id }) { convo ->
                         val dismissState = rememberSwipeToDismissBoxState(
                             confirmValueChange = {
                                 if (it == SwipeToDismissBoxValue.EndToStart) {
-                                    chatViewModel.archiveChat(convo.contact.id)
-                                    true
-                                } else false
+                                    contactToDelete = convo.contact.id
+                                }
+                                false
                             }
                         )
 
@@ -325,11 +352,11 @@ fun ChatsScreen(
                                     if (dismissState.progress > 0.1f && dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart) {
                                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                             Icon(
-                                                imageVector = Icons.Default.Archive,
-                                                contentDescription = "Archive",
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Delete",
                                                 tint = Color.White
                                             )
-                                            Text("Archive", color = Color.White, style = MaterialTheme.typography.bodySmall)
+                                            Text("Delete", color = Color.White, style = MaterialTheme.typography.bodySmall)
                                         }
                                     }
                                 }
@@ -346,6 +373,35 @@ fun ChatsScreen(
                             }
                         }
                     }
+                }
+
+                contactToDelete?.let { contactId ->
+                    val label = filteredConversations.find { it.contact.id == contactId }
+                        ?.contact?.let { it.alias ?: it.id.takeLast(8) } ?: "this chat"
+                    AlertDialog(
+                        onDismissRequest = { contactToDelete = null },
+                        containerColor = Color(0xFF1C1C1E),
+                        title = { Text("Delete Chat with $label", color = Color.White) },
+                        text = {
+                            Text(
+                                "This permanently deletes every message with them on this device. This cannot be undone — messaging them again starts a brand new conversation.",
+                                color = Color.Gray
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                chatViewModel.deleteChat(contactId)
+                                contactToDelete = null
+                            }) {
+                                Text("Delete", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { contactToDelete = null }) {
+                                Text("Cancel", color = Color.Gray)
+                            }
+                        }
+                    )
                 }
             }
             

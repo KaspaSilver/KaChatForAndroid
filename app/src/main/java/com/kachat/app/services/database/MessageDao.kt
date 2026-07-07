@@ -67,6 +67,10 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE walletAddress = :walletAddress AND direction = 'received'")
     suspend fun deleteReceivedForWallet(walletAddress: String)
 
+    /** Every message with one specific contact, gone — used by ChatRepository.deleteChat's full-removal flow. */
+    @Query("DELETE FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress")
+    suspend fun deleteAllForContact(contactId: String, walletAddress: String)
+
     /** Every message for this wallet, gone — used when wiping an entire account. */
     @Query("DELETE FROM messages WHERE walletAddress = :walletAddress")
     suspend fun deleteAllForWallet(walletAddress: String)

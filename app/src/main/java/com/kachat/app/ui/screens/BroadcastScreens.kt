@@ -85,6 +85,7 @@ fun BroadcastListScreen(
     val popularTabEnabled by broadcastViewModel.popularTabEnabled.collectAsState()
     val showKnsAvatarsEnabled by broadcastViewModel.showKnsAvatarsEnabled.collectAsState()
     val autoAvatarSearchEnabled by broadcastViewModel.autoAvatarSearchEnabled.collectAsState()
+    val hiddenSenderAddresses by broadcastViewModel.hiddenSenderAddresses.collectAsState()
     val joinState by broadcastViewModel.joinChannelState.collectAsState()
     var showJoinDialog by remember { mutableStateOf(false) }
     var showBroadcastSettingsDialog by remember { mutableStateOf(false) }
@@ -553,6 +554,17 @@ fun BroadcastListScreen(
                             colors = SwitchDefaults.colors(checkedThumbColor = KaspaTeal, checkedTrackColor = KaspaTeal.copy(alpha = 0.5f))
                         )
                     }
+                    Spacer(Modifier.height(8.dp))
+                    HorizontalDivider(color = Color.DarkGray.copy(alpha = 0.5f))
+                    SettingsNavigationItem(
+                        "Hidden Broadcast Room Users",
+                        Icons.Default.VisibilityOff,
+                        hiddenSenderAddresses.size.toString(),
+                        onClick = {
+                            showBroadcastSettingsDialog = false
+                            navController.navigate("hidden_broadcast_users")
+                        }
+                    )
                 }
             },
             confirmButton = {

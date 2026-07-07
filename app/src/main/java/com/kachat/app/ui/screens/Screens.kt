@@ -52,7 +52,6 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -2306,8 +2305,7 @@ fun SettingsScreen(
     walletViewModel: WalletViewModel = hiltViewModel(),
     connectionViewModel: ConnectionViewModel = hiltViewModel(),
     chatViewModel: ChatViewModel = hiltViewModel(),
-    settingsViewModel: SettingsViewModel = hiltViewModel(),
-    broadcastViewModel: BroadcastViewModel = hiltViewModel()
+    settingsViewModel: SettingsViewModel = hiltViewModel()
 ) {
     val balance by walletViewModel.fullBalance.collectAsState()
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
@@ -2317,10 +2315,9 @@ fun SettingsScreen(
     val notificationsEnabled by settingsViewModel.notificationsEnabled.collectAsState()
     val syncSystemContactsEnabled by chatViewModel.syncSystemContactsEnabled.collectAsState()
     val autoCreateSystemContactsEnabled by chatViewModel.autoCreateSystemContactsEnabled.collectAsState()
-    val archivedCount by chatViewModel.archivedCount.collectAsState()
-    val hiddenBroadcastUsersCount by broadcastViewModel.hiddenSenderAddresses.collectAsState()
     val exportChatHistoryState by chatViewModel.exportState.collectAsState()
     val importChatHistoryState by chatViewModel.importState.collectAsState()
+    val diagnosticsExportState by chatViewModel.diagnosticsExportState.collectAsState()
     val scrollState = rememberScrollState()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -2386,14 +2383,6 @@ fun SettingsScreen(
                     if (notificationsEnabled) "On" else "Off",
                     onClick = { navController.navigate("notification_settings") }
                 )
-                SettingsDivider()
-                SettingsNavigationItem("Archived Chats", Icons.Outlined.Inventory2, archivedCount.toString(), onClick = {
-                    navController.navigate("archived_chats")
-                })
-                SettingsDivider()
-                SettingsNavigationItem("Hidden Broadcast Room Users", Icons.Default.VisibilityOff, hiddenBroadcastUsersCount.size.toString(), onClick = {
-                    navController.navigate("hidden_broadcast_users")
-                })
             }
 
             SettingsSection(title = "Contacts") {
@@ -2626,6 +2615,36 @@ fun SettingsScreen(
                         )
                     }
                 )
+            }
+
+            SettingsSection(title = "Diagnostics") {
+                val diagnosticsExportInFlight = diagnosticsExportState.status == ChatViewModel.ChatHistoryOpStatus.IN_PROGRESS
+
+                SettingsActionItem(
+                    label = if (diagnosticsExportInFlight) "Exporting..." else "Export Diagnostics Archive",
+                    icon = Icons.Default.BugReport,
+                    color = if (diagnosticsExportInFlight) Color.Gray else KaspaTeal
+                ) {
+                    if (!diagnosticsExportInFlight) {
+                        chatViewModel.exportDiagnostics { uri ->
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "application/zip"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Export Diagnostics Archive"))
+                        }
+                    }
+                }
+                if (diagnosticsExportState.status == ChatViewModel.ChatHistoryOpStatus.FAILED) {
+                    Text(
+                        diagnosticsExportState.message ?: "Export failed",
+                        color = Color(0xFFFF3B30),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+                SettingsFooter("Exports app/device info, connection settings, local message counts, and recent app logs as a zip — for troubleshooting with support. No private keys, seed phrases, or decrypted message content are included.")
             }
 
             SettingsSection(title = "Danger Zone") {
@@ -4265,71 +4284,3 @@ fun InfoStatItem(label: String, value: String) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ArchivedChatsScreen(
-    navController: NavController,
-    onBack: () -> Unit,
-    chatViewModel: ChatViewModel = hiltViewModel()
-) {
-    val archivedConversations by chatViewModel.archivedConversations.collectAsState()
-
-    Scaffold(
-        containerColor = Color.Black,
-        topBar = {
-            CenterAlignedTopAppBar(
-                title = { Text("Archived Chats", color = Color.White, fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
-                    }
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
-            )
-        }
-    ) { padding ->
-        if (archivedConversations.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text("No archived chats", color = Color.Gray)
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(vertical = 16.dp)
-            ) {
-                items(archivedConversations) { conversation ->
-                    Surface(
-                        color = Color(0xFF1C1C1E),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = conversation.contact.alias ?: conversation.contact.id.takeLast(8),
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = conversation.contact.id.take(16) + "...",
-                                    color = Color.Gray,
-                                    fontSize = 12.sp
-                                )
-                            }
-                            TextButton(onClick = { chatViewModel.unarchiveChat(conversation.contact.id) }) {
-                                Text("Unarchive", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
