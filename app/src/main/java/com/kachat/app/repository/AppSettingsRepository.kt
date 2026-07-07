@@ -180,6 +180,18 @@ class AppSettingsRepository @Inject constructor(
         it[paymentSyncBaselineKey(address)]
     }
 
+    /**
+     * How far into the `handshakes/by-receiver` stream this wallet has already synced — the
+     * indexer's `block_time` cursor, so a sync only asks for what's genuinely new since last time
+     * instead of re-fetching the same recent window every cycle. Keyed per-address like
+     * [paymentSyncBaseline]. Unlike contextual messages (per-contact-per-alias, so tracked in Room
+     * — see [com.kachat.app.models.MessageSyncCursorEntity]), handshakes-by-receiver is a single
+     * stream for the whole wallet, so a DataStore value is enough.
+     */
+    fun handshakeSyncCursor(address: String): Flow<Long?> = dataStore.data.map {
+        it[handshakeSyncCursorKey(address)]
+    }
+
     // -------------------------------------------------------------------------
     // Write helpers (suspend — call from coroutine / ViewModel)
     // -------------------------------------------------------------------------
@@ -206,6 +218,8 @@ class AppSettingsRepository @Inject constructor(
     suspend fun setPendingKnsCommit(commit: PendingKnsCommit) = dataStore.edit { it[KEY_PENDING_KNS_COMMIT] = Gson().toJson(commit) }
     suspend fun clearPendingKnsCommit() = dataStore.edit { it.remove(KEY_PENDING_KNS_COMMIT) }
     suspend fun setPaymentSyncBaseline(address: String, value: Long) = dataStore.edit { it[paymentSyncBaselineKey(address)] = value }
+    suspend fun setHandshakeSyncCursor(address: String, value: Long) = dataStore.edit { it[handshakeSyncCursorKey(address)] = value }
 
     private fun paymentSyncBaselineKey(address: String) = longPreferencesKey("payment_sync_baseline_$address")
+    private fun handshakeSyncCursorKey(address: String) = longPreferencesKey("handshake_sync_cursor_$address")
 }

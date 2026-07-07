@@ -789,6 +789,9 @@ class ChatViewModel @Inject constructor(
                 val payload = if (reply != null) {
                     val preview = VoiceMessage.parseOrNull(reply.plaintextBody)?.let { "🎤 Audio message" }
                         ?: ImageMessage.parseOrNull(reply.plaintextBody)?.let { "📷 Photo" }
+                        // Replying to a message that's itself a reply — unwrap to its actual text
+                        // rather than showing the inner reply's raw JSON as the preview.
+                        ?: MessageReply.parseOrNull(reply.plaintextBody)?.text
                         ?: (reply.plaintextBody ?: "")
                     val replyToSender = if (reply.direction == "sent") myAddress else contactId
                     MessageReply.encode(replyToId = reply.id, replyToSender = replyToSender, replyToPreview = preview, text = text)

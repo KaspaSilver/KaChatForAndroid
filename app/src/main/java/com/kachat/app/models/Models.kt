@@ -32,6 +32,23 @@ data class MessageEntity(
 )
 
 /**
+ * Tracks how far into one contact's `contextual-messages/by-sender` stream this wallet has
+ * already synced, per alias (a contact may be messaging under more than one — see
+ * `ChatRepository.syncContextualMessages`'s legacy/deterministic alias loop). The indexer's
+ * `block_time` query param lets a sync only ask for what's genuinely new since [lastBlockTime]
+ * instead of re-fetching the same recent window every time — this is that cursor, persisted so it
+ * survives process death. Safe to advance even if the indexer's block_time boundary is inclusive
+ * (returns the same last item again): callers already dedup by txId against local storage.
+ */
+@Entity(tableName = "message_sync_cursors", primaryKeys = ["contactId", "walletAddress", "aliasHex"])
+data class MessageSyncCursorEntity(
+    val contactId: String,
+    val walletAddress: String,
+    val aliasHex: String,
+    val lastBlockTime: Long
+)
+
+/**
  * Contact stored locally.
  * Matches the iOS contact model with alias and KNS support.
  *

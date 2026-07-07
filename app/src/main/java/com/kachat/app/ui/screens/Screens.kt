@@ -129,6 +129,8 @@ fun ChatThreadScreen(
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val balance by walletViewModel.fullBalance.collectAsState()
     val balanceSompi by walletViewModel.balanceSompi.collectAsState()
+    val myKnsProfile by walletViewModel.knsProfile.collectAsState()
+    val myAddress by walletViewModel.address.collectAsState()
     val paymentAmount by chatViewModel.paymentAmount.collectAsState()
     val estimatedFee by chatViewModel.estimatedFeeSompi.collectAsState()
     val estimateFeesEnabled by chatViewModel.estimateFeesEnabled.collectAsState()
@@ -504,6 +506,7 @@ fun ChatThreadScreen(
                                     Text(
                                         VoiceMessage.parseOrNull(reply.plaintextBody)?.let { "🎤 Audio message" }
                                             ?: ImageMessage.parseOrNull(reply.plaintextBody)?.let { "📷 Photo" }
+                                            ?: MessageReply.parseOrNull(reply.plaintextBody)?.text
                                             ?: (reply.plaintextBody ?: ""),
                                         color = Color.Gray,
                                         fontSize = 12.sp,
@@ -687,6 +690,10 @@ fun ChatThreadScreen(
                         }
                         MessageBubble(
                             message = msg,
+                            contactAvatarUrl = conversation?.contact?.knsAvatarUrl,
+                            contactAvatarFallback = conversation?.contact?.alias ?: contactId.takeLast(8),
+                            myAvatarUrl = myKnsProfile?.avatarUrl,
+                            myAvatarFallback = myAddress?.takeLast(8) ?: "",
                             isPendingRequest = msg.type == MessageProtocol.TYPE_HANDSHAKE &&
                                 msg.direction == "received" &&
                                 conversation?.contact?.conversationStatus == "pending",
@@ -759,6 +766,10 @@ private fun UnnotifiedMessageBanner() {
 @Composable
 fun MessageBubble(
     message: MessageEntity,
+    contactAvatarUrl: String? = null,
+    contactAvatarFallback: String = "",
+    myAvatarUrl: String? = null,
+    myAvatarFallback: String = "",
     isPendingRequest: Boolean = false,
     isHandshakeComplete: Boolean = false,
     onAccept: () -> Unit = {},
@@ -840,12 +851,18 @@ fun MessageBubble(
                 .padding(end = 12.dp)
                 .alpha((-revealOffsetPx.value / maxRevealOffsetPx).coerceIn(0f, 1f))
         )
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .offset { IntOffset(revealOffsetPx.value.toInt(), 0) },
-            horizontalAlignment = if (isSent) Alignment.End else Alignment.Start
+            horizontalArrangement = if (isSent) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.Bottom
         ) {
+        if (!isSent) {
+            ContactAvatar(imageUrl = contactAvatarUrl, fallbackText = contactAvatarFallback, size = 32.dp)
+            Spacer(Modifier.width(8.dp))
+        }
+        Column(horizontalAlignment = if (isSent) Alignment.End else Alignment.Start) {
         if (replyContent != null) {
             Surface(
                 color = Color(0xFF2C2C2E),
@@ -944,17 +961,20 @@ fun MessageBubble(
                 val bodyText = displayBody ?: ""
                 val uriHandler = LocalUriHandler.current
                 var textLayoutResult by remember(bodyText) { mutableStateOf<TextLayoutResult?>(null) }
-                val annotatedBody = remember(bodyText) {
+                // Sent bubbles are teal (matching broadcast rooms' sent-message color) with black
+                // text/links for contrast — a teal link on a teal background would be unreadable.
+                val linkColor = if (isSent) Color.Black else KaspaTeal
+                val annotatedBody = remember(bodyText, isSent) {
                     buildAnnotatedString {
                         append(bodyText)
                         for (match in TextLinkify.findUrls(bodyText)) {
-                            addStyle(SpanStyle(color = KaspaTeal, textDecoration = TextDecoration.Underline), match.range.first, match.range.last + 1)
+                            addStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline), match.range.first, match.range.last + 1)
                             addStringAnnotation("URL", match.uri, match.range.first, match.range.last + 1)
                         }
                     }
                 }
                 Surface(
-                    color = if (isSent) Color(0xFF2C2C2E) else Color(0xFF1C1C1E),
+                    color = if (isSent) KaspaTeal else Color(0xFF1C1C1E),
                     shape = RoundedCornerShape(20.dp)
                 ) {
                     Text(
@@ -974,7 +994,7 @@ fun MessageBubble(
                                 )
                             },
                         onTextLayout = { textLayoutResult = it },
-                        color = Color.White
+                        color = if (isSent) Color.Black else Color.White
                     )
                 }
             }
@@ -1052,6 +1072,11 @@ fun MessageBubble(
                     )
                 }
             }
+        }
+        }
+        if (isSent) {
+            Spacer(Modifier.width(8.dp))
+            ContactAvatar(imageUrl = myAvatarUrl, fallbackText = myAvatarFallback, size = 32.dp)
         }
         }
     }

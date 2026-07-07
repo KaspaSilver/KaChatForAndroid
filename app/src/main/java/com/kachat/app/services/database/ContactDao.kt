@@ -39,4 +39,8 @@ interface ContactDao {
 
     @Query("SELECT deletedAt FROM deleted_contacts WHERE contactId = :contactId AND walletAddress = :walletAddress")
     suspend fun getContactDeletedAt(contactId: String, walletAddress: String): Long?
+
+    /** Every deletion tombstone for this wallet, gone — used when wiping an entire account, so a same-address re-import later starts genuinely clean. */
+    @Query("DELETE FROM deleted_contacts WHERE walletAddress = :walletAddress")
+    suspend fun deleteTombstonesForWallet(walletAddress: String)
 }

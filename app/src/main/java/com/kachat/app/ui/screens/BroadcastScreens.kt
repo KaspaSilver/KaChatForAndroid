@@ -726,7 +726,9 @@ fun BroadcastChannelScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                VoiceMessage.parseOrNull(reply.content)?.let { "🎤 Audio message" } ?: reply.content,
+                                VoiceMessage.parseOrNull(reply.content)?.let { "🎤 Audio message" }
+                                    ?: MessageReply.parseOrNull(reply.content)?.text
+                                    ?: reply.content,
                                 color = Color.Gray,
                                 fontSize = 12.sp,
                                 maxLines = 1,

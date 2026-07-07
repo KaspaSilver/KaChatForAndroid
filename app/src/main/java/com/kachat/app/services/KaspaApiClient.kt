@@ -168,18 +168,26 @@ data class PostTransactionResponse(
 
 interface KasiaIndexerApi {
 
+    /** [blockTime], when given, returns only handshakes at or after that block time — the indexer's own cursor param, letting sync fetch just what's new instead of the same recent window every time. */
     @GET("handshakes/by-receiver")
     suspend fun getHandshakesByReceiver(
         @Query("address") address: String,
-        @Query("limit") limit: Int = 50
+        @Query("limit") limit: Int = 50,
+        @Query("block_time") blockTime: Long? = null
     ): List<HandshakeIndexerResponse>
 
-    /** [aliasHex] is the SENDER's own alias (from their handshake), UTF-8-encoded then hex-encoded. */
+    /**
+     * [aliasHex] is the SENDER's own alias (from their handshake), UTF-8-encoded then hex-encoded.
+     * [blockTime], when given, returns only messages at or after that block time (same cursor
+     * param as [getHandshakesByReceiver]) — safe even if the boundary item comes back again, since
+     * callers already dedup by txId against local storage.
+     */
     @GET("contextual-messages/by-sender")
     suspend fun getContextualMessagesBySender(
         @Query("address") address: String,
         @Query("alias") aliasHex: String,
-        @Query("limit") limit: Int = 50
+        @Query("limit") limit: Int = 50,
+        @Query("block_time") blockTime: Long? = null
     ): List<ContextualMessageIndexerResponse>
 }
 

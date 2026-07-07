@@ -6,6 +6,7 @@ import com.kachat.app.models.ContactEntity
 import com.kachat.app.models.DeletedContactEntity
 import com.kachat.app.models.HandshakePayload
 import com.kachat.app.models.MessageEntity
+import com.kachat.app.models.MessageSyncCursorEntity
 import com.kachat.app.models.UnreadCount
 import com.kachat.app.services.ContextualMessageIndexerResponse
 import com.kachat.app.services.HandshakeIndexerResponse
@@ -219,23 +220,27 @@ class ChatRepository @Inject constructor(
 
     /**
      * "Wipe and re-sync incoming messages" — deletes only received messages for the active
-     * account (sent messages, contacts, and the wallet itself are untouched), resets the
-     * payment-sync baseline back to the epoch so a full payment history re-fetch happens on the
-     * sync that follows (handshakes/contextual messages have no such cursor to reset — the
-     * indexer always returns full history for those on every call already), then triggers that
-     * sync immediately. Matches iOS's `wipeIncomingMessagesAndResync`.
+     * account (sent messages, contacts, and the wallet itself are untouched), resets every sync
+     * cursor back to the start (payment baseline, handshake block_time cursor, and every
+     * per-contact-per-alias message cursor — see [MessageSyncCursorEntity]) so a full re-fetch
+     * happens on the sync that follows instead of picking up where the now-deleted local cache
+     * left off, then triggers that sync immediately. Matches iOS's `wipeIncomingMessagesAndResync`.
      */
     suspend fun wipeIncomingMessagesAndResync() {
         val myAddress = walletManager.getAddress()
         database.messageDao().deleteReceivedForWallet(myAddress)
+        database.messageDao().deleteSyncCursorsForWallet(myAddress)
         settingsRepository.setPaymentSyncBaseline(myAddress, 0L)
+        settingsRepository.setHandshakeSyncCursor(myAddress, 0L)
         syncMessages()
     }
 
     /** Deletes every local message and contact for [address] — used when wiping an account entirely. Does not touch the wallet's keys (see WalletManager.deleteAccount) or any Google Drive backup. */
     suspend fun wipeAllLocalDataForAddress(address: String) {
         database.messageDao().deleteAllForWallet(address)
+        database.messageDao().deleteSyncCursorsForWallet(address)
         database.contactDao().deleteAllForWallet(address)
+        database.contactDao().deleteTombstonesForWallet(address)
     }
 
     /**
@@ -254,8 +259,12 @@ class ChatRepository @Inject constructor(
     }
 
     private suspend fun syncHandshakes(myAddress: String, api: KasiaIndexerApi) {
+        // block_time cursor — see AppSettingsRepository.handshakeSyncCursor's doc comment. Only
+        // fetches what's genuinely new since the last successful sync instead of the same recent
+        // window every cycle.
+        val cursor = settingsRepository.handshakeSyncCursor(myAddress).first()
         val handshakes = try {
-            api.getHandshakesByReceiver(myAddress)
+            api.getHandshakesByReceiver(myAddress, blockTime = cursor)
         } catch (e: Exception) {
             Log.w("ChatRepository", "Failed to fetch handshakes", e)
             return
@@ -269,16 +278,21 @@ class ChatRepository @Inject constructor(
                 Log.w("ChatRepository", "Failed to process handshake ${handshake.txId}", e)
             }
         }
+
+        val maxBlockTime = handshakes.maxOfOrNull { it.blockTime }
+        if (maxBlockTime != null && maxBlockTime > (cursor ?: 0L)) {
+            settingsRepository.setHandshakeSyncCursor(myAddress, maxBlockTime)
+        }
     }
 
     private suspend fun processHandshake(myAddress: String, handshake: HandshakeIndexerResponse) {
         if (!KaspaAddress.isValid(handshake.sender)) return
 
-        // A deleted contact's tombstone outlives the contact row itself — the indexer always
-        // returns a sender's *entire* handshake/message history, not just what's new since last
-        // sync, so without this a deleted chat would silently resurrect the moment this same old
-        // handshake transaction gets re-fetched. Only a handshake sent *after* the deletion
-        // creates a fresh contact/conversation.
+        // A deleted contact's tombstone outlives the contact row itself. This still matters even
+        // with the block_time sync cursor above: the very first sync for a *newly re-created*
+        // contact (e.g. a fresh handshake after deletion) has no cursor yet, so that one fetch can
+        // still surface the old pre-deletion handshake transaction if the indexer hasn't pruned it.
+        // Only a handshake sent *after* the deletion creates a real contact/conversation.
         val deletedAt = database.contactDao().getContactDeletedAt(handshake.sender, myAddress)
         if (deletedAt != null && handshake.blockTime <= deletedAt) return
 
@@ -327,9 +341,9 @@ class ChatRepository @Inject constructor(
         val activeContacts = database.contactDao().getContactsByStatus("active", myAddress)
 
         for (contact in activeContacts) {
-            // See processHandshake's identical check — a re-added contact's tombstone still
-            // outlives the fresh contact row, so old pre-deletion messages from a full-history
-            // re-sync never resurrect, only whatever's genuinely new since the deletion.
+            // See processHandshake's identical tombstone check — still needed even with the
+            // block_time cursor below, since a newly re-created contact's first-ever sync has no
+            // cursor yet and could otherwise surface old pre-deletion messages.
             val deletedAt = database.contactDao().getContactDeletedAt(contact.id, myAddress)
 
             // Legacy: the alias they told us in their handshake reply, if any. Deterministic:
@@ -343,8 +357,11 @@ class ChatRepository @Inject constructor(
             }
 
             for (aliasHex in listOfNotNull(legacyAliasHex, deterministicAliasHex).distinct()) {
+                // block_time cursor, tracked per (contact, alias) since each is its own independent
+                // stream on the indexer — see MessageSyncCursorEntity's doc comment.
+                val cursor = database.messageDao().getMessageSyncCursor(contact.id, myAddress, aliasHex)
                 val messages = try {
-                    api.getContextualMessagesBySender(contact.id, aliasHex)
+                    api.getContextualMessagesBySender(contact.id, aliasHex, blockTime = cursor)
                 } catch (e: Exception) {
                     Log.w("ChatRepository", "Failed to fetch messages for ${contact.id}", e)
                     continue
@@ -358,6 +375,13 @@ class ChatRepository @Inject constructor(
                     } catch (e: Exception) {
                         Log.w("ChatRepository", "Failed to process message ${message.txId}", e)
                     }
+                }
+
+                val maxBlockTime = messages.maxOfOrNull { it.blockTime }
+                if (maxBlockTime != null && maxBlockTime > (cursor ?: 0L)) {
+                    database.messageDao().setMessageSyncCursor(
+                        MessageSyncCursorEntity(contactId = contact.id, walletAddress = myAddress, aliasHex = aliasHex, lastBlockTime = maxBlockTime)
+                    )
                 }
             }
         }

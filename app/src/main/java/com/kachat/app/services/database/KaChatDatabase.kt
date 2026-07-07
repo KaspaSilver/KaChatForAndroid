@@ -10,6 +10,7 @@ import com.kachat.app.models.ContactEntity
 import com.kachat.app.models.DeletedContactEntity
 import com.kachat.app.models.HiddenBroadcastSenderEntity
 import com.kachat.app.models.MessageEntity
+import com.kachat.app.models.MessageSyncCursorEntity
 
 /**
  * Room database — local persistence layer.
@@ -26,8 +27,9 @@ import com.kachat.app.models.MessageEntity
         BroadcastMessageEntity::class,
         HiddenBroadcastSenderEntity::class,
         DeletedContactEntity::class,
+        MessageSyncCursorEntity::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {
@@ -76,6 +78,26 @@ abstract class KaChatDatabase : RoomDatabase() {
                     "CREATE TABLE IF NOT EXISTS `deleted_contacts` (" +
                         "`contactId` TEXT NOT NULL, `walletAddress` TEXT NOT NULL, `deletedAt` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`contactId`, `walletAddress`))"
+                )
+            }
+        }
+
+        /**
+         * v16 -> v17: adds `message_sync_cursors`, tracking per-(contact, alias) how far into the
+         * indexer's `contextual-messages/by-sender` stream this wallet has synced, so future syncs
+         * pass the indexer's `block_time` cursor instead of re-fetching the same recent window
+         * every time — see [MessageSyncCursorEntity]. Purely additive (a brand-new empty table),
+         * so unlike v15->v16 there's no existing data to preserve or column shape to reproduce —
+         * every contact just does one final "no cursor yet" catch-up sync post-upgrade, then
+         * switches to incremental. Table shape copied verbatim from Room's generated schema
+         * (`app/schemas/.../17.json`).
+         */
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `message_sync_cursors` (" +
+                        "`contactId` TEXT NOT NULL, `walletAddress` TEXT NOT NULL, `aliasHex` TEXT NOT NULL, `lastBlockTime` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`contactId`, `walletAddress`, `aliasHex`))"
                 )
             }
         }

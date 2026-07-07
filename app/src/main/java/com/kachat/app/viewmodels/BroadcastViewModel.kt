@@ -353,7 +353,11 @@ class BroadcastViewModel @Inject constructor(
         if (_sendBroadcastState.value.status == SendBroadcastStatus.SENDING) return
         val reply = _replyingTo.value
         val payload = if (reply != null) {
-            val preview = VoiceMessage.parseOrNull(reply.content)?.let { "🎤 Audio message" } ?: reply.content
+            // Replying to a message that's itself a reply — unwrap to its actual text rather than
+            // showing the inner reply's raw JSON as the preview.
+            val preview = VoiceMessage.parseOrNull(reply.content)?.let { "🎤 Audio message" }
+                ?: MessageReply.parseOrNull(reply.content)?.text
+                ?: reply.content
             MessageReply.encode(replyToId = reply.id, replyToSender = reply.senderAddress, replyToPreview = preview, text = content)
         } else {
             content

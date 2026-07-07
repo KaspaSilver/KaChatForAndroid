@@ -2,6 +2,7 @@ package com.kachat.app.services.database
 
 import androidx.room.*
 import com.kachat.app.models.MessageEntity
+import com.kachat.app.models.MessageSyncCursorEntity
 import com.kachat.app.models.UnreadCount
 import kotlinx.coroutines.flow.Flow
 
@@ -81,4 +82,15 @@ interface MessageDao {
 
     @Query("DELETE FROM messages")
     suspend fun clearAll()
+
+    /** How far into this (contact, alias) message stream we've already synced — see [MessageSyncCursorEntity]. */
+    @Query("SELECT lastBlockTime FROM message_sync_cursors WHERE contactId = :contactId AND walletAddress = :walletAddress AND aliasHex = :aliasHex")
+    suspend fun getMessageSyncCursor(contactId: String, walletAddress: String, aliasHex: String): Long?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun setMessageSyncCursor(cursor: MessageSyncCursorEntity)
+
+    /** Resets every per-contact sync cursor for this wallet — used by "wipe and re-sync" so it actually re-fetches full history again instead of picking up where the (now-deleted) cache left off. */
+    @Query("DELETE FROM message_sync_cursors WHERE walletAddress = :walletAddress")
+    suspend fun deleteSyncCursorsForWallet(walletAddress: String)
 }
