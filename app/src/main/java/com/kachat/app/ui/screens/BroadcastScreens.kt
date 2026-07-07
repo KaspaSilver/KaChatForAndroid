@@ -65,6 +65,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.kachat.app.models.BroadcastRetention
 import com.kachat.app.models.FeaturedBroadcastChannels
+import com.kachat.app.repository.ChatRepository
 import com.kachat.app.ui.theme.KaspaTeal
 import com.kachat.app.util.ChatTimeFormat
 import com.kachat.app.util.MessageReply
@@ -733,7 +734,7 @@ fun BroadcastChannelScreen(
                             modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)
                         ) {
                             Text(
-                                text = "fee: $estimatedFee sompi",
+                                text = "fee: ${ChatRepository.formatKas(estimatedFee ?: 0L)} KAS",
                                 color = Color.Gray,
                                 fontSize = 12.sp,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -774,7 +775,7 @@ fun BroadcastChannelScreen(
                             modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)
                         ) {
                             Text(
-                                text = "fee: $estimatedFee sompi",
+                                text = "fee: ${ChatRepository.formatKas(estimatedFee ?: 0L)} KAS",
                                 color = Color.Gray,
                                 fontSize = 12.sp,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)

@@ -17,6 +17,7 @@ import com.kachat.app.services.NotificationHelper
 import com.kachat.app.services.TransactionResponse
 import com.kachat.app.services.WalletManager
 import com.kachat.app.services.database.KaChatDatabase
+import com.kachat.app.util.ImageMessage
 import com.kachat.app.util.KaspaAddress
 import com.kachat.app.util.KasiaCipher
 import com.kachat.app.util.MessageProtocol
@@ -375,6 +376,7 @@ class ChatRepository @Inject constructor(
         val notificationText = when {
             replyContent != null -> "Replied to \"${replyContent.replyToPreview}\""
             VoiceMessage.parseOrNull(plaintext) != null -> "🎤 Audio message"
+            ImageMessage.parseOrNull(plaintext) != null -> "📷 Photo"
             else -> plaintext
         }
         notificationHelper.show(

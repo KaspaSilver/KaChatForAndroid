@@ -2,6 +2,7 @@ package com.kachat.app.viewmodels
 
 import android.app.Activity
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
@@ -17,9 +18,12 @@ import com.kachat.app.services.KnsProfileFields
 import com.kachat.app.services.KnsService
 import com.kachat.app.services.SystemContactsSyncService
 import com.kachat.app.services.VoiceRecorderService
+import com.kachat.app.util.ImageMessage
+import com.kachat.app.util.ImagePrep
 import com.kachat.app.util.MessageReply
 import com.kachat.app.util.VoiceMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -30,6 +34,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val chatRepository: com.kachat.app.repository.ChatRepository,
     private val networkService: com.kachat.app.services.NetworkService,
     private val walletManager: com.kachat.app.services.WalletManager,
@@ -427,15 +432,33 @@ class ChatViewModel @Inject constructor(
     private val _voiceRecordingState = MutableStateFlow(VoiceRecordingState())
     val voiceRecordingState: StateFlow<VoiceRecordingState> = _voiceRecordingState.asStateFlow()
 
+    private val _pendingPhotoUri = MutableStateFlow<Uri?>(null)
+    /** A picked-but-not-yet-sent chat photo, staged for preview (thumbnail + fee) before the user confirms send. */
+    val pendingPhotoUri: StateFlow<Uri?> = _pendingPhotoUri.asStateFlow()
+
+    fun setPendingPhoto(uri: Uri?) {
+        _pendingPhotoUri.value = uri
+    }
+
+    fun cancelPendingPhoto() {
+        _pendingPhotoUri.value = null
+    }
+
     /**
      * The payload byte count to price the live fee preview off of: the real typed-text length
-     * while composing, or a rough elapsed-time-based estimate of the final encoded/encrypted
-     * size while recording a voice message — so the fee preview keeps growing in real time as
-     * the recording gets longer, the same way it already grows as you type.
+     * while composing, a rough elapsed-time-based estimate of the final encoded/encrypted size
+     * while recording a voice message, or a rough estimate of the final wire size for a staged
+     * photo — same shape as [VoiceMessage.estimatedWirePayloadSize]: the real send always measures
+     * the actual encoded bytes exactly, this is only ever used for the live preview.
      */
-    private val previewPayloadSize: Flow<Int> = combine(_messageText, voiceRecordingState) { text, recording ->
+    private val previewPayloadSize: Flow<Int> = combine(_messageText, voiceRecordingState, pendingPhotoUri) { text, recording, photoUri ->
         if (recording.status == VoiceRecordingStatus.RECORDING) {
             VoiceMessage.estimatedWirePayloadSize(recording.elapsedMs)
+        } else if (photoUri != null) {
+            // Compressed image bytes -> inner base64 (+33%) -> JSON envelope overhead -> encryption
+            // + outer base64 (+33%) -- rough multiplier, calibrated the same way VoiceMessage's
+            // estimate is: never used for the real fee, only this live preview.
+            (ImagePrep.DEFAULT_CHAT_TARGET_BYTES * 1.33 * 1.33).toInt() + 150
         } else {
             text.toByteArray().size
         }
@@ -463,12 +486,15 @@ class ChatViewModel @Inject constructor(
         
         val payloadSize = if (isPayment) "Sent $amount KAS".toByteArray().size else textPayloadSize
 
-        // Preview only — assumes 2 standard 34-byte P2PK outputs (recipient + change).
-        // The actual send path (KaspaWalletEngine) computes this precisely against the
-        // real recipient/change scriptPublicKey lengths.
+        // Preview only — a payment gets 2 standard 34-byte P2PK outputs (recipient + change).
+        // A message (isPayment=false) is a zero-amount self-stash send, and KaspaWalletEngine
+        // skips the zero-value recipient output for those (a 0-value output is non-standard and
+        // gets rejected) — matches iOS's estimateContextualMessageFee, which also prices a
+        // message off a single output. Assuming 2 outputs here previously overpriced every
+        // message/voice/photo preview by a phantom output (~412 mass, ~0.0004 KAS at min rate).
         val mass = com.kachat.app.util.KaspaMass.calculateMass(
             numInputs = count.coerceAtLeast(1),
-            outputScriptLens = listOf(34, 34),
+            outputScriptLens = if (isPayment) listOf(34, 34) else listOf(34),
             payloadSize = payloadSize
         )
         com.kachat.app.util.KaspaMass.calculateFee(mass, rate.toLong())
@@ -763,7 +789,9 @@ class ChatViewModel @Inject constructor(
             try {
                 val myAddress = walletManager.getAddress()
                 val payload = if (reply != null) {
-                    val preview = VoiceMessage.parseOrNull(reply.plaintextBody)?.let { "🎤 Audio message" } ?: (reply.plaintextBody ?: "")
+                    val preview = VoiceMessage.parseOrNull(reply.plaintextBody)?.let { "🎤 Audio message" }
+                        ?: ImageMessage.parseOrNull(reply.plaintextBody)?.let { "📷 Photo" }
+                        ?: (reply.plaintextBody ?: "")
                     val replyToSender = if (reply.direction == "sent") myAddress else contactId
                     MessageReply.encode(replyToId = reply.id, replyToSender = replyToSender, replyToPreview = preview, text = text)
                 } else {
@@ -873,6 +901,22 @@ class ChatViewModel @Inject constructor(
         // Avoid leaking a live MediaRecorder if the screen/ViewModel is torn down mid-recording.
         if (_voiceRecordingState.value.status == VoiceRecordingStatus.RECORDING) {
             voiceRecorderService.cancelRecording()
+        }
+    }
+
+    /** Compresses and sends the currently staged [pendingPhotoUri] — clears the staged photo either way, matching the picker-cancel UX (a failed compression just drops back to the empty input bar, same as [sendVoiceMessage] logging and moving on rather than surfacing a dedicated error). */
+    fun sendPendingPhoto(contactId: String) {
+        val uri = _pendingPhotoUri.value ?: return
+        _pendingPhotoUri.value = null
+        viewModelScope.launch {
+            try {
+                val bytes = ImagePrep.prepareForChatMessage(appContext, uri)
+                val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                val json = ImageMessage.encode(fileName = "photo.jpg", sizeBytes = bytes.size.toLong(), base64Image = base64)
+                sendMessage(contactId, json)
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Error preparing photo message", e)
+            }
         }
     }
 

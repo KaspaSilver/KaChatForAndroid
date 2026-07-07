@@ -164,8 +164,10 @@ class BroadcastViewModel @Inject constructor(
     /**
      * A broadcast is always a zero-amount self-stash send, same shape as a 1:1 "comm" message —
      * so this is the same local KaspaMass calculation, just without any payment-amount branch.
-     * Preview only, assuming 2 standard 34-byte P2PK outputs (recipient + change); the actual
-     * send path computes this precisely against the real scriptPublicKey lengths.
+     * Preview only, assuming a single 34-byte P2PK change output — KaspaWalletEngine skips the
+     * zero-value recipient output for zero-amount sends (matches iOS's
+     * estimateContextualMessageFee, which also prices off one output); the actual send path
+     * computes this precisely against the real scriptPublicKey length.
      */
     val estimatedFeeSompi: StateFlow<Long?> = combine(previewPayloadSize, _currentUtxos, estimateFeesEnabled, _networkFeeRate) { payloadSize, utxos, enabled, rate ->
         if (!enabled || payloadSize == 0) return@combine null
@@ -180,7 +182,7 @@ class BroadcastViewModel @Inject constructor(
 
         val mass = KaspaMass.calculateMass(
             numInputs = count.coerceAtLeast(1),
-            outputScriptLens = listOf(34, 34),
+            outputScriptLens = listOf(34),
             payloadSize = payloadSize
         )
         KaspaMass.calculateFee(mass, rate.toLong())

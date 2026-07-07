@@ -5,7 +5,7 @@ import androidx.room.Entity
 /** Per-channel local message retention — how long a broadcast room's cached messages stick around before being pruned. */
 object BroadcastRetention {
     val MAX_MILLIS = 3L * 24 * 60 * 60 * 1000L
-    val DEFAULT_MILLIS = MAX_MILLIS
+    val DEFAULT_MILLIS = 3L * 60 * 60 * 1000L
 
     /** A unit the retention settings dialog lets the user enter an amount in — each capped so amount * millisPerUnit can never exceed MAX_MILLIS. */
     enum class Unit(val label: String, val millisPerUnit: Long) {

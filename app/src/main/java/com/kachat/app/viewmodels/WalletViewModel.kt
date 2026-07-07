@@ -212,14 +212,19 @@ class WalletViewModel @Inject constructor(
         .map { assets -> assets.mapNotNull { it.asset } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyList())
 
-    /** The domain KNS Profile fields attach to — simply the first owned domain (most wallets only ever register one). */
-    val profileDomainAssetId: StateFlow<String?> = _ownedDomainAssets
-        .map { it.firstOrNull()?.assetId }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
-
     private val _primaryDomainName = MutableStateFlow<String?>(null)
     /** The wallet's explicitly-set primary domain name, or null if none has ever been set. */
     val primaryDomainName: StateFlow<String?> = _primaryDomainName.asStateFlow()
+
+    /** The domain KNS Profile fields attach to — the explicit primary domain if still owned, else the first owned domain. */
+    val activeProfileDomainName: StateFlow<String?> = combine(_ownedDomainAssets, _primaryDomainName) { assets, primary ->
+        KnsService.pickActiveDomain(assets.mapNotNull { it.asset }, null, primary)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
+
+    /** [activeProfileDomainName]'s assetId — the target of every profile read/write call. */
+    val profileDomainAssetId: StateFlow<String?> = combine(_ownedDomainAssets, activeProfileDomainName) { assets, activeName ->
+        assets.firstOrNull { it.asset == activeName }?.assetId ?: assets.firstOrNull()?.assetId
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
 
     fun refreshOwnedDomains() {
         viewModelScope.launch {
@@ -347,7 +352,9 @@ class WalletViewModel @Inject constructor(
 
     fun refreshKnsProfile() {
         viewModelScope.launch {
-            val assetId = profileDomainAssetId.value ?: _ownedDomainAssets.value.firstOrNull()?.assetId ?: return@launch
+            val assets = _ownedDomainAssets.value
+            val activeName = KnsService.pickActiveDomain(assets.mapNotNull { it.asset }, null, _primaryDomainName.value)
+            val assetId = assets.firstOrNull { it.asset == activeName }?.assetId ?: assets.firstOrNull()?.assetId ?: return@launch
             _knsProfile.value = knsService.getProfile(assetId)
         }
     }

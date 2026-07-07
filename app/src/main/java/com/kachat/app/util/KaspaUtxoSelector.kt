@@ -31,17 +31,25 @@ object KaspaUtxoSelector {
 
         val payloadSize = payloadBytes?.size ?: 0
 
+        // A zero-amount send (every 1:1/broadcast message — a self-stash) never gets a recipient
+        // output at all: KaspaWalletEngine.sendKaspa skips it outright since a 0-value output is
+        // non-standard and gets rejected, leaving only the change output. Pricing those against 2
+        // outputs (as this used to do unconditionally) silently overpaid every message's real
+        // on-chain fee by a phantom output's mass (~412 mass, ~0.0004 KAS at the network minimum
+        // rate) — matches iOS's selectUtxosForContextualMessage, which prices real message sends
+        // off a single output. A real payment (amountSompi > 0) keeps the 2-output assumption:
+        // if change ends up being dust and gets dropped, the real required fee is only lower, so
+        // that direction never underpays the network.
+        val outputScriptLens = if (amountSompi > 0) listOf(recipientScriptLen, changeScriptLen) else listOf(changeScriptLen)
+
         // Iterate and select UTXOs until amount + fee is covered
         for (utxo in utxos.sortedByDescending { it.utxoEntry.amount }) {
             selectedUtxos.add(utxo)
             totalSelected += utxo.utxoEntry.amount
 
-            // Assume 2 outputs (recipient + change) for estimation — if change ends
-            // up being dust and gets dropped, the real mass (and so the real
-            // required fee) is only lower, so this never underpays the network.
             val mass = KaspaMass.calculateMass(
                 numInputs = selectedUtxos.size,
-                outputScriptLens = listOf(recipientScriptLen, changeScriptLen),
+                outputScriptLens = outputScriptLens,
                 payloadSize = payloadSize
             )
             estimatedFee = KaspaMass.calculateFee(mass, feeRateSompiPerGram)

@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -20,6 +21,8 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.SubcomposeAsyncImage
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -85,11 +88,14 @@ import com.google.zxing.qrcode.QRCodeWriter
 import com.kachat.app.models.BackupRetention
 import com.kachat.app.models.Conversation
 import com.kachat.app.models.MessageEntity
+import com.kachat.app.repository.ChatRepository
 import com.kachat.app.ui.theme.KaspaBlue
 import com.kachat.app.ui.theme.KaspaSubtext
 import com.kachat.app.ui.theme.KaspaTeal
 import com.kachat.app.util.ChatTimeFormat
 import com.kachat.app.util.KaspaAddress
+import com.kachat.app.util.ImageMessage
+import com.kachat.app.util.ImagePrep
 import com.kachat.app.util.MessageReply
 import com.kachat.app.util.TextLinkify
 import com.kachat.app.util.MessageProtocol
@@ -129,6 +135,7 @@ fun ChatThreadScreen(
     val estimateFeesEnabled by chatViewModel.estimateFeesEnabled.collectAsState()
     val messageText by chatViewModel.messageText.collectAsState()
     val voiceRecordingState by chatViewModel.voiceRecordingState.collectAsState()
+    val pendingPhotoUri by chatViewModel.pendingPhotoUri.collectAsState()
     val replyingTo by chatViewModel.replyingTo.collectAsState()
 
     var paymentMode by remember { mutableStateOf(startInPaymentMode) }
@@ -137,6 +144,9 @@ fun ChatThreadScreen(
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) chatViewModel.startVoiceRecording(contactId)
     }
+    val photoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) chatViewModel.setPendingPhoto(uri)
+    }
     val startVoiceRecordingIfPermitted = {
         if (chatViewModel.voiceRecordingSupported) {
             if (ContextCompat.checkSelfPermission(micContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -144,6 +154,30 @@ fun ChatThreadScreen(
             } else {
                 recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             }
+        }
+    }
+
+    // Saving a photo to the gallery needs WRITE_EXTERNAL_STORAGE only on API 28 and below (scoped
+    // storage makes MediaStore inserts permission-free from API 29 on) — the pending bytes/name
+    // survive the async permission prompt in this state, then get saved once it resolves.
+    var pendingPhotoSave by remember { mutableStateOf<Pair<ByteArray, String>?>(null) }
+    val writeStoragePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val pending = pendingPhotoSave
+        pendingPhotoSave = null
+        if (granted && pending != null) {
+            val saved = ImagePrep.saveToGallery(micContext, pending.first, pending.second)
+            Toast.makeText(micContext, if (saved) "Photo saved" else "Could not save photo", Toast.LENGTH_SHORT).show()
+        }
+    }
+    val savePhotoIfPermitted = { bytes: ByteArray, fileName: String ->
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(micContext, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        ) {
+            val saved = ImagePrep.saveToGallery(micContext, bytes, fileName)
+            Toast.makeText(micContext, if (saved) "Photo saved" else "Could not save photo", Toast.LENGTH_SHORT).show()
+        } else {
+            pendingPhotoSave = bytes to fileName
+            writeStoragePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
     }
 
@@ -235,7 +269,7 @@ fun ChatThreadScreen(
                                     shape = RoundedCornerShape(12.dp)
                                 ) {
                                     Text(
-                                        text = "fee: $estimatedFee sompi",
+                                        text = "fee: ${ChatRepository.formatKas(estimatedFee ?: 0L)} KAS",
                                         color = Color.Gray,
                                         fontSize = 12.sp,
                                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -330,6 +364,74 @@ fun ChatThreadScreen(
                             Text("Send Payment", color = Color.Black, fontWeight = FontWeight.Bold)
                         }
                     }
+                } else if (pendingPhotoUri != null) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        if (estimateFeesEnabled && estimatedFee != null) {
+                            Surface(
+                                color = Color(0xFF1C1C1E),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)
+                            ) {
+                                Text(
+                                    text = "fee: ${ChatRepository.formatKas(estimatedFee ?: 0L)} KAS",
+                                    color = Color.Gray,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 40.dp)
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(Color(0xFF1C1C1E))
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            IconButton(onClick = { chatViewModel.cancelPendingPhoto() }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Cancel photo", tint = Color(0xFFFF3B30))
+                            }
+                            val thumbnailContext = LocalContext.current
+                            // Fixed downsample for a quick composition-time thumbnail decode — the real
+                            // compression (ImagePrep.prepareForChatMessage) happens off the main thread
+                            // in the ViewModel when Send is tapped, this is display-only.
+                            val thumbnail = remember(pendingPhotoUri) {
+                                pendingPhotoUri?.let { uri ->
+                                    try {
+                                        thumbnailContext.contentResolver.openInputStream(uri)?.use {
+                                            android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 })
+                                        }
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                }
+                            }
+                            if (thumbnail != null) {
+                                Image(
+                                    bitmap = thumbnail.asImageBitmap(),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+                            Text("Photo", color = Color.White, modifier = Modifier.weight(1f))
+                            IconButton(
+                                onClick = { chatViewModel.sendPendingPhoto(contactId) },
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .background(KaspaTeal, CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "Send photo",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
                 } else if (voiceRecordingState.status == ChatViewModel.VoiceRecordingStatus.RECORDING) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         if (estimateFeesEnabled && estimatedFee != null) {
@@ -339,7 +441,7 @@ fun ChatThreadScreen(
                                 modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)
                             ) {
                                 Text(
-                                    text = "fee: $estimatedFee sompi",
+                                    text = "fee: ${ChatRepository.formatKas(estimatedFee ?: 0L)} KAS",
                                     color = Color.Gray,
                                     fontSize = 12.sp,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -401,7 +503,9 @@ fun ChatThreadScreen(
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
-                                        VoiceMessage.parseOrNull(reply.plaintextBody)?.let { "🎤 Audio message" } ?: (reply.plaintextBody ?: ""),
+                                        VoiceMessage.parseOrNull(reply.plaintextBody)?.let { "🎤 Audio message" }
+                                            ?: ImageMessage.parseOrNull(reply.plaintextBody)?.let { "📷 Photo" }
+                                            ?: (reply.plaintextBody ?: ""),
                                         color = Color.Gray,
                                         fontSize = 12.sp,
                                         maxLines = 1,
@@ -420,7 +524,7 @@ fun ChatThreadScreen(
                                 modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)
                             ) {
                                 Text(
-                                    text = "fee: $estimatedFee sompi",
+                                    text = "fee: ${ChatRepository.formatKas(estimatedFee ?: 0L)} KAS",
                                     color = Color.Gray,
                                     fontSize = 12.sp,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -455,6 +559,10 @@ fun ChatThreadScreen(
 
                             if (messageText.isEmpty()) {
                                 ChatActionButton(Icons.Default.CurrencyExchange, onClick = { paymentMode = true })
+                                ChatActionButton(
+                                    Icons.Default.Image,
+                                    onClick = { photoPickerLauncher.launch("image/*") }
+                                )
                                 ChatActionButton(
                                     Icons.Default.Mic,
                                     onClick = { startVoiceRecordingIfPermitted() }
@@ -588,6 +696,7 @@ fun ChatThreadScreen(
                             onDecline = { chatViewModel.declineHandshake(contactId) },
                             onRetry = { chatViewModel.retrySendMessage(msg) },
                             onReply = { chatViewModel.startReplyTo(msg) },
+                            onSavePhoto = savePhotoIfPermitted,
                             revealOffsetPx = revealOffsetPx,
                             maxRevealOffsetPx = maxRevealOffsetPx
                         )
@@ -657,6 +766,7 @@ fun MessageBubble(
     onDecline: () -> Unit = {},
     onRetry: () -> Unit = {},
     onReply: () -> Unit = {},
+    onSavePhoto: (ByteArray, String) -> Unit = { _, _ -> },
     revealOffsetPx: Animatable<Float, AnimationVector1D> = remember { Animatable(0f) },
     maxRevealOffsetPx: Float = 1f
 ) {
@@ -665,6 +775,7 @@ fun MessageBubble(
     val clipboardManager = LocalClipboardManager.current
     val replyContent = remember(message.plaintextBody) { MessageReply.parseOrNull(message.plaintextBody) }
     val displayBody = replyContent?.text ?: message.plaintextBody
+    val imageContent = remember(displayBody) { ImageMessage.parseOrNull(displayBody) }
 
     if (isPendingRequest) {
         Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
@@ -823,6 +934,13 @@ fun MessageBubble(
                     onLongPress = { showMenu = true },
                     onDoubleClick = onReply
                 )
+            } else if (ImageMessage.parseOrNull(displayBody) != null) {
+                ImageBubble(
+                    imageContent = ImageMessage.parseOrNull(displayBody)!!,
+                    isSent = isSent,
+                    onLongPress = { showMenu = true },
+                    onDoubleClick = onReply
+                )
             } else {
                 val bodyText = displayBody ?: ""
                 val uriHandler = LocalUriHandler.current
@@ -884,6 +1002,21 @@ fun MessageBubble(
                         showMenu = false
                     }
                 )
+                if (imageContent != null) {
+                    DropdownMenuItem(
+                        text = { Text("Save Photo", color = Color.White, fontWeight = FontWeight.SemiBold) },
+                        leadingIcon = { Icon(Icons.Default.Download, null, tint = KaspaTeal) },
+                        onClick = {
+                            try {
+                                val bytes = android.util.Base64.decode(ImageMessage.base64Payload(imageContent), android.util.Base64.DEFAULT)
+                                onSavePhoto(bytes, "kachat_${message.id}.jpg")
+                            } catch (e: Exception) {
+                                android.util.Log.e("MessageBubble", "Could not decode photo for saving", e)
+                            }
+                            showMenu = false
+                        }
+                    )
+                }
                 if (ChatViewModel.shouldShowRetryOption(message)) {
                     DropdownMenuItem(
                         text = { Text("Retry Send", color = Color.White, fontWeight = FontWeight.SemiBold) },
@@ -1007,6 +1140,76 @@ fun AudioBubble(voiceContent: VoiceMessageContent, isSent: Boolean, onLongPress:
                 color = Color.White,
                 fontSize = 13.sp
             )
+        }
+    }
+}
+
+/**
+ * A photo message bubble — decodes the embedded base64 image to a [Bitmap] once, renders it inline
+ * capped to a max width, and opens a tap-to-dismiss full-screen viewer on tap. Same interaction
+ * contract as [AudioBubble] (long-press for the context menu, double-click to reply).
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun ImageBubble(imageContent: VoiceMessageContent, isSent: Boolean, onLongPress: () -> Unit, onDoubleClick: () -> Unit = {}) {
+    var showFullScreen by remember { mutableStateOf(false) }
+    val bitmap = remember(imageContent.content) {
+        try {
+            val bytes = android.util.Base64.decode(ImageMessage.base64Payload(imageContent), android.util.Base64.DEFAULT)
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (e: Exception) {
+            android.util.Log.e("ImageBubble", "Could not decode photo message", e)
+            null
+        }
+    }
+
+    if (bitmap == null) {
+        Surface(
+            color = if (isSent) Color(0xFF2C2C2E) else Color(0xFF1C1C1E),
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.combinedClickable(onClick = {}, onLongClick = onLongPress, onDoubleClick = onDoubleClick)
+        ) {
+            Text(
+                text = "📷 Photo unavailable",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                color = if (isSent) Color.Black else Color.White,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        return
+    }
+
+    Surface(
+        color = Color.Transparent,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .widthIn(max = 220.dp)
+            .combinedClickable(onClick = { showFullScreen = true }, onLongClick = onLongPress, onDoubleClick = onDoubleClick)
+    ) {
+        Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = "Photo message",
+            modifier = Modifier.clip(RoundedCornerShape(16.dp)),
+            contentScale = ContentScale.FillWidth
+        )
+    }
+
+    if (showFullScreen) {
+        Dialog(onDismissRequest = { showFullScreen = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .clickable { showFullScreen = false },
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "Photo message, full screen",
+                    modifier = Modifier.fillMaxWidth(),
+                    contentScale = ContentScale.Fit
+                )
+            }
         }
     }
 }
@@ -1213,9 +1416,9 @@ fun ProfileScreen(
             SettingsSection(title = "KNS Profile") {
                 val profileAssetId by viewModel.profileDomainAssetId.collectAsState()
                 val knsProfile by viewModel.knsProfile.collectAsState()
-                val primaryDomainName = ownedDomains.firstOrNull()
+                val activeProfileDomainName = viewModel.activeProfileDomainName.collectAsState().value
 
-                if (profileAssetId == null || primaryDomainName == null) {
+                if (profileAssetId == null || activeProfileDomainName == null) {
                     Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Info, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
@@ -1235,12 +1438,12 @@ fun ProfileScreen(
                         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             ContactAvatar(
                                 imageUrl = knsProfile?.avatarUrl,
-                                fallbackText = primaryDomainName,
+                                fallbackText = activeProfileDomainName,
                                 size = 48.dp
                             )
                             Spacer(Modifier.width(16.dp))
                             Column {
-                                Text(primaryDomainName, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                                Text(activeProfileDomainName, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
                                 Text(
                                     if (hasAnyProfileData) "On-chain profile data available." else "No on-chain profile data yet.",
                                     color = Color.Gray,
@@ -1726,7 +1929,7 @@ private fun KnsProfileReadOnlyRow(label: String, value: String) {
 @Composable
 fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
     val knsProfile by viewModel.knsProfile.collectAsState()
-    val ownedDomains by viewModel.ownedDomains.collectAsState()
+    val activeProfileDomainName by viewModel.activeProfileDomainName.collectAsState()
     val profileAssetId by viewModel.profileDomainAssetId.collectAsState()
     val pendingAvatarUri by viewModel.pendingAvatarUri.collectAsState()
     val pendingBannerUri by viewModel.pendingBannerUri.collectAsState()
@@ -1817,7 +2020,7 @@ fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
 
             SettingsSection(title = "Domain") {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(ownedDomains.firstOrNull() ?: "—", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text(activeProfileDomainName ?: "—", color = Color.White, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     Text(profileAssetId ?: "", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
                 }
@@ -1827,7 +2030,7 @@ fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                 Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     ContactAvatar(
                         imageUrl = pendingAvatarUri?.toString() ?: knsProfile?.avatarUrl,
-                        fallbackText = ownedDomains.firstOrNull() ?: "?",
+                        fallbackText = activeProfileDomainName ?: "?",
                         size = 64.dp
                     )
                     Spacer(Modifier.height(12.dp))

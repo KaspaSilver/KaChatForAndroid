@@ -60,4 +60,33 @@ class KaspaUtxoSelectorTest {
         )
         assertTrue(withPayload.estimatedFee > withoutPayload.estimatedFee)
     }
+
+    /**
+     * A zero-amount send is always a self-stash message (1:1 chat, broadcast, voice, photo) —
+     * KaspaWalletEngine.sendKaspa always drops the zero-value recipient output for these (a
+     * 0-value output is non-standard and gets rejected), leaving only the change output. Pricing
+     * against 2 outputs here used to silently overpay every message's real network fee. 162,400
+     * sompi matches iOS's own verified baseline for the identical 1-input/1-output/0-payload
+     * shape (KaspaFeePolicy's `standardComputeMass = 1_624`, `test_toccata_fee_policy.swift`) —
+     * not the 203,600 sompi a phantom 2nd output used to charge.
+     */
+    @Test
+    fun `a zero-amount send prices only the single change output actually built, matching iOS`() {
+        val utxos = listOf(utxo(100_000_000L))
+        val result = KaspaUtxoSelector.selectUtxosAndCalculateFee(
+            utxos, amountSompi = 0L, feeRateSompiPerGram = 100L,
+            payloadBytes = null, recipientScriptLen = 34, changeScriptLen = 34
+        )
+        assertEquals(162_400L, result.estimatedFee)
+    }
+
+    @Test
+    fun `a real payment still prices both recipient and change outputs`() {
+        val utxos = listOf(utxo(100_000_000L))
+        val result = KaspaUtxoSelector.selectUtxosAndCalculateFee(
+            utxos, amountSompi = 10_000_000L, feeRateSompiPerGram = 100L,
+            payloadBytes = null, recipientScriptLen = 34, changeScriptLen = 34
+        )
+        assertEquals(203_600L, result.estimatedFee)
+    }
 }

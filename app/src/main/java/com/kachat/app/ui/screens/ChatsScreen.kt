@@ -42,6 +42,7 @@ import com.kachat.app.viewmodels.ConnectionViewModel
 import com.kachat.app.viewmodels.ChatViewModel
 import com.kachat.app.models.Conversation
 import com.kachat.app.models.MessageEntity
+import com.kachat.app.util.ImageMessage
 import com.kachat.app.util.MessageReply
 import com.kachat.app.util.VoiceMessage
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -372,6 +373,7 @@ private fun messagePreviewText(message: MessageEntity?, contactLabel: String): S
         return "$who replied to \"${replyContent.replyToPreview}\""
     }
     if (VoiceMessage.parseOrNull(body) != null) return "🎤 Audio message"
+    if (ImageMessage.parseOrNull(body) != null) return "📷 Photo"
     return body
 }
 
