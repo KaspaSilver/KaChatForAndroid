@@ -41,6 +41,12 @@ protobuf {
     }
 }
 
+ksp {
+    // Room schema history — lets Migration tests validate a hand-written migration's resulting
+    // schema against what Room actually expects, instead of hoping the SQL matches by hand.
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 android {
     namespace = "com.kachat.app"
     compileSdk = 35
