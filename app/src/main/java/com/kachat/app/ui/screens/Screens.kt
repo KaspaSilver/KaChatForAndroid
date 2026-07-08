@@ -100,7 +100,6 @@ import com.kachat.app.util.TextLinkify
 import com.kachat.app.util.MessageProtocol
 import com.kachat.app.util.VoiceMessage
 import com.kachat.app.util.VoiceMessageContent
-import com.kachat.app.viewmodels.BroadcastViewModel
 import com.kachat.app.viewmodels.ChatViewModel
 import com.kachat.app.viewmodels.ConnectionStatus as ConnStatus
 import com.kachat.app.viewmodels.ConnectionViewModel
@@ -897,7 +896,9 @@ fun MessageBubble(
                 Surface(
                     color = if (isSent) KaspaTeal else Color(0xFF1C1C1E),
                     shape = RoundedCornerShape(20.dp),
-                    modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { showMenu = true })
+                    // Same off-screen-avatar risk as the plain text bubble — a long payment memo
+                    // needs the same cap.
+                    modifier = Modifier.widthIn(max = 280.dp).combinedClickable(onClick = {}, onLongClick = { showMenu = true })
                 ) {
                     Text(
                         text = message.plaintextBody ?: "Payment",
@@ -975,7 +976,11 @@ fun MessageBubble(
                 }
                 Surface(
                     color = if (isSent) KaspaTeal else Color(0xFF1C1C1E),
-                    shape = RoundedCornerShape(20.dp)
+                    shape = RoundedCornerShape(20.dp),
+                    // Without a cap, a long message claims the outer Row's full width before the
+                    // avatar sibling ever gets measured, pushing the avatar off-screen entirely —
+                    // matches the same 280.dp cap broadcast rooms' equivalent bubble already uses.
+                    modifier = Modifier.widthIn(max = 280.dp)
                 ) {
                     Text(
                         text = annotatedBody,
@@ -1282,7 +1287,6 @@ fun ProfileScreen(
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val scrollState = rememberScrollState()
 
-    val ownedDomains by viewModel.ownedDomains.collectAsState()
     val ownedDomainAssets by viewModel.ownedDomainAssets.collectAsState()
     val primaryDomainName by viewModel.primaryDomainName.collectAsState()
     val setPrimaryState by viewModel.setPrimaryState.collectAsState()
