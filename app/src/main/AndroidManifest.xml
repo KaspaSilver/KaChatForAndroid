@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Network access for Kaspa node connections -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -58,6 +59,20 @@
             android:name=".services.SyncForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- WorkManager's default auto-init is disabled — KaChatApplication implements
+             Configuration.Provider so SyncWorker gets constructed via HiltWorkerFactory
+             (see SyncWorker.kt) instead of a no-arg constructor. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
 
         <!-- Lets the chat-history export share a plaintext JSON file from app-private cache via a content:// URI, without granting broad file access. -->
         <provider

@@ -64,6 +64,17 @@ class SyncForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // API 35+ calls this to give a dataSync-type FGS a chance to wind down cleanly once its
+    // execution-time budget for the current rolling 24h window is used up — without this
+    // override the OS just force-stops the service outright instead. KaChatApplication's
+    // onStop already retries starting it on every subsequent background transition (and
+    // SyncWorker's periodic fallback covers sync in the meantime), so a clean stopSelf() here
+    // is all that's needed.
+    @androidx.annotation.RequiresApi(35)
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopSelf()
+    }
+
     companion object {
         private const val CHANNEL_ID = "kachat_sync_service"
         private const val NOTIFICATION_ID = 9001

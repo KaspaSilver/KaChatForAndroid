@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -78,6 +79,7 @@ fun KaChatApp(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MainShell(
     walletViewModel: WalletViewModel = hiltViewModel(),
@@ -283,8 +285,13 @@ fun MainShell(
             composable("broadcast_channel/{channelName}") { backStackEntry ->
                 val channelName = backStackEntry.arguments?.getString("channelName") ?: return@composable
                 // Same bottom-padding treatment as "broadcasts" — the floating tab bar sits below
-                // this screen's own message-compose bar rather than overlapping it.
-                Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
+                // this screen's own message-compose bar rather than overlapping it. But only while
+                // the tab bar is actually visible: once the keyboard opens, the tab bar goes behind
+                // it anyway, and this screen's own bottomBar already applies imePadding() to clear
+                // the keyboard itself — reserving both at once left a dead black gap between the
+                // message input and the keyboard.
+                val imeVisible = WindowInsets.isImeVisible
+                Box(modifier = Modifier.padding(bottom = if (imeVisible) 0.dp else innerPadding.calculateBottomPadding())) {
                     BroadcastChannelScreen(
                         channelName = channelName,
                         onBack = { navController.popBackStack() },

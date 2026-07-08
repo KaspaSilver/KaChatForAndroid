@@ -122,6 +122,11 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
+    // WorkManager — periodic background sync fallback, see SyncWorker
+    implementation(libs.work.runtime.ktx)
+    implementation(libs.hilt.work)
+    ksp(libs.hilt.work.compiler)
+
     // Room local database
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)

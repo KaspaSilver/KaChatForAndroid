@@ -3,12 +3,19 @@ package com.kachat.app
 import android.app.Application
 import android.content.Intent
 import androidx.core.content.ContextCompat
+import androidx.hilt.work.HiltWorkerFactory
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.work.Configuration
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import com.kachat.app.services.BroadcastScanningService
 import com.kachat.app.services.SyncForegroundService
+import com.kachat.app.services.SyncWorker
 import dagger.hilt.android.HiltAndroidApp
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 /**
@@ -16,7 +23,7 @@ import javax.inject.Inject
  * All singleton services are initialized here via Hilt modules in the `di` package.
  */
 @HiltAndroidApp
-class KaChatApplication : Application() {
+class KaChatApplication : Application(), Configuration.Provider {
 
     // @Singleton instances are otherwise only created lazily the first time something actually
     // requests them — field-injecting this here forces it to exist from app startup, so its
@@ -26,8 +33,25 @@ class KaChatApplication : Application() {
     @Inject
     lateinit var broadcastScanningService: BroadcastScanningService
 
+    @Inject
+    lateinit var hiltWorkerFactory: HiltWorkerFactory
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder().setWorkerFactory(hiltWorkerFactory).build()
+
     override fun onCreate() {
         super.onCreate()
+
+        // Periodic fallback for SyncForegroundService — see SyncWorker's doc comment. Runs
+        // independently of the foreground service's own lifecycle, so it still gets a chance
+        // to sync roughly every 15 minutes even during the hours the FGS itself can't restart
+        // (Android 15+'s dataSync execution-time cap). KEEP means re-registering on every app
+        // launch doesn't stack duplicate periodic jobs.
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            SyncWorker.WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES).build()
+        )
 
         // Only run the (notification-requiring) foreground sync service while the app
         // is actually backgrounded — while it's in the foreground, ChatRepository's poll
@@ -35,10 +59,19 @@ class KaChatApplication : Application() {
         // redundant noise on top of what the user is already looking at.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStop(owner: LifecycleOwner) {
-                ContextCompat.startForegroundService(
-                    this@KaChatApplication,
-                    Intent(this@KaChatApplication, SyncForegroundService::class.java)
-                )
+                // Android 15+ caps a dataSync foreground service to ~6 cumulative hours per
+                // rolling 24h window — once that's exhausted, every restart attempt throws
+                // ForegroundServiceStartNotAllowedException until the window frees back up.
+                // That's expected/recoverable (SyncWorker's periodic fallback covers the gap
+                // in the meantime), not a crash-worthy condition.
+                try {
+                    ContextCompat.startForegroundService(
+                        this@KaChatApplication,
+                        Intent(this@KaChatApplication, SyncForegroundService::class.java)
+                    )
+                } catch (e: Exception) {
+                    android.util.Log.w("KaChatApplication", "Couldn't start SyncForegroundService (will retry via SyncWorker)", e)
+                }
             }
 
             override fun onStart(owner: LifecycleOwner) {
