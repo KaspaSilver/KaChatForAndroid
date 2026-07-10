@@ -152,8 +152,8 @@ fun ChatsScreen(
                     TopStatusBar(
                         balance = balance,
                         onStatusClick = { navController.navigate("connection_status") },
-                        onAddClick = { navController.navigate("create_chat") },
-                        dotColorHex = dotColorHex
+                        dotColorHex = dotColorHex,
+                        showAddButton = false
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -237,6 +237,19 @@ fun ChatsScreen(
                     modifier = Modifier.padding(start = 72.dp),
                     color = Color.DarkGray.copy(alpha = 0.5f)
                 )
+            }
+        },
+        floatingActionButton = {
+            // Same style/placement as Portfolio's add-transaction FAB (see PortfolioScreen.kt) —
+            // sits above the app-wide floating tab bar for free, since this screen's own content
+            // region is already reserved above it before this Scaffold is even composed.
+            FloatingActionButton(
+                onClick = { navController.navigate("create_chat") },
+                containerColor = KaspaTeal,
+                contentColor = Color.Black,
+                shape = CircleShape
+            ) {
+                Icon(Icons.Default.PersonAddAlt1, "Create chat")
             }
         }
     ) { padding ->

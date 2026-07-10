@@ -11,6 +11,7 @@ import com.kachat.app.models.DeletedContactEntity
 import com.kachat.app.models.HiddenBroadcastSenderEntity
 import com.kachat.app.models.MessageEntity
 import com.kachat.app.models.MessageSyncCursorEntity
+import com.kachat.app.models.PortfolioTransactionEntity
 
 /**
  * Room database — local persistence layer.
@@ -28,14 +29,16 @@ import com.kachat.app.models.MessageSyncCursorEntity
         HiddenBroadcastSenderEntity::class,
         DeletedContactEntity::class,
         MessageSyncCursorEntity::class,
+        PortfolioTransactionEntity::class,
     ],
-    version = 17,
+    version = 18,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun contactDao(): ContactDao
     abstract fun broadcastDao(): BroadcastDao
+    abstract fun portfolioDao(): PortfolioDao
 
     companion object {
         /**
@@ -98,6 +101,23 @@ abstract class KaChatDatabase : RoomDatabase() {
                     "CREATE TABLE IF NOT EXISTS `message_sync_cursors` (" +
                         "`contactId` TEXT NOT NULL, `walletAddress` TEXT NOT NULL, `aliasHex` TEXT NOT NULL, `lastBlockTime` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`contactId`, `walletAddress`, `aliasHex`))"
+                )
+            }
+        }
+
+        /**
+         * v17 -> v18: adds `portfolio_transactions` — the KAS portfolio tracker's manually-entered
+         * buy/sell ledger (see [PortfolioTransactionEntity]). Purely additive, same as v16->v17;
+         * table shape copied verbatim from Room's generated schema (`app/schemas/.../18.json`) and
+         * validated against real SQLite before being written here.
+         */
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `portfolio_transactions` (" +
+                        "`id` TEXT NOT NULL, `type` TEXT NOT NULL, `amountSompi` INTEGER NOT NULL, " +
+                        "`fiatValue` REAL NOT NULL, `timestampMillis` INTEGER NOT NULL, `notes` TEXT, " +
+                        "PRIMARY KEY(`id`))"
                 )
             }
         }

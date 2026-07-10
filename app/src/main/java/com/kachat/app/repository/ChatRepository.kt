@@ -304,7 +304,7 @@ class ChatRepository @Inject constructor(
 
         val senderPubKeyHex = KaspaAddress.decode(handshake.sender).second.joinToString("") { "%02x".format(it) }
         val existing = database.contactDao().getContact(handshake.sender, myAddress)
-        val newStatus = deriveIncomingHandshakeStatus(existing?.conversationStatus, existing?.handshakeComplete ?: false)
+        val newStatus = deriveIncomingHandshakeStatus(existing?.conversationStatus, existing?.handshakeComplete ?: false, payload?.isResponse ?: false)
 
         database.contactDao().insert(
             (existing ?: ContactEntity(id = handshake.sender, walletAddress = myAddress, alias = null, knsName = null, publicKeyHex = null))
@@ -512,13 +512,19 @@ class ChatRepository @Inject constructor(
          * Decides the conversation status for a freshly-received handshake, given the
          * existing contact's prior state (null if this is a never-seen-before sender).
          * If we already sent them a handshake (or the conversation is already active),
-         * this incoming one is their reply — auto-activate. Otherwise it's a fresh
-         * incoming request that needs an explicit Accept/Decline from the user.
+         * this incoming one is their reply — auto-activate. Also auto-activates if THEY
+         * marked this handshake as a response ([HandshakePayload.isResponse]) — that's them
+         * confirming the connection, which needs to clear our own pending/request-to-connect
+         * state even if we ourselves never sent a handshake (e.g. they're replying to a plain
+         * message we sent to a contact we added manually, not via a handshake at all).
+         * Otherwise it's a fresh incoming request that needs an explicit Accept/Decline from
+         * the user.
          */
-        internal fun deriveIncomingHandshakeStatus(existingStatus: String?, existingHandshakeComplete: Boolean): String {
+        internal fun deriveIncomingHandshakeStatus(existingStatus: String?, existingHandshakeComplete: Boolean, incomingIsResponse: Boolean = false): String {
             return when {
                 existingStatus == "active" -> "active"
                 existingHandshakeComplete -> "active"
+                incomingIsResponse -> "active"
                 else -> "pending"
             }
         }

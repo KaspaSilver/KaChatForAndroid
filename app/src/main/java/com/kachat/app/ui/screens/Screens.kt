@@ -1287,6 +1287,12 @@ fun ProfileScreen(
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val scrollState = rememberScrollState()
 
+    val spendingAddress by viewModel.spendingAddress.collectAsState()
+    val spendingBalance by viewModel.spendingBalance.collectAsState()
+    val topUpState by viewModel.topUpState.collectAsState()
+    var showTopUpDialog by remember { mutableStateOf(false) }
+    var topUpAmountInput by remember { mutableStateOf("") }
+
     val ownedDomainAssets by viewModel.ownedDomainAssets.collectAsState()
     val primaryDomainName by viewModel.primaryDomainName.collectAsState()
     val setPrimaryState by viewModel.setPrimaryState.collectAsState()
@@ -1302,6 +1308,17 @@ fun ProfileScreen(
     LaunchedEffect(Unit) {
         viewModel.refreshBalance()
         viewModel.refreshOwnedDomains()
+        viewModel.refreshSpendingAddress()
+    }
+
+    // Auto-dismiss the top-up dialog on success, matching the create-wallet/import-wallet
+    // dialogs' own success-closes-dialog pattern elsewhere on this screen.
+    LaunchedEffect(topUpState.status) {
+        if (topUpState.status == WalletViewModel.TopUpStatus.SUCCESS) {
+            showTopUpDialog = false
+            topUpAmountInput = ""
+            viewModel.resetTopUpState()
+        }
     }
 
     Scaffold(
@@ -1560,6 +1577,53 @@ fun ProfileScreen(
                 }
             }
 
+            // Separate from the identity address above, purely for payment privacy — "Pay in
+            // Kaspa" sends always come out of this address, never the identity one above. It
+            // rotates to a freshly derived address after every send (see WalletManager's
+            // spending-address doc comment), so this always shows whichever one is current.
+            SettingsSection(title = "Spending Address") {
+                val clipboardManager = LocalClipboardManager.current
+                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                    Text(
+                        text = "\"Pay in Kaspa\" sends always come out of this address, kept separate from your account address above for privacy. It changes automatically after every payment.",
+                        color = Color.Gray,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF2C2C2E))
+                            .clickable {
+                                spendingAddress?.let { clipboardManager.setText(AnnotatedString(it)) }
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = spendingAddress ?: "Loading...",
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Icon(Icons.Default.ContentCopy, "Copy spending address", tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column {
+                            Text("Balance", color = Color.Gray, fontSize = 12.sp)
+                            Text(spendingBalance, color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                        TextButton(onClick = { showTopUpDialog = true }) {
+                            Text("Top Up", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
             SettingsSection(title = "Balance") {
                 val clipboardManager = LocalClipboardManager.current
                 Row(
@@ -1570,7 +1634,7 @@ fun ProfileScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("$balance KAS", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text(balance, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
                 }
             }
@@ -1643,6 +1707,57 @@ fun ProfileScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
+    }
+
+    if (showTopUpDialog) {
+        val sending = topUpState.status == WalletViewModel.TopUpStatus.SENDING
+        AlertDialog(
+            onDismissRequest = { if (!sending) { showTopUpDialog = false; viewModel.resetTopUpState() } },
+            containerColor = Color(0xFF1C1C1E),
+            title = { Text("Top Up Spending Address", color = Color.White) },
+            text = {
+                Column {
+                    Text(
+                        "Sends KAS from your account address into your spending address.",
+                        color = Color.Gray,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = topUpAmountInput,
+                        onValueChange = { topUpAmountInput = it },
+                        label = { Text("Amount (KAS)") },
+                        singleLine = true,
+                        enabled = !sending,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = KaspaTeal,
+                            unfocusedBorderColor = Color.Gray
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (topUpState.status == WalletViewModel.TopUpStatus.FAILED) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(topUpState.errorMessage ?: "Top up failed", color = Color(0xFFFF3B30), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !sending && topUpAmountInput.toDoubleOrNull() != null,
+                    onClick = { viewModel.topUpSpendingAddress(topUpAmountInput) }
+                ) {
+                    Text(if (sending) "Sending..." else "Send", color = if (sending) Color.Gray else KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !sending, onClick = { showTopUpDialog = false; viewModel.resetTopUpState() }) {
                     Text("Cancel", color = Color.Gray)
                 }
             }
@@ -2928,7 +3043,10 @@ fun TopStatusBar(
     balance: String,
     onStatusClick: () -> Unit,
     onAddClick: () -> Unit = {},
-    dotColorHex: Long = 0xFF4CD964
+    dotColorHex: Long = 0xFF4CD964,
+    // Chats has this moved to a floating action button instead (see ChatsScreen.kt) — false
+    // there. Still defaults on for Profile/Settings, which keep the icon in the status bar.
+    showAddButton: Boolean = true
 ) {
     val statusColor = Color(dotColorHex)
 
@@ -2959,18 +3077,23 @@ fun TopStatusBar(
             )
         )
 
-        IconButton(
-            onClick = onAddClick,
-            modifier = Modifier
-                .size(40.dp)
-                .background(Color(0xFF1C1C1E), CircleShape)
-        ) {
-            Icon(
-                imageVector = Icons.Default.PersonAddAlt1,
-                contentDescription = "Add Contact",
-                tint = KaspaTeal,
-                modifier = Modifier.size(20.dp)
-            )
+        if (showAddButton) {
+            IconButton(
+                onClick = onAddClick,
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(Color(0xFF1C1C1E), CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PersonAddAlt1,
+                    contentDescription = "Add Contact",
+                    tint = KaspaTeal,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        } else {
+            // Keeps the balance text centered between the two ends, same as when the button is shown.
+            Spacer(modifier = Modifier.size(40.dp))
         }
     }
 }
@@ -3557,14 +3680,19 @@ fun PoolStatItem(label: String, value: String, color: Color) {
 @Composable
 fun ActiveNodeRow(node: NodeInfo) {
     Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            // weight(1f) here (not on the status badge) so a long address — real discovered
+            // peers can be IPv6 literals like [2601:680:cc80:5630:e1e5:e6fa:c86b:b946]:16111,
+            // much longer than the old hardcoded IPv4 seeds — elides instead of squeezing the
+            // badge down to near-zero width, which forced its own text to wrap letter by letter.
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                 Icon(Icons.Default.Shield, null, tint = Color(0xFF2196F3), modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(node.ip, color = Color.White, fontWeight = FontWeight.Bold)
+                Text(node.ip, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+            Spacer(Modifier.width(8.dp))
             Box(modifier = Modifier.background(Color(0xFF1E3A1E), RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 2.dp)) {
-                Text(node.status, color = Color(node.color), fontSize = 10.sp)
+                Text(node.status, color = Color(node.color), fontSize = 10.sp, maxLines = 1)
             }
         }
         Spacer(Modifier.height(4.dp))
@@ -3586,18 +3714,23 @@ fun AllNodeRow(node: NodeInfo) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // weight(1f) here (not on the latency/status side) so a long address — real discovered
+        // peers can be IPv6 literals like [2601:680:cc80:5630:e1e5:e6fa:c86b:b946]:16111, much
+        // longer than the old hardcoded IPv4 seeds — elides instead of squeezing the status
+        // badge down to near-zero width, which forced its own text to wrap letter by letter.
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
             Box(modifier = Modifier.size(8.dp).background(Color(node.color), CircleShape))
             Spacer(Modifier.width(8.dp))
             Icon(Icons.Default.Shield, null, tint = Color(0xFF2196F3), modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(8.dp))
-            Text(node.ip, color = Color.White, fontSize = 12.sp)
+            Text(node.ip, color = Color.White, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        Spacer(Modifier.width(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(node.latency, color = Color(0xFFF39C12), fontSize = 10.sp)
             Spacer(Modifier.width(8.dp))
             Box(modifier = Modifier.background(Color(0x33FF3B30), RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 2.dp)) {
-                Text(node.status, color = Color(node.color), fontSize = 10.sp)
+                Text(node.status, color = Color(node.color), fontSize = 10.sp, maxLines = 1)
             }
         }
     }

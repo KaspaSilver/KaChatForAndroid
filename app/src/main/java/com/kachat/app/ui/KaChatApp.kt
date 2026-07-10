@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -39,15 +40,17 @@ import com.kachat.app.viewmodels.ChatViewModel
  * Top-level navigation destinations.
  */
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
-    object Settings : Screen("settings", "Settings", Icons.Default.Settings)
-    object Chats    : Screen("chats",    "Chats",    Icons.Default.Forum)
-    object Profile  : Screen("profile",  "Profile",  Icons.Default.AccountCircle)
+    object Settings  : Screen("settings",  "Settings",  Icons.Default.Settings)
+    object Chats     : Screen("chats",     "Chats",     Icons.Default.Forum)
+    object Portfolio : Screen("portfolio", "Portfolio", Icons.Default.PieChart)
+    object Profile   : Screen("profile",   "Profile",   Icons.Default.AccountCircle)
 }
 
 // All top-level tabs
 val bottomNavItems = listOf(
     Screen.Settings,
     Screen.Chats,
+    Screen.Portfolio,
     Screen.Profile
 )
 
@@ -157,6 +160,13 @@ fun MainShell(
                                     .weight(1f)
                                     .clip(RoundedCornerShape(32.dp))
                                     .clickable {
+                                        // Already there — do nothing. Without this guard, re-tapping the
+                                        // active tab still ran the popBackStack/navigate logic below, which
+                                        // for a tab with nothing "pushed" above it falls through to
+                                        // navigate() and lands back on the graph's start destination
+                                        // (Chats) instead of staying put.
+                                        if (selected) return@clickable
+
                                         // Tapping back to the graph's start destination (Chats) from a
                                         // "pushed" screen like Broadcasts via navigate()+popUpTo alone is
                                         // silently a no-op in Navigation Compose — popBackStack to the
@@ -220,6 +230,11 @@ fun MainShell(
             composable(Screen.Chats.route) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     ChatsScreen(navController, walletViewModel, chatViewModel = chatViewModel)
+                }
+            }
+            composable(Screen.Portfolio.route) {
+                Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
+                    PortfolioScreen(onBack = { navController.popBackStack() })
                 }
             }
             composable(Screen.Profile.route) {

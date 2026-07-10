@@ -38,6 +38,25 @@ class ChatRepositoryTest {
     }
 
     @Test
+    fun `their handshake marked as a response activates the conversation even if we never sent one`() {
+        // e.g. we manually added them (or messaged them without a formal handshake) and they
+        // themselves send a handshake back marking it as a reply — that should clear our
+        // pending/request-to-connect state even though existingHandshakeComplete is false.
+        assertEquals(
+            "active",
+            ChatRepository.deriveIncomingHandshakeStatus(existingStatus = "pending", existingHandshakeComplete = false, incomingIsResponse = true)
+        )
+    }
+
+    @Test
+    fun `a fresh incoming handshake not marked as a response stays pending`() {
+        assertEquals(
+            "pending",
+            ChatRepository.deriveIncomingHandshakeStatus(existingStatus = null, existingHandshakeComplete = false, incomingIsResponse = false)
+        )
+    }
+
+    @Test
     fun `contextual message payload decodes through the hex-then-base64 double encoding`() {
         // Real payload captured live from indexer.kasia.fyi's contextual-messages/by-sender —
         // decodes to a 65-byte EncryptedMessage (12-byte nonce + 33-byte ephemeral pubkey +

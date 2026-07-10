@@ -992,7 +992,7 @@ class ChatViewModel @Inject constructor(
                     )
                 )
 
-                val txId = walletService.sendKaspa(toAddress = contactId, amountSompi = sompi)
+                val txId = walletService.payInKaspa(toAddress = contactId, amountSompi = sompi)
 
                 chatRepository.deleteMessage(pendingId)
                 chatRepository.insertMessage(

@@ -52,9 +52,9 @@ class KaspaWalletEngine @Inject constructor(
     }
 
     /** Call after a successful broadcast so the very next send (before this one confirms) doesn't reuse or miss these UTXOs. */
-    private fun recordSpend(address: String, spentUtxos: List<UtxoEntry>, changeUtxo: UtxoEntry?) {
-        val spent = pendingSpentOutpoints.getOrPut(address) { mutableSetOf() }
-        val change = pendingChangeUtxos.getOrPut(address) { mutableListOf() }
+    private fun recordSpend(spentAddress: String, changeAddress: String, spentUtxos: List<UtxoEntry>, changeUtxo: UtxoEntry?) {
+        val spent = pendingSpentOutpoints.getOrPut(spentAddress) { mutableSetOf() }
+        val change = pendingChangeUtxos.getOrPut(changeAddress) { mutableListOf() }
         applySpend(spent, change, spentUtxos, changeUtxo)
     }
 
@@ -62,16 +62,34 @@ class KaspaWalletEngine @Inject constructor(
      * Sends Kaspa to a given address.
      * @param toAddress Recipient Kaspa address.
      * @param amountSompi Amount to send in sompi (1 KAS = 100,000,000 sompi).
+     * @param fromAddress Address to source UTXOs/change from — defaults to the identity address
+     * (every existing call site keeps working unchanged). [sendSpendingPayment] is the only
+     * caller that passes a different value (the current spending address).
+     * @param signingPrivateKey Key matching [fromAddress] — must be supplied together whenever
+     * [fromAddress] is overridden, since the default [WalletManager.getPrivateKeyBytes] only
+     * matches the default identity [fromAddress].
+     * @param changeAddress Where leftover change goes — defaults to [fromAddress] (existing
+     * behavior). The spending-address flow routes this to a freshly derived *next* address
+     * instead, so a spend never leaves anything behind at the address it came from.
+     * @param sweepAll Selects every fetched UTXO unconditionally instead of just enough to
+     * cover amount+fee — see [KaspaUtxoSelector.selectAllUtxosAndCalculateFee].
      * @return Result containing the transaction ID or an error.
      */
-    suspend fun sendKaspa(toAddress: String, amountSompi: Long, payloadBytes: ByteArray? = null): Result<String> = sendMutex.withLock {
+    suspend fun sendKaspa(
+        toAddress: String,
+        amountSompi: Long,
+        payloadBytes: ByteArray? = null,
+        fromAddress: String = walletManager.getAddress(),
+        signingPrivateKey: ByteArray = walletManager.getPrivateKeyBytes(),
+        changeAddress: String = fromAddress,
+        sweepAll: Boolean = false
+    ): Result<String> = sendMutex.withLock {
         try {
             // 1. Validate address
             if (!isValidAddress(toAddress)) {
                 return Result.failure(IllegalArgumentException("Invalid recipient address: $toAddress"))
             }
 
-            val fromAddress = walletManager.getAddress()
             val api = networkService.kaspaRestApi.value ?: return Result.failure(IllegalStateException("Network service unavailable"))
 
             // 2. Fetch UTXOs from node, reconciled against our own not-yet-indexed sends.
@@ -94,17 +112,28 @@ class KaspaWalletEngine @Inject constructor(
             }
 
             val recipientScriptHex = KaspaAddress.getScriptPublicKey(toAddress)
-            val changeScriptHex = KaspaAddress.getScriptPublicKey(fromAddress)
+            val changeScriptHex = KaspaAddress.getScriptPublicKey(changeAddress)
 
             // 4. UTXO selection and fee calculation using Kaspa's real mass model
-            val selectionResult = selectUtxosAndCalculateFee(
-                utxos = utxos,
-                amountSompi = amountSompi,
-                feeRateSompiPerGram = feeRateSompiPerGram,
-                payloadBytes = payloadBytes,
-                recipientScriptLen = recipientScriptHex.length / 2,
-                changeScriptLen = changeScriptHex.length / 2
-            )
+            val selectionResult = if (sweepAll) {
+                KaspaUtxoSelector.selectAllUtxosAndCalculateFee(
+                    utxos = utxos,
+                    amountSompi = amountSompi,
+                    feeRateSompiPerGram = feeRateSompiPerGram,
+                    payloadBytes = payloadBytes,
+                    recipientScriptLen = recipientScriptHex.length / 2,
+                    changeScriptLen = changeScriptHex.length / 2
+                )
+            } else {
+                selectUtxosAndCalculateFee(
+                    utxos = utxos,
+                    amountSompi = amountSompi,
+                    feeRateSompiPerGram = feeRateSompiPerGram,
+                    payloadBytes = payloadBytes,
+                    recipientScriptLen = recipientScriptHex.length / 2,
+                    changeScriptLen = changeScriptHex.length / 2
+                )
+            }
             if (selectionResult.totalSelected < selectionResult.requiredAmount) {
                 return Result.failure(IllegalStateException("Insufficient funds: Needed ${selectionResult.requiredAmount}, have ${selectionResult.totalSelected}"))
             }
@@ -151,7 +180,7 @@ class KaspaWalletEngine @Inject constructor(
             val signedTx = KaspaTransactionSigner.signTransaction(
                 rawTx = rawTx,
                 utxos = selectionResult.selectedUtxos,
-                privateKey = walletManager.getPrivateKeyBytes()
+                privateKey = signingPrivateKey
             )
 
             // 7. Broadcast transaction.
@@ -172,7 +201,7 @@ class KaspaWalletEngine @Inject constructor(
 
             val changeUtxo = if (changeOutputIndex >= 0) {
                 UtxoEntry(
-                    address = fromAddress,
+                    address = changeAddress,
                     outpoint = Outpoint(transactionId = transactionId, index = changeOutputIndex),
                     utxoEntry = UtxoData(
                         amount = selectionResult.changeAmount,
@@ -182,13 +211,43 @@ class KaspaWalletEngine @Inject constructor(
                     )
                 )
             } else null
-            recordSpend(fromAddress, selectionResult.selectedUtxos, changeUtxo)
+            recordSpend(fromAddress, changeAddress, selectionResult.selectedUtxos, changeUtxo)
 
             Result.success(transactionId)
         } catch (e: Exception) {
             Log.e("KaspaWalletEngine", "Error sending Kaspa", e)
             Result.failure(e)
         }
+    }
+
+    /**
+     * "Pay in Kaspa" — the only entry point that spends from the spending-address chain instead
+     * of the identity address, for payment privacy (see [WalletManager]'s spending-address doc
+     * comment). Sweeps the current spending address's entire balance: payment to [toAddress] +
+     * change to a freshly derived *next* spending address, which becomes the new current one.
+     * The stored index only advances after the send actually succeeds — a failed/rejected send
+     * leaves the current spending address exactly as it was, safe to retry.
+     */
+    suspend fun sendSpendingPayment(toAddress: String, amountSompi: Long): Result<String> {
+        val identityAddress = walletManager.getAddress()
+        val currentIndex = walletManager.getActiveAccount()?.spendingAddressIndex
+            ?: return Result.failure(IllegalStateException("No active account"))
+        val currentSpendingAddress = walletManager.deriveSpendingAddress(currentIndex)
+        val spendingPrivateKey = walletManager.getSpendingPrivateKeyBytes(currentIndex)
+        val nextSpendingAddress = walletManager.deriveSpendingAddress(currentIndex + 1)
+
+        val result = sendKaspa(
+            toAddress = toAddress,
+            amountSompi = amountSompi,
+            fromAddress = currentSpendingAddress,
+            signingPrivateKey = spendingPrivateKey,
+            changeAddress = nextSpendingAddress,
+            sweepAll = true
+        )
+        if (result.isSuccess) {
+            walletManager.advanceSpendingAddressIndex(identityAddress)
+        }
+        return result
     }
 
     private fun isValidAddress(address: String): Boolean {

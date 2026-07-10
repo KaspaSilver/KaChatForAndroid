@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.bitcoinj.crypto.ChildNumber
+import org.bitcoinj.crypto.DeterministicKey
 import org.bitcoinj.crypto.HDKeyDerivation
 import org.bitcoinj.crypto.MnemonicCode
 import java.security.KeyStore
@@ -41,7 +42,11 @@ class WalletManager @Inject constructor(
     data class Account(
         val name: String,
         val address: String,
-        val mnemonic: String
+        val mnemonic: String,
+        // Gson deserializes old-shape stored JSON (from before this field existed) with this
+        // defaulted to 0 — verified in WalletManagerTest's Gson round-trip test, since every
+        // existing on-device account depends on that being true. See deriveSpendingAddress.
+        val spendingAddressIndex: Int = 0
     )
 
     private val gson = Gson()
@@ -161,21 +166,30 @@ class WalletManager @Inject constructor(
         refreshActiveAddressFlow()
     }
 
-    private fun deriveAddress(mnemonic: List<String>): String {
+    /**
+     * Shared HD path walk — `m/44'/111111'/{accountIndex}'/0/{addressIndex}`. The identity
+     * address/key (used everywhere except spending) is `accountIndex=0, addressIndex=0`, always.
+     * The spending-address chain lives at `accountIndex=1` — a distinct hardened branch, so it
+     * can never collide with the identity path no matter how far its own addressIndex advances.
+     */
+    private fun deriveKey(mnemonic: List<String>, accountIndex: Int = 0, addressIndex: Int = 0): DeterministicKey {
         val seed = MnemonicCode.toSeed(mnemonic, "")
         val masterKey = HDKeyDerivation.createMasterPrivateKey(seed)
-        
+
         val key44h = HDKeyDerivation.deriveChildKey(masterKey, ChildNumber(44, true))
         val keyKaspaH = HDKeyDerivation.deriveChildKey(key44h, ChildNumber(111111, true))
-        val keyAccount0h = HDKeyDerivation.deriveChildKey(keyKaspaH, ChildNumber(0, true))
-        val keyChain0 = HDKeyDerivation.deriveChildKey(keyAccount0h, ChildNumber(0, false))
-        val finalKey = HDKeyDerivation.deriveChildKey(keyChain0, ChildNumber(0, false))
+        val keyAccountH = HDKeyDerivation.deriveChildKey(keyKaspaH, ChildNumber(accountIndex, true))
+        val keyChain0 = HDKeyDerivation.deriveChildKey(keyAccountH, ChildNumber(0, false))
+        return HDKeyDerivation.deriveChildKey(keyChain0, ChildNumber(addressIndex, false))
+    }
 
-        val pubKey = finalKey.pubKey
+    private fun addressFromKey(key: DeterministicKey): String {
+        val pubKey = key.pubKey
         val xOnlyPubKey = if (pubKey.size == 33) pubKey.sliceArray(1..32) else pubKey
-
         return KaspaAddress.encode("kaspa", 0x00, xOnlyPubKey)
     }
+
+    private fun deriveAddress(mnemonic: List<String>): String = addressFromKey(deriveKey(mnemonic))
 
     /**
      * Returns the primary Kaspa address for the active wallet.
@@ -204,16 +218,45 @@ class WalletManager @Inject constructor(
 
     fun getPrivateKeyBytes(): ByteArray {
         val mnemonic = getActiveMnemonic()?.split(" ") ?: throw IllegalStateException("No active account")
-        val seed = MnemonicCode.toSeed(mnemonic, "")
-        val masterKey = HDKeyDerivation.createMasterPrivateKey(seed)
-        
-        val key44h = HDKeyDerivation.deriveChildKey(masterKey, ChildNumber(44, true))
-        val keyKaspaH = HDKeyDerivation.deriveChildKey(key44h, ChildNumber(111111, true))
-        val keyAccount0h = HDKeyDerivation.deriveChildKey(keyKaspaH, ChildNumber(0, true))
-        val keyChain0 = HDKeyDerivation.deriveChildKey(keyAccount0h, ChildNumber(0, false))
-        val finalKey = HDKeyDerivation.deriveChildKey(keyChain0, ChildNumber(0, false))
+        return deriveKey(mnemonic).privKeyBytes
+    }
 
-        return finalKey.privKeyBytes
+    // --- Spending address (accountIndex=1 branch) ---------------------------------------
+    // Separate from the identity address above for payment privacy: "Pay in Kaspa" sends
+    // sweep this address's entire balance and route change to a freshly derived next index
+    // (see KaspaWalletEngine.sendSpendingPayment), so KAS never sits in more than one
+    // spending-chain address at a time. Messaging (handshakes/chat messages) is untouched —
+    // still identity-address-sourced via getAddress()/getPrivateKeyBytes() above.
+
+    private fun activeMnemonicWords(): List<String> =
+        getActiveMnemonic()?.split(" ") ?: throw IllegalStateException("No active account")
+
+    fun deriveSpendingAddress(index: Int): String =
+        addressFromKey(deriveKey(activeMnemonicWords(), accountIndex = 1, addressIndex = index))
+
+    fun getSpendingPrivateKeyBytes(index: Int): ByteArray =
+        deriveKey(activeMnemonicWords(), accountIndex = 1, addressIndex = index).privKeyBytes
+
+    /** The spending address a "Pay in Kaspa" send should currently source funds from/top up. */
+    fun currentSpendingAddress(): String {
+        val index = getActiveAccount()?.spendingAddressIndex ?: throw IllegalStateException("No active account")
+        return deriveSpendingAddress(index)
+    }
+
+    /** Called only after a spending-address send is actually accepted by the network. */
+    fun advanceSpendingAddressIndex(address: String) {
+        val accounts = getAccounts().map {
+            if (it.address == address) it.copy(spendingAddressIndex = it.spendingAddressIndex + 1) else it
+        }
+        saveAccounts(accounts)
+    }
+
+    /** Sets an explicit recovered index — used by the wallet-import gap-limit scan. */
+    fun setSpendingAddressIndex(address: String, index: Int) {
+        val accounts = getAccounts().map {
+            if (it.address == address) it.copy(spendingAddressIndex = index) else it
+        }
+        saveAccounts(accounts)
     }
 
     /**

@@ -17,6 +17,7 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import com.kachat.app.services.CoinGeckoApi
 import com.kachat.app.services.KaspaRestApi
 import com.kachat.app.services.KasiaIndexerApi
 import com.kachat.app.services.KnsApi
@@ -61,7 +62,7 @@ object AppModule {
             KaChatDatabase::class.java,
             "kachat.db"
         )
-            .addMigrations(KaChatDatabase.MIGRATION_15_16, KaChatDatabase.MIGRATION_16_17)
+            .addMigrations(KaChatDatabase.MIGRATION_15_16, KaChatDatabase.MIGRATION_16_17, KaChatDatabase.MIGRATION_17_18)
             // Safety net only, for version jumps that don't have an explicit Migration above —
             // every future schema change should get a real Migration instead of relying on this,
             // since it silently wipes every user's local contacts/messages.
@@ -123,5 +124,16 @@ object AppModule {
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(KnsApi::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideCoinGeckoApi(okHttpClient: OkHttpClient): CoinGeckoApi {
+        return Retrofit.Builder()
+            .baseUrl("https://api.coingecko.com/")
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(CoinGeckoApi::class.java)
     }
 }

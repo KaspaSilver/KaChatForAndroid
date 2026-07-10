@@ -89,4 +89,56 @@ class KaspaUtxoSelectorTest {
         )
         assertEquals(203_600L, result.estimatedFee)
     }
+
+    // --- selectAllUtxosAndCalculateFee (spending-address full sweep) --------------------
+
+    @Test
+    fun `sweep selects every given UTXO regardless of whether fewer would cover the amount`() {
+        val utxos = listOf(utxo(100_000_000L, "a"), utxo(50_000_000L, "b"), utxo(10_000_000L, "c"))
+        val result = KaspaUtxoSelector.selectAllUtxosAndCalculateFee(
+            utxos, amountSompi = 10_000_000L, feeRateSompiPerGram = 100L,
+            payloadBytes = null, recipientScriptLen = 34, changeScriptLen = 34
+        )
+        // The greedy selector would pick just the 100M UTXO; a sweep must take all three.
+        assertEquals(3, result.selectedUtxos.size)
+        assertEquals(160_000_000L, result.totalSelected)
+    }
+
+    @Test
+    fun `sweep of a single UTXO matches the greedy selector exactly`() {
+        // The steady-state case: after any spend, the spending address holds exactly one
+        // UTXO (its own change), so sweeping "all" and "enough" should agree completely.
+        val utxos = listOf(utxo(100_000_000L))
+        val swept = KaspaUtxoSelector.selectAllUtxosAndCalculateFee(
+            utxos, amountSompi = 10_000_000L, feeRateSompiPerGram = 100L,
+            payloadBytes = null, recipientScriptLen = 34, changeScriptLen = 34
+        )
+        val greedy = KaspaUtxoSelector.selectUtxosAndCalculateFee(
+            utxos, amountSompi = 10_000_000L, feeRateSompiPerGram = 100L,
+            payloadBytes = null, recipientScriptLen = 34, changeScriptLen = 34
+        )
+        assertEquals(greedy.totalSelected, swept.totalSelected)
+        assertEquals(greedy.estimatedFee, swept.estimatedFee)
+        assertEquals(greedy.changeAmount, swept.changeAmount)
+    }
+
+    @Test
+    fun `sweep change equals total minus final amount minus fee`() {
+        val utxos = listOf(utxo(100_000_000L, "a"), utxo(50_000_000L, "b"))
+        val result = KaspaUtxoSelector.selectAllUtxosAndCalculateFee(
+            utxos, amountSompi = 10_000_000L, feeRateSompiPerGram = 100L,
+            payloadBytes = null, recipientScriptLen = 34, changeScriptLen = 34
+        )
+        assertEquals(result.totalSelected - result.finalAmount - result.estimatedFee, result.changeAmount)
+    }
+
+    @Test
+    fun `sweep with insufficient total reports a required amount greater than what's available`() {
+        val utxos = listOf(utxo(1_000L), utxo(500L))
+        val result = KaspaUtxoSelector.selectAllUtxosAndCalculateFee(
+            utxos, amountSompi = 10_000_000L, feeRateSompiPerGram = 100L,
+            payloadBytes = null, recipientScriptLen = 34, changeScriptLen = 34
+        )
+        assertTrue(result.totalSelected < result.requiredAmount)
+    }
 }

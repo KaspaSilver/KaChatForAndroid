@@ -34,6 +34,9 @@ class WalletService @Inject constructor(
     private val _balance = MutableStateFlow(0L)
     val balance: StateFlow<Long> = _balance.asStateFlow()
 
+    private val _spendingBalance = MutableStateFlow(0L)
+    val spendingBalance: StateFlow<Long> = _spendingBalance.asStateFlow()
+
     /** Amount sent with a handshake transaction: 0.2 KAS (matches iOS `handshakeAmount`). */
     private val HANDSHAKE_AMOUNT_SOMPI = 20_000_000L
 
@@ -51,8 +54,23 @@ class WalletService @Inject constructor(
         }
     }
 
+    suspend fun refreshSpendingBalance() {
+        val address = try { walletManager.currentSpendingAddress() } catch (e: Exception) { return }
+        val api = networkService.kaspaRestApi.value ?: return
+
+        try {
+            val response = api.getBalance(address)
+            _spendingBalance.value = response.balance
+        } catch (e: Exception) {
+            Log.e("WalletService", "Error refreshing spending balance", e)
+        }
+    }
+
     /**
-     * Orchestrates a Kaspa payment: Fetch UTXOs -> Build -> Sign -> Broadcast.
+     * Orchestrates a Kaspa payment: Fetch UTXOs -> Build -> Sign -> Broadcast. Identity-address
+     * sourced — used internally by [sendKasiaMessage]/[sendBroadcast]/[sendHandshake] below (all
+     * unqualified same-class calls to this exact method) as well as anything else that needs a
+     * plain identity-sourced send. "Pay in Kaspa" does NOT go through this — see [payInKaspa].
      * @return The transaction ID if successful.
      */
     suspend fun sendKaspa(toAddress: String, amountSompi: Long, payloadBytes: ByteArray? = null): String {
@@ -63,6 +81,36 @@ class WalletService @Inject constructor(
             return result.getOrThrow()
         } else {
             throw result.exceptionOrNull() ?: Exception("Unknown error during Kaspa send")
+        }
+    }
+
+    /**
+     * "Pay in Kaspa" — orchestrates a payment sourced from the spending address, not the
+     * identity address (see [KaspaWalletEngine.sendSpendingPayment]). The only send path that
+     * doesn't go through [sendKaspa] above; messaging/handshakes are unaffected.
+     * @return The transaction ID if successful.
+     */
+    suspend fun payInKaspa(toAddress: String, amountSompi: Long): String {
+        val result = walletEngine.sendSpendingPayment(toAddress, amountSompi)
+
+        if (result.isSuccess) {
+            refreshSpendingBalance()
+            return result.getOrThrow()
+        } else {
+            throw result.exceptionOrNull() ?: Exception("Unknown error during Kaspa send")
+        }
+    }
+
+    /** Moves funds from the identity address into the current spending address — identity-sourced, exactly like every send worked before the spending-address feature existed. */
+    suspend fun topUpSpendingAddress(amountSompi: Long): String {
+        val result = walletEngine.sendKaspa(toAddress = walletManager.currentSpendingAddress(), amountSompi = amountSompi)
+
+        if (result.isSuccess) {
+            refreshBalance()
+            refreshSpendingBalance()
+            return result.getOrThrow()
+        } else {
+            throw result.exceptionOrNull() ?: Exception("Unknown error during top-up")
         }
     }
 

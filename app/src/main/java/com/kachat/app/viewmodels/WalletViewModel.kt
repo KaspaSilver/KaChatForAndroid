@@ -9,6 +9,7 @@ import com.kachat.app.repository.AppSettingsRepository
 import com.kachat.app.services.KaspaWalletEngine
 import com.kachat.app.services.KnsProfileFields
 import com.kachat.app.services.KnsService
+import com.kachat.app.services.SpendingAddressDiscovery
 import com.kachat.app.services.WalletManager
 import com.kachat.app.services.WalletService
 import com.kachat.app.util.ImagePrep
@@ -29,7 +30,8 @@ class WalletViewModel @Inject constructor(
     private val walletService: WalletService,
     private val walletEngine: KaspaWalletEngine,
     private val knsService: KnsService,
-    private val settings: AppSettingsRepository
+    private val settings: AppSettingsRepository,
+    private val spendingAddressDiscovery: SpendingAddressDiscovery
 ) : ViewModel() {
 
     private val _sendResult = MutableStateFlow<Result<String>?>(null)
@@ -68,6 +70,47 @@ class WalletViewModel @Inject constructor(
 
     val balanceSompi: StateFlow<Long> = walletService.balance
 
+    // --- Spending address (separate from the identity address above) --------------------
+    private val _spendingAddress = MutableStateFlow<String?>(null)
+    val spendingAddress: StateFlow<String?> = _spendingAddress
+
+    val spendingBalance: StateFlow<String> = walletService.spendingBalance.map {
+        val kAs = it.toDouble() / 100_000_000.0
+        "%.8f KAS".format(java.util.Locale.US, kAs)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "0.00000000 KAS")
+
+    enum class TopUpStatus { IDLE, SENDING, SUCCESS, FAILED }
+    data class TopUpUiState(val status: TopUpStatus = TopUpStatus.IDLE, val errorMessage: String? = null)
+    private val _topUpState = MutableStateFlow(TopUpUiState())
+    val topUpState: StateFlow<TopUpUiState> = _topUpState.asStateFlow()
+
+    /** Re-derives the current spending address and refreshes its balance — safe to call anytime the Profile screen appears, since the underlying index only ever changes via a successful send/top-up. */
+    fun refreshSpendingAddress() {
+        _spendingAddress.value = try { walletManager.currentSpendingAddress() } catch (e: Exception) { null }
+        viewModelScope.launch { walletService.refreshSpendingBalance() }
+    }
+
+    fun topUpSpendingAddress(amountText: String) {
+        val amountKas = amountText.toDoubleOrNull() ?: return
+        val sompi = (amountKas * 100_000_000).toLong()
+        if (sompi <= 0 || _topUpState.value.status == TopUpStatus.SENDING) return
+        viewModelScope.launch {
+            _topUpState.value = TopUpUiState(status = TopUpStatus.SENDING)
+            try {
+                walletService.topUpSpendingAddress(sompi)
+                _topUpState.value = TopUpUiState(status = TopUpStatus.SUCCESS)
+                refreshBalance()
+                refreshSpendingAddress()
+            } catch (e: Exception) {
+                _topUpState.value = TopUpUiState(status = TopUpStatus.FAILED, errorMessage = e.message ?: "Top up failed")
+            }
+        }
+    }
+
+    fun resetTopUpState() {
+        _topUpState.value = TopUpUiState()
+    }
+
     private val _isLoggedIn = MutableStateFlow(false)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn
 
@@ -77,6 +120,7 @@ class WalletViewModel @Inject constructor(
             _accountName.value = walletManager.getAccountName()
             _accounts.value = walletManager.getAllAccounts()
             refreshBalance()
+            refreshSpendingAddress()
         }
     }
 
@@ -92,6 +136,7 @@ class WalletViewModel @Inject constructor(
             _address.value = walletManager.getAddress()
             _accountName.value = walletManager.getAccountName()
             refreshBalance()
+            refreshSpendingAddress()
         }
         if (walletManager.hasWallet()) {
             _isLoggedIn.value = true
@@ -160,6 +205,20 @@ class WalletViewModel @Inject constructor(
                 _accounts.value = walletManager.getAllAccounts()
                 refreshBalance()
                 _importWalletState.value = ImportWalletUiState(status = ImportWalletStatus.SUCCESS)
+
+                // Recovers this mnemonic's real spending-address index if it was already used
+                // with this feature before (a different install, or after a wipe) — runs after
+                // reporting import success so it doesn't add scan latency to that UX; a fresh
+                // mnemonic just confirms index 0, which is already the default.
+                val importedAddress = walletManager.getAddress()
+                launch {
+                    try {
+                        val recoveredIndex = spendingAddressDiscovery.discoverIndex()
+                        walletManager.setSpendingAddressIndex(importedAddress, recoveredIndex)
+                    } catch (e: Exception) {
+                        android.util.Log.w("WalletViewModel", "Spending address discovery failed", e)
+                    }
+                }
             } catch (e: Exception) {
                 android.util.Log.e("WalletViewModel", "importWallet failed", e)
                 _importWalletState.value = ImportWalletUiState(
