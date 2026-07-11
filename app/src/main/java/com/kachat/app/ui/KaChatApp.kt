@@ -264,6 +264,12 @@ fun MainShell(
                 )
             }
 
+            composable("photo_quality_settings") {
+                PhotoQualitySettingsScreen(
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
             composable("hidden_broadcast_users") {
                 HiddenBroadcastUsersScreen(
                     onBack = { navController.popBackStack() }

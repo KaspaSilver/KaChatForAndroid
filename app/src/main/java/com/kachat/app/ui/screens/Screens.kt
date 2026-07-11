@@ -2342,6 +2342,7 @@ fun SettingsScreen(
     val hideAutoCreatedPaymentChats by chatViewModel.hideAutoCreatedPaymentChats.collectAsState()
     val showContactBalance by chatViewModel.showContactBalance.collectAsState()
     val notificationsEnabled by settingsViewModel.notificationsEnabled.collectAsState()
+    val chatPhotoQualityPreset by chatViewModel.chatPhotoQualityPreset.collectAsState()
     val syncSystemContactsEnabled by chatViewModel.syncSystemContactsEnabled.collectAsState()
     val autoCreateSystemContactsEnabled by chatViewModel.autoCreateSystemContactsEnabled.collectAsState()
     val exportChatHistoryState by chatViewModel.exportState.collectAsState()
@@ -2405,6 +2406,13 @@ fun SettingsScreen(
                 SettingsSwitchItem("Show contact balance", showContactBalance) {
                     chatViewModel.updateShowContactBalance(it)
                 }
+                SettingsDivider()
+                SettingsNavigationItem(
+                    "Photo Quality",
+                    Icons.Default.Photo,
+                    chatPhotoQualityPreset.displayName,
+                    onClick = { navController.navigate("photo_quality_settings") }
+                )
                 SettingsDivider()
                 SettingsNavigationItem(
                     "Notifications",
@@ -3285,6 +3293,81 @@ fun NotificationSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel 
                     SettingsSwitchItem("Vibration", vibrationEnabled) {
                         viewModel.setNotificationVibrationEnabled(it)
                     }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(40.dp))
+        }
+    }
+}
+
+/**
+ * Global default photo-compression quality for chat photos — mirrors iOS's
+ * `PhotoQualitySettingsSheet`/`ChatPhotoQualitySlider`. Writes take effect immediately (no
+ * separate Save step), matching every other row in [SettingsScreen]; only affects photos attached
+ * after the change, never a photo already staged in a chat's composer.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PhotoQualitySettingsScreen(onBack: () -> Unit, chatViewModel: ChatViewModel = hiltViewModel()) {
+    val preset by chatViewModel.chatPhotoQualityPreset.collectAsState()
+    val presets = com.kachat.app.models.ChatPhotoQualityPreset.entries
+    val sliderPosition = presets.indexOf(preset).coerceAtLeast(0).toFloat()
+
+    Scaffold(
+        containerColor = Color.Black,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("Photo Quality", color = Color.White, fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBackIos, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
+        ) {
+            Spacer(Modifier.height(8.dp))
+
+            Text(
+                "Controls how much photos are compressed before sending. Higher quality looks clearer but costs a larger fee and takes longer to send; lower quality sends faster and cheaper but looks more compressed. This only affects photos you send, not ones you receive.",
+                color = Color.Gray,
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            SettingsSection(title = "Chats") {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Photo quality", color = Color.White, style = MaterialTheme.typography.bodyLarge)
+                        Text(preset.summaryText, color = Color.Gray, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Slider(
+                        value = sliderPosition,
+                        onValueChange = {
+                            chatViewModel.updateChatPhotoQualityPreset(
+                                com.kachat.app.models.ChatPhotoQualityPreset.fromSliderValue(it.toInt())
+                            )
+                        },
+                        valueRange = 0f..(presets.size - 1).toFloat(),
+                        steps = presets.size - 2,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = KaspaTeal,
+                            inactiveTrackColor = Color.Gray
+                        )
+                    )
                 }
             }
 

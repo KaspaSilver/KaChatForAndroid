@@ -44,6 +44,9 @@ class AppSettingsRepository @Inject constructor(
         val KEY_ESTIMATE_FEES    = booleanPreferencesKey("estimate_fees")
         val KEY_HIDE_AUTO_PAYMENT_CHATS = booleanPreferencesKey("hide_auto_payment_chats")
         val KEY_SHOW_CONTACT_BALANCE = booleanPreferencesKey("show_contact_balance")
+        // How hard chat photos get compressed before sending — mirrors iOS's
+        // `chatPhotoQualityPreset` setting. Only affects photos sent, not received.
+        val KEY_CHAT_PHOTO_QUALITY_PRESET = stringPreferencesKey("chat_photo_quality_preset")
 
         // Notifications — mirrors iOS's notificationMode/sound/vibration settings, minus
         // the remote-push mode (there's no FCM/APNs-equivalent registration wired up yet,
@@ -117,6 +120,10 @@ class AppSettingsRepository @Inject constructor(
 
     val showContactBalance: Flow<Boolean> = dataStore.data.map {
         it[KEY_SHOW_CONTACT_BALANCE] ?: true
+    }
+
+    val chatPhotoQualityPreset: Flow<com.kachat.app.models.ChatPhotoQualityPreset> = dataStore.data.map {
+        com.kachat.app.models.ChatPhotoQualityPreset.fromName(it[KEY_CHAT_PHOTO_QUALITY_PRESET])
     }
 
     val broadcastPopularEnabled: Flow<Boolean> = dataStore.data.map {
@@ -205,6 +212,7 @@ class AppSettingsRepository @Inject constructor(
     suspend fun setEstimateFees(value: Boolean) = dataStore.edit { it[KEY_ESTIMATE_FEES] = value }
     suspend fun setHideAutoCreatedPaymentChats(value: Boolean) = dataStore.edit { it[KEY_HIDE_AUTO_PAYMENT_CHATS] = value }
     suspend fun setShowContactBalance(value: Boolean) = dataStore.edit { it[KEY_SHOW_CONTACT_BALANCE] = value }
+    suspend fun setChatPhotoQualityPreset(value: com.kachat.app.models.ChatPhotoQualityPreset) = dataStore.edit { it[KEY_CHAT_PHOTO_QUALITY_PRESET] = value.name }
     suspend fun setBroadcastPopularEnabled(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_POPULAR_ENABLED] = value }
     suspend fun setBroadcastShowKnsAvatars(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_SHOW_KNS_AVATARS] = value }
     suspend fun setBroadcastAutoAvatarSearch(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_AUTO_AVATAR_SEARCH] = value }

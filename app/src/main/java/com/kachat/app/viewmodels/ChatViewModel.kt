@@ -64,6 +64,13 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { settings.setShowContactBalance(enabled) }
     }
 
+    val chatPhotoQualityPreset: StateFlow<com.kachat.app.models.ChatPhotoQualityPreset> = settings.chatPhotoQualityPreset
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), com.kachat.app.models.ChatPhotoQualityPreset.default)
+
+    fun updateChatPhotoQualityPreset(preset: com.kachat.app.models.ChatPhotoQualityPreset) {
+        viewModelScope.launch { settings.setChatPhotoQualityPreset(preset) }
+    }
+
     // -------------------------------------------------------------------------
     // Chat history export/import — matches iOS's plaintext JSON archive, scoped to whichever
     // account is active. Export hands a file off to the share sheet; import always merges,
@@ -451,14 +458,14 @@ class ChatViewModel @Inject constructor(
      * photo — same shape as [VoiceMessage.estimatedWirePayloadSize]: the real send always measures
      * the actual encoded bytes exactly, this is only ever used for the live preview.
      */
-    private val previewPayloadSize: Flow<Int> = combine(_messageText, voiceRecordingState, pendingPhotoUri) { text, recording, photoUri ->
+    private val previewPayloadSize: Flow<Int> = combine(_messageText, voiceRecordingState, pendingPhotoUri, chatPhotoQualityPreset) { text, recording, photoUri, photoQuality ->
         if (recording.status == VoiceRecordingStatus.RECORDING) {
             VoiceMessage.estimatedWirePayloadSize(recording.elapsedMs)
         } else if (photoUri != null) {
             // Compressed image bytes -> inner base64 (+33%) -> JSON envelope overhead -> encryption
             // + outer base64 (+33%) -- rough multiplier, calibrated the same way VoiceMessage's
             // estimate is: never used for the real fee, only this live preview.
-            (ImagePrep.DEFAULT_CHAT_TARGET_BYTES * 1.33 * 1.33).toInt() + 150
+            (photoQuality.targetBytes * 1.33 * 1.33).toInt() + 150
         } else {
             text.toByteArray().size
         }
@@ -911,7 +918,7 @@ class ChatViewModel @Inject constructor(
         _pendingPhotoUri.value = null
         viewModelScope.launch {
             try {
-                val bytes = ImagePrep.prepareForChatMessage(appContext, uri)
+                val bytes = ImagePrep.prepareForChatMessage(appContext, uri, chatPhotoQualityPreset.value.targetBytes)
                 val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                 val json = ImageMessage.encode(fileName = "photo.jpg", sizeBytes = bytes.size.toLong(), base64Image = base64)
                 sendMessage(contactId, json)
