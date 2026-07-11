@@ -42,11 +42,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
+import androidx.compose.material.icons.automirrored.filled.CallMerge
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Logout
@@ -71,6 +75,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -126,8 +131,8 @@ fun ChatThreadScreen(
     val showContactBalance by chatViewModel.showContactBalance.collectAsState()
 
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
-    val balance by walletViewModel.fullBalance.collectAsState()
-    val balanceSompi by walletViewModel.balanceSompi.collectAsState()
+    val spendingBalance by walletViewModel.spendingBalance.collectAsState()
+    val spendingBalanceSompi by walletViewModel.spendingBalanceSompi.collectAsState()
     val myKnsProfile by walletViewModel.knsProfile.collectAsState()
     val myAddress by walletViewModel.address.collectAsState()
     val paymentAmount by chatViewModel.paymentAmount.collectAsState()
@@ -193,7 +198,8 @@ fun ChatThreadScreen(
 
     LaunchedEffect(paymentMode) {
         if (paymentMode) {
-            chatViewModel.refreshUtxos()
+            chatViewModel.refreshSpendingUtxos()
+            walletViewModel.refreshSpendingAddress()
         }
     }
 
@@ -282,7 +288,7 @@ fun ChatThreadScreen(
                                 shape = RoundedCornerShape(12.dp)
                             ) {
                                 Text(
-                                    text = "available: $balance",
+                                    text = "available: $spendingBalance",
                                     color = Color.Gray,
                                     fontSize = 12.sp,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -331,7 +337,7 @@ fun ChatThreadScreen(
                                         )
                                         val fee = com.kachat.app.util.KaspaMass.calculateFee(mass, networkFeeRate.toLong())
 
-                                        val maxSendableSompi = (balanceSompi - fee).coerceAtLeast(0L)
+                                        val maxSendableSompi = (spendingBalanceSompi - fee).coerceAtLeast(0L)
                                         val maxSendableKas = maxSendableSompi.toDouble() / 100_000_000.0
                                         chatViewModel.setPaymentAmount("%.8f".format(java.util.Locale.US, maxSendableKas))
                                     }) {
@@ -1276,22 +1282,19 @@ fun ContactsScreen(navController: NavController) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileScreen(
-    viewModel: WalletViewModel, 
+    viewModel: WalletViewModel,
     navController: NavController,
-    onNavigateToSeed: () -> Unit,
     connectionViewModel: ConnectionViewModel = hiltViewModel()
 ) {
     val address by viewModel.address.collectAsState()
     val balance by viewModel.fullBalance.collectAsState()
-    val accountName by viewModel.accountName.collectAsState()
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val scrollState = rememberScrollState()
 
     val spendingAddress by viewModel.spendingAddress.collectAsState()
     val spendingBalance by viewModel.spendingBalance.collectAsState()
-    val topUpState by viewModel.topUpState.collectAsState()
-    var showTopUpDialog by remember { mutableStateOf(false) }
-    var topUpAmountInput by remember { mutableStateOf("") }
+    var showIdentityQr by remember { mutableStateOf(false) }
+    var showSpendingQr by remember { mutableStateOf(false) }
 
     val ownedDomainAssets by viewModel.ownedDomainAssets.collectAsState()
     val primaryDomainName by viewModel.primaryDomainName.collectAsState()
@@ -1302,23 +1305,19 @@ fun ProfileScreen(
     var showInscribeDialog by remember { mutableStateOf(false) }
     var domainLabelInput by remember { mutableStateOf("") }
     var transferDialogDomain by remember { mutableStateOf<com.kachat.app.services.KnsAsset?>(null) }
-    var showRenameDialog by remember { mutableStateOf(false) }
-    var nameInput by remember { mutableStateOf("") }
+
+    val profileAssetId by viewModel.profileDomainAssetId.collectAsState()
+    val knsProfile by viewModel.knsProfile.collectAsState()
+    val activeProfileDomainName = viewModel.activeProfileDomainName.collectAsState().value
+    val hasAnyProfileData = knsProfile != null && listOf(
+        knsProfile?.bio, knsProfile?.x, knsProfile?.website, knsProfile?.telegram,
+        knsProfile?.discord, knsProfile?.contactEmail, knsProfile?.github, knsProfile?.redirectUrl
+    ).any { !it.isNullOrBlank() }
 
     LaunchedEffect(Unit) {
         viewModel.refreshBalance()
         viewModel.refreshOwnedDomains()
         viewModel.refreshSpendingAddress()
-    }
-
-    // Auto-dismiss the top-up dialog on success, matching the create-wallet/import-wallet
-    // dialogs' own success-closes-dialog pattern elsewhere on this screen.
-    LaunchedEffect(topUpState.status) {
-        if (topUpState.status == WalletViewModel.TopUpStatus.SUCCESS) {
-            showTopUpDialog = false
-            topUpAmountInput = ""
-            viewModel.resetTopUpState()
-        }
     }
 
     Scaffold(
@@ -1334,42 +1333,21 @@ fun ProfileScreen(
                 TopStatusBar(
                     balance = balance,
                     onStatusClick = { navController.navigate("connection_status") },
-                    onAddClick = { navController.navigate("create_chat") },
-                    dotColorHex = dotColorHex
+                    dotColorHex = dotColorHex,
+                    showAddButton = false
                 )
                 Spacer(modifier = Modifier.height(8.dp))
             }
         }
     ) { padding ->
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
                 .padding(horizontal = 16.dp)
                 .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            SettingsSection(title = "Name") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            nameInput = accountName ?: ""
-                            showRenameDialog = true
-                        }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = accountName ?: "No Name",
-                        color = Color.White,
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Icon(Icons.Default.Edit, contentDescription = "Edit name", tint = KaspaTeal)
-                }
-            }
-
             if (pendingKnsCommit != null) {
                 SettingsSection(title = "Unfinished Inscription") {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -1390,7 +1368,52 @@ fun ProfileScreen(
                 }
             }
 
-            SettingsSection(title = "KNS Domains") {
+            SettingsSection(title = "KNS Profile") {
+                if (profileAssetId == null || activeProfileDomainName == null) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Info, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Register a domain below first — a profile attaches to a domain.",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                } else {
+                    Column {
+                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            ContactAvatar(
+                                imageUrl = knsProfile?.avatarUrl,
+                                fallbackText = activeProfileDomainName,
+                                size = 48.dp
+                            )
+                            Spacer(Modifier.width(16.dp))
+                            Column {
+                                Text(activeProfileDomainName, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    if (hasAnyProfileData) "On-chain profile data available." else "No on-chain profile data yet.",
+                                    color = Color.Gray,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                        HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { navController.navigate("edit_kns_profile") }
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Edit, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Edit KNS Profile", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            CollapsibleAddressSection(title = "KNS Domains") {
                 Column(modifier = Modifier.padding(16.dp)) {
                     if (ownedDomainAssets.isEmpty()) {
                         Text(text = "No domains yet.", color = Color.Gray)
@@ -1458,122 +1481,32 @@ fun ProfileScreen(
                 }
             }
 
-            SettingsSection(title = "KNS Profile") {
-                val profileAssetId by viewModel.profileDomainAssetId.collectAsState()
-                val knsProfile by viewModel.knsProfile.collectAsState()
-                val activeProfileDomainName = viewModel.activeProfileDomainName.collectAsState().value
-
-                if (profileAssetId == null || activeProfileDomainName == null) {
-                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Info, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Register a domain above first — a profile attaches to a domain.",
-                            color = Color.Gray,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                } else {
-                    val hasAnyProfileData = knsProfile != null && listOf(
-                        knsProfile?.bio, knsProfile?.x, knsProfile?.website, knsProfile?.telegram,
-                        knsProfile?.discord, knsProfile?.contactEmail, knsProfile?.github, knsProfile?.redirectUrl
-                    ).any { !it.isNullOrBlank() }
-
-                    Column {
-                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ContactAvatar(
-                                imageUrl = knsProfile?.avatarUrl,
-                                fallbackText = activeProfileDomainName,
-                                size = 48.dp
-                            )
-                            Spacer(Modifier.width(16.dp))
-                            Column {
-                                Text(activeProfileDomainName, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
-                                Text(
-                                    if (hasAnyProfileData) "On-chain profile data available." else "No on-chain profile data yet.",
-                                    color = Color.Gray,
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                        }
-                        HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { navController.navigate("edit_kns_profile") }
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Edit, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Edit KNS Profile", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                        }
-
-                        val readOnlyFields = listOf(
-                            "Bio" to knsProfile?.bio,
-                            "X" to knsProfile?.x,
-                            "Website" to knsProfile?.website,
-                            "Telegram" to knsProfile?.telegram,
-                            "Discord" to knsProfile?.discord,
-                            "Email" to knsProfile?.contactEmail,
-                            "GitHub" to knsProfile?.github,
-                            "Redirect" to knsProfile?.redirectUrl
-                        ).filter { !it.second.isNullOrBlank() }
-
-                        readOnlyFields.forEach { (label, value) ->
-                            HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
-                            KnsProfileReadOnlyRow(label = label, value = value!!)
-                        }
-                    }
-                }
-            }
-
-            SettingsSection(title = "Address") {
+            CollapsibleAddressSection(title = "Identity Address", balance = balance) {
                 val clipboardManager = LocalClipboardManager.current
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { 
-                            if (address != null) {
-                                clipboardManager.setText(AnnotatedString(address!!))
-                            }
-                        }
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    val qrPainter = rememberQrBitmapPainter(address ?: "")
-                    Box(
+                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                    Row(
                         modifier = Modifier
-                            .size(180.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White)
-                            .padding(12.dp),
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .clickable {
+                                address?.let { clipboardManager.setText(AnnotatedString(it)) }
+                            },
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Image(
-                            painter = qrPainter,
-                            contentDescription = "QR Code",
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Copy Address", color = KaspaTeal, fontWeight = FontWeight.Bold)
                     }
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
-                    
-                    Text(
-                        text = "Scan to share account. Tap anywhere here to copy address.",
-                        color = Color.Gray,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center
-                    )
-                    
-                    Spacer(modifier = Modifier.height(12.dp))
-                    
-                    Text(
-                        text = address ?: "Loading...",
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showIdentityQr = true },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Show QR Code", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
 
@@ -1581,61 +1514,43 @@ fun ProfileScreen(
             // Kaspa" sends always come out of this address, never the identity one above. It
             // rotates to a freshly derived address after every send (see WalletManager's
             // spending-address doc comment), so this always shows whichever one is current.
-            SettingsSection(title = "Spending Address") {
+            CollapsibleAddressSection(title = "Spending Address", balance = spendingBalance) {
                 val clipboardManager = LocalClipboardManager.current
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                    Text(
-                        text = "\"Pay in Kaspa\" sends always come out of this address, kept separate from your account address above for privacy. It changes automatically after every payment.",
-                        color = Color.Gray,
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                spendingAddress?.let { clipboardManager.setText(AnnotatedString(it)) }
+                            },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Copy Address", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                    }
                     Spacer(Modifier.height(12.dp))
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF2C2C2E))
-                            .clickable {
-                                spendingAddress?.let { clipboardManager.setText(AnnotatedString(it)) }
-                            }
-                            .padding(12.dp),
+                            .clickable { showSpendingQr = true },
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = spendingAddress ?: "Loading...",
-                            color = Color.White,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Icon(Icons.Default.ContentCopy, "Copy spending address", tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Show QR Code", color = KaspaTeal, fontWeight = FontWeight.Bold)
                     }
                     Spacer(Modifier.height(12.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column {
-                            Text("Balance", color = Color.Gray, fontSize = 12.sp)
-                            Text(spendingBalance, color = Color.White, fontWeight = FontWeight.Bold)
-                        }
-                        TextButton(onClick = { showTopUpDialog = true }) {
-                            Text("Top Up", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                        }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { navController.navigate("manage_addresses") },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.ManageAccounts, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Manage Addresses", color = KaspaTeal, fontWeight = FontWeight.Bold)
                     }
-                }
-            }
-
-            SettingsSection(title = "Balance") {
-                val clipboardManager = LocalClipboardManager.current
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { clipboardManager.setText(AnnotatedString(balance)) }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(balance, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
                 }
             }
 
@@ -1652,7 +1567,7 @@ fun ProfileScreen(
 
             SettingsSection(title = "Info") {
                 Row(
-                    modifier = Modifier.padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -1661,107 +1576,16 @@ fun ProfileScreen(
                 }
             }
 
-            SettingsSection(title = "Actions") {
-                SettingsActionItem("View Seed Phrase", Icons.Default.Key, KaspaTeal) {
-                    onNavigateToSeed()
-                }
-                SettingsDivider()
-                SettingsActionItem("Log Out", Icons.AutoMirrored.Filled.Logout, Color.Red) {
-                    viewModel.logout()
-                }
-            }
-
             Spacer(modifier = Modifier.height(100.dp))
         }
-    }
 
-    if (showRenameDialog) {
-        AlertDialog(
-            onDismissRequest = { showRenameDialog = false },
-            containerColor = Color(0xFF1C1C1E),
-            title = { Text("Rename Account", color = Color.White) },
-            text = {
-                OutlinedTextField(
-                    value = nameInput,
-                    onValueChange = { nameInput = it },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = KaspaTeal,
-                        unfocusedBorderColor = Color.Gray
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = nameInput.isNotBlank(),
-                    onClick = {
-                        viewModel.renameActiveAccount(nameInput)
-                        showRenameDialog = false
-                    }
-                ) {
-                    Text("Save", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRenameDialog = false }) {
-                    Text("Cancel", color = Color.Gray)
-                }
-            }
-        )
-    }
-
-    if (showTopUpDialog) {
-        val sending = topUpState.status == WalletViewModel.TopUpStatus.SENDING
-        AlertDialog(
-            onDismissRequest = { if (!sending) { showTopUpDialog = false; viewModel.resetTopUpState() } },
-            containerColor = Color(0xFF1C1C1E),
-            title = { Text("Top Up Spending Address", color = Color.White) },
-            text = {
-                Column {
-                    Text(
-                        "Sends KAS from your account address into your spending address.",
-                        color = Color.Gray,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = topUpAmountInput,
-                        onValueChange = { topUpAmountInput = it },
-                        label = { Text("Amount (KAS)") },
-                        singleLine = true,
-                        enabled = !sending,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = KaspaTeal,
-                            unfocusedBorderColor = Color.Gray
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (topUpState.status == WalletViewModel.TopUpStatus.FAILED) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(topUpState.errorMessage ?: "Top up failed", color = Color(0xFFFF3B30), style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = !sending && topUpAmountInput.toDoubleOrNull() != null,
-                    onClick = { viewModel.topUpSpendingAddress(topUpAmountInput) }
-                ) {
-                    Text(if (sending) "Sending..." else "Send", color = if (sending) Color.Gray else KaspaTeal, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(enabled = !sending, onClick = { showTopUpDialog = false; viewModel.resetTopUpState() }) {
-                    Text("Cancel", color = Color.Gray)
-                }
-            }
-        )
+        if (showIdentityQr) {
+            QrCodeOverlay(value = address ?: "", onDismiss = { showIdentityQr = false })
+        }
+        if (showSpendingQr) {
+            QrCodeOverlay(value = spendingAddress ?: "", onDismiss = { showSpendingQr = false })
+        }
+        }
     }
 
     if (showInscribeDialog) {
@@ -2025,46 +1849,304 @@ fun ProfileScreen(
     }
 }
 
+/**
+ * Every spending-chain address derived so far, plus the identity address shown first (grayed
+ * out, tapping it warns rather than lets you copy it) — since paying the identity address
+ * instead of the current spending address defeats the whole point of keeping them separate.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ManageAddressesScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
+    val identityAddress by viewModel.address.collectAsState()
+    val addresses by viewModel.manageAddresses.collectAsState()
+    val loading by viewModel.manageAddressesLoading.collectAsState()
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+    var showIdentityWarning by remember { mutableStateOf(false) }
+    var activateIndex by remember { mutableStateOf<Int?>(null) }
+    var qrAddress by remember { mutableStateOf<String?>(null) }
+    var showActionsMenu by remember { mutableStateOf(false) }
+    var showConsolidateConfirm by remember { mutableStateOf(false) }
+    val pullRefreshState = rememberPullToRefreshState()
+    val consolidateState by viewModel.consolidateState.collectAsState()
+
+    LaunchedEffect(Unit) {
+        viewModel.loadManageAddresses()
+    }
+
+    LaunchedEffect(consolidateState.status) {
+        when (consolidateState.status) {
+            WalletViewModel.ConsolidateStatus.SUCCESS -> {
+                val count = consolidateState.sweptCount
+                Toast.makeText(
+                    context,
+                    if (count > 0) "Consolidated $count address${if (count == 1) "" else "es"}" else "Nothing to consolidate",
+                    Toast.LENGTH_SHORT
+                ).show()
+                viewModel.resetConsolidateState()
+            }
+            WalletViewModel.ConsolidateStatus.FAILED -> {
+                Toast.makeText(context, consolidateState.errorMessage ?: "Consolidation failed", Toast.LENGTH_SHORT).show()
+                viewModel.resetConsolidateState()
+            }
+            else -> {}
+        }
+    }
+
+    LaunchedEffect(pullRefreshState.isRefreshing) {
+        if (pullRefreshState.isRefreshing) {
+            viewModel.loadManageAddresses()
+        }
+    }
+
+    LaunchedEffect(loading) {
+        if (!loading && pullRefreshState.isRefreshing) {
+            pullRefreshState.endRefresh()
+        }
+    }
+
+    Scaffold(
+        containerColor = Color.Black,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("Manage Addresses", color = Color.White, fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
+            )
+        },
+        floatingActionButton = {
+            Box {
+                FloatingActionButton(
+                    onClick = { showActionsMenu = true },
+                    containerColor = KaspaTeal,
+                    contentColor = Color.Black,
+                    shape = CircleShape
+                ) {
+                    Icon(Icons.Default.Add, "Address actions")
+                }
+                DropdownMenu(expanded = showActionsMenu, onDismissRequest = { showActionsMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Generate New Spending Address") },
+                        leadingIcon = { Icon(Icons.Default.AddCircleOutline, null) },
+                        onClick = {
+                            showActionsMenu = false
+                            viewModel.generateNewSpendingAddress()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Discover Addresses") },
+                        leadingIcon = { Icon(Icons.Default.Search, null) },
+                        onClick = {
+                            showActionsMenu = false
+                            viewModel.discoverSpendingAddresses { count ->
+                                Toast.makeText(
+                                    context,
+                                    if (count > 0) "Found $count used address${if (count == 1) "" else "es"}" else "No additional used addresses found",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Send All Kaspa To Primary Spend Address") },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.CallMerge, null) },
+                        onClick = {
+                            showActionsMenu = false
+                            showConsolidateConfirm = true
+                        }
+                    )
+                }
+            }
+        }
+    ) { padding ->
+        Box(modifier = Modifier.fillMaxSize().padding(padding).nestedScroll(pullRefreshState.nestedScrollConnection)) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF1C1C1E))
+                        .clickable { showIdentityWarning = true }
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Identity Address", color = Color.Gray, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = identityAddress ?: "Loading...",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+
+            if (loading && addresses.isEmpty()) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = KaspaTeal)
+                    }
+                }
+            } else {
+                items(addresses.reversed()) { entry ->
+                    val kas = entry.balanceSompi / 100_000_000.0
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF1C1C1E))
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = entry.address,
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "%.8f KAS".format(java.util.Locale.US, kas),
+                                    color = Color.Gray,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    text = "  ·  " + if (entry.everUsed) "Used" else "Unused",
+                                    color = if (entry.everUsed) Color(0xFFF39C12) else Color(0xFF4CD964),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        IconButton(onClick = { clipboardManager.setText(AnnotatedString(entry.address)) }) {
+                            Icon(Icons.Default.ContentCopy, "Copy address", tint = KaspaTeal, modifier = Modifier.size(20.dp))
+                        }
+                        IconButton(onClick = { qrAddress = entry.address }) {
+                            Icon(Icons.Default.QrCode, "Show QR code", tint = KaspaTeal, modifier = Modifier.size(20.dp))
+                        }
+                        IconButton(onClick = { if (!entry.isCurrent) activateIndex = entry.index }) {
+                            Icon(
+                                if (entry.isCurrent) Icons.Default.Star else Icons.Default.StarBorder,
+                                contentDescription = if (entry.isCurrent) "Currently active for Pay in Kaspa" else "Make active for Pay in Kaspa",
+                                tint = if (entry.isCurrent) KaspaTeal else Color.Gray,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            item {
+                // Leaves room so the last address row isn't hidden behind the FAB.
+                Spacer(Modifier.height(64.dp))
+            }
+        }
+
+        PullToRefreshContainer(
+            state = pullRefreshState,
+            modifier = Modifier.align(Alignment.TopCenter)
+        )
+
+        qrAddress?.let { address ->
+            QrCodeOverlay(value = address, onDismiss = { qrAddress = null })
+        }
+        }
+    }
+
+    if (showIdentityWarning) {
+        AlertDialog(
+            onDismissRequest = { showIdentityWarning = false },
+            containerColor = Color(0xFF1C1C1E),
+            title = { Text("Identity Address", color = Color.White) },
+            text = {
+                Text(
+                    "Never send Kaspa you intend to spend to this address.",
+                    color = Color.Gray
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showIdentityWarning = false }) {
+                    Text("OK", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
+    activateIndex?.let { index ->
+        AlertDialog(
+            onDismissRequest = { activateIndex = null },
+            containerColor = Color(0xFF1C1C1E),
+            title = { Text("Make Active Address", color = Color.White) },
+            text = {
+                Text(
+                    "Spending Kaspa on KaChat will come out of this address only now. Any Kaspa still sitting on your current spending address will be sent to this new one automatically.",
+                    color = Color.Gray
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.setActiveSpendingAddress(index)
+                    activateIndex = null
+                }) {
+                    Text("Confirm", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { activateIndex = null }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
+    }
+
+    if (showConsolidateConfirm) {
+        val consolidating = consolidateState.status == WalletViewModel.ConsolidateStatus.RUNNING
+        AlertDialog(
+            onDismissRequest = { if (!consolidating) showConsolidateConfirm = false },
+            containerColor = Color(0xFF1C1C1E),
+            title = { Text("Send All Kaspa To Primary Spend Address", color = Color.White) },
+            text = {
+                Text(
+                    "Sends every other spending address's balance to your currently starred one. Each address with a balance is its own real transaction, so this may take a few moments.",
+                    color = Color.Gray
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !consolidating,
+                    onClick = {
+                        viewModel.consolidateSpendingAddresses()
+                        showConsolidateConfirm = false
+                    }
+                ) {
+                    Text("Confirm", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !consolidating, onClick = { showConsolidateConfirm = false }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
+    }
+}
+
 @Composable
 private fun InscribeProgressRow(text: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         CircularProgressIndicator(color = KaspaTeal, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
         Spacer(Modifier.width(12.dp))
         Text(text, color = Color.White)
-    }
-}
-
-/** A read-only KNS profile field on the Profile screen's summary card — matches iOS, with any URL inside the value rendered clickable using the same link-detection as message bubbles. */
-@Composable
-private fun KnsProfileReadOnlyRow(label: String, value: String) {
-    val uriHandler = LocalUriHandler.current
-    var textLayoutResult by remember(value) { mutableStateOf<TextLayoutResult?>(null) }
-    val annotated = remember(value) {
-        buildAnnotatedString {
-            append(value)
-            for (match in TextLinkify.findUrls(value)) {
-                addStyle(SpanStyle(color = KaspaTeal, textDecoration = TextDecoration.Underline), match.range.first, match.range.last + 1)
-                addStringAnnotation("URL", match.uri, match.range.first, match.range.last + 1)
-            }
-        }
-    }
-
-    Column(modifier = Modifier.padding(16.dp)) {
-        Text(label, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = annotated,
-            color = Color.White,
-            fontWeight = FontWeight.Bold,
-            onTextLayout = { textLayoutResult = it },
-            modifier = Modifier.pointerInput(annotated) {
-                detectTapGestures(onTap = { offset ->
-                    val layout = textLayoutResult ?: return@detectTapGestures
-                    val charOffset = layout.getOffsetForPosition(offset)
-                    annotated.getStringAnnotations("URL", charOffset, charOffset).firstOrNull()?.let { uriHandler.openUri(it.item) }
-                })
-            }
-        )
     }
 }
 
@@ -2791,6 +2873,16 @@ fun SettingsScreen(
                 SettingsFooter("Exports app/device info, connection settings, local message counts, and recent app logs as a zip — for troubleshooting with support. No private keys, seed phrases, or decrypted message content are included.")
             }
 
+            SettingsSection(title = "Actions") {
+                SettingsActionItem("View Seed Phrase", Icons.Default.Key, KaspaTeal) {
+                    navController.navigate("seed_phrase")
+                }
+                SettingsDivider()
+                SettingsActionItem("Log Out", Icons.AutoMirrored.Filled.Logout, Color.Red) {
+                    walletViewModel.logout()
+                }
+            }
+
             SettingsSection(title = "Danger Zone") {
                 val activeAddress by walletViewModel.address.collectAsState()
                 val wipeIncomingState by chatViewModel.wipeIncomingState.collectAsState()
@@ -2944,6 +3036,121 @@ fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) 
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color(0xFF1C1C1E))
         ) {
+            content()
+        }
+    }
+}
+
+/**
+ * Same card chrome as [SettingsSection], but starts collapsed to a single summary row — for
+ * sections whose content (KNS domains/profile fields) isn't relevant on every visit to the
+ * Profile screen and would otherwise push more useful sections further down.
+ */
+@Composable
+fun CollapsibleSettingsSection(
+    title: String,
+    summary: String,
+    description: String? = null,
+    initiallyExpanded: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    Column {
+        Text(
+            text = buildAnnotatedString {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontSize = MaterialTheme.typography.titleMedium.fontSize)) {
+                    append(title)
+                }
+                if (!description.isNullOrBlank()) {
+                    append("  ")
+                    withStyle(SpanStyle(fontWeight = FontWeight.Normal, fontSize = MaterialTheme.typography.bodySmall.fontSize)) {
+                        append(description)
+                    }
+                }
+            },
+            color = Color.Gray,
+            modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xFF1C1C1E))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    summary,
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                    tint = KaspaTeal
+                )
+            }
+            if (expanded) {
+                HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                content()
+            }
+        }
+    }
+}
+
+/**
+ * Same card chrome as [CollapsibleSettingsSection], but the title itself (with its optional
+ * description) is the clickable dropdown header — there's no separate outer label or truncated
+ * preview line, since revealing the address is the entire point of expanding.
+ */
+@Composable
+fun CollapsibleAddressSection(
+    title: String,
+    balance: String? = null,
+    description: String? = null,
+    initiallyExpanded: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color(0xFF1C1C1E))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                if (!description.isNullOrBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(description, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (!balance.isNullOrBlank()) {
+                Text(balance, color = KaspaTeal, fontWeight = FontWeight.Bold, modifier = Modifier.padding(end = 8.dp))
+            }
+            Icon(
+                if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                tint = KaspaTeal
+            )
+        }
+        if (expanded) {
+            HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
             content()
         }
     }
@@ -3766,6 +3973,35 @@ fun rememberQrBitmapPainter(
         }
     }
     return BitmapPainter(bitmap)
+}
+
+/** Full-bleed QR overlay over the current screen's content area — tap anywhere to dismiss. */
+@Composable
+fun QrCodeOverlay(value: String, onDismiss: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center
+    ) {
+        val qrPainter = rememberQrBitmapPainter(value)
+        Box(
+            modifier = Modifier
+                .size(280.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color.White)
+                .border(2.dp, KaspaTeal, RoundedCornerShape(20.dp))
+                .padding(16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                painter = qrPainter,
+                contentDescription = "QR Code",
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

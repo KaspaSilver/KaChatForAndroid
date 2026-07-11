@@ -79,36 +79,115 @@ class WalletViewModel @Inject constructor(
         "%.8f KAS".format(java.util.Locale.US, kAs)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "0.00000000 KAS")
 
-    enum class TopUpStatus { IDLE, SENDING, SUCCESS, FAILED }
-    data class TopUpUiState(val status: TopUpStatus = TopUpStatus.IDLE, val errorMessage: String? = null)
-    private val _topUpState = MutableStateFlow(TopUpUiState())
-    val topUpState: StateFlow<TopUpUiState> = _topUpState.asStateFlow()
+    val spendingBalanceSompi: StateFlow<Long> = walletService.spendingBalance
 
-    /** Re-derives the current spending address and refreshes its balance — safe to call anytime the Profile screen appears, since the underlying index only ever changes via a successful send/top-up. */
+    /** Re-derives the current spending address and refreshes its balance — safe to call anytime the Profile screen appears, since the underlying index only ever changes via a successful send. */
     fun refreshSpendingAddress() {
         _spendingAddress.value = try { walletManager.currentSpendingAddress() } catch (e: Exception) { null }
         viewModelScope.launch { walletService.refreshSpendingBalance() }
     }
 
-    fun topUpSpendingAddress(amountText: String) {
-        val amountKas = amountText.toDoubleOrNull() ?: return
-        val sompi = (amountKas * 100_000_000).toLong()
-        if (sompi <= 0 || _topUpState.value.status == TopUpStatus.SENDING) return
+    // -------------------------------------------------------------------------
+    // Manage Addresses screen — every spending-chain address derived so far, so the user can
+    // find/copy an old one that might still hold a stray balance.
+    // -------------------------------------------------------------------------
+
+    private val _manageAddresses = MutableStateFlow<List<WalletService.SpendingAddressEntry>>(emptyList())
+    val manageAddresses: StateFlow<List<WalletService.SpendingAddressEntry>> = _manageAddresses.asStateFlow()
+
+    private val _manageAddressesLoading = MutableStateFlow(false)
+    val manageAddressesLoading: StateFlow<Boolean> = _manageAddressesLoading.asStateFlow()
+
+    fun loadManageAddresses() {
         viewModelScope.launch {
-            _topUpState.value = TopUpUiState(status = TopUpStatus.SENDING)
+            _manageAddressesLoading.value = true
+            _manageAddresses.value = try { walletService.getSpendingAddressList() } catch (e: Exception) { emptyList() }
+            _manageAddressesLoading.value = false
+        }
+    }
+
+    /** Derives one more spending-chain address and reloads the list to show it. */
+    fun generateNewSpendingAddress() {
+        viewModelScope.launch {
+            walletService.generateNextSpendingAddress()
+            loadManageAddresses()
+        }
+    }
+
+    /**
+     * Makes the address at [index] the one "Pay in Kaspa" sources from going forward. The star
+     * and balance move in [manageAddresses] immediately, before the real network round-trips
+     * (switch + sweep) even finish, so the UI reads as live rather than stalling on them —
+     * [loadManageAddresses] then reconciles with the real on-chain state once they're done.
+     */
+    fun setActiveSpendingAddress(index: Int) {
+        val current = _manageAddresses.value
+        val previous = current.firstOrNull { it.isCurrent }
+        _manageAddresses.value = current.map { entry ->
+            when (entry.index) {
+                index -> entry.copy(isCurrent = true, balanceSompi = entry.balanceSompi + (previous?.balanceSompi ?: 0L))
+                previous?.index -> entry.copy(isCurrent = false, balanceSompi = 0L)
+                else -> entry
+            }
+        }
+
+        viewModelScope.launch {
+            walletService.setActiveSpendingAddress(index)
+            refreshSpendingAddress()
+            loadManageAddresses()
+        }
+    }
+
+    private val _discoveringAddresses = MutableStateFlow(false)
+    val discoveringAddresses: StateFlow<Boolean> = _discoveringAddresses.asStateFlow()
+
+    /**
+     * Re-runs the same gap-limit on-chain scan used on wallet import, to pick up any spending
+     * address with real history beyond what's currently shown (e.g. KAS sent to one directly,
+     * before the Manage Addresses screen ever generated it locally). [onResult] receives how
+     * many used addresses the scan found in total (0 if none).
+     */
+    fun discoverSpendingAddresses(onResult: (Int) -> Unit) {
+        if (_discoveringAddresses.value) return
+        viewModelScope.launch {
+            _discoveringAddresses.value = true
             try {
-                walletService.topUpSpendingAddress(sompi)
-                _topUpState.value = TopUpUiState(status = TopUpStatus.SUCCESS)
-                refreshBalance()
-                refreshSpendingAddress()
-            } catch (e: Exception) {
-                _topUpState.value = TopUpUiState(status = TopUpStatus.FAILED, errorMessage = e.message ?: "Top up failed")
+                val discoveredCount = spendingAddressDiscovery.discoverIndex()
+                if (discoveredCount > 0) {
+                    walletManager.ensureMaxSpendingAddressIndexAtLeast(walletManager.getAddress(), discoveredCount - 1)
+                }
+                loadManageAddresses()
+                onResult(discoveredCount)
+            } finally {
+                _discoveringAddresses.value = false
             }
         }
     }
 
-    fun resetTopUpState() {
-        _topUpState.value = TopUpUiState()
+    enum class ConsolidateStatus { IDLE, RUNNING, SUCCESS, FAILED }
+    data class ConsolidateUiState(val status: ConsolidateStatus = ConsolidateStatus.IDLE, val sweptCount: Int = 0, val errorMessage: String? = null)
+
+    private val _consolidateState = MutableStateFlow(ConsolidateUiState())
+    val consolidateState: StateFlow<ConsolidateUiState> = _consolidateState.asStateFlow()
+
+    /** Sweeps every other spending-chain address's balance into the currently active one. */
+    fun consolidateSpendingAddresses() {
+        if (_consolidateState.value.status == ConsolidateStatus.RUNNING) return
+        viewModelScope.launch {
+            _consolidateState.value = ConsolidateUiState(status = ConsolidateStatus.RUNNING)
+            try {
+                val count = walletService.consolidateSpendingAddressesToCurrent()
+                _consolidateState.value = ConsolidateUiState(status = ConsolidateStatus.SUCCESS, sweptCount = count)
+                refreshSpendingAddress()
+                loadManageAddresses()
+            } catch (e: Exception) {
+                _consolidateState.value = ConsolidateUiState(status = ConsolidateStatus.FAILED, errorMessage = e.message ?: "Consolidation failed")
+            }
+        }
+    }
+
+    fun resetConsolidateState() {
+        _consolidateState.value = ConsolidateUiState()
     }
 
     private val _isLoggedIn = MutableStateFlow(false)
@@ -147,14 +226,19 @@ class WalletViewModel @Inject constructor(
         _isLoggedIn.value = false
     }
 
-    /** Renames the active account — edited from the Profile screen's "Name" section. */
-    fun renameActiveAccount(newName: String) {
+    /**
+     * Renames any saved account by address — edited from the Welcome screen's saved-accounts
+     * list, not just the currently active one, since you can rename an account you're not
+     * logged into.
+     */
+    fun renameAccount(address: String, newName: String) {
         val trimmed = newName.trim()
-        val currentAddress = _address.value
-        if (trimmed.isEmpty() || currentAddress == null) return
-        walletManager.renameAccount(currentAddress, trimmed)
-        _accountName.value = trimmed
+        if (trimmed.isEmpty()) return
+        walletManager.renameAccount(address, trimmed)
         _accounts.value = walletManager.getAllAccounts()
+        if (_address.value == address) {
+            _accountName.value = trimmed
+        }
     }
 
     fun createWallet(name: String, wordCount: Int = 12) {

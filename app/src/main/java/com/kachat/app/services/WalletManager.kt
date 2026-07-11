@@ -46,7 +46,12 @@ class WalletManager @Inject constructor(
         // Gson deserializes old-shape stored JSON (from before this field existed) with this
         // defaulted to 0 — verified in WalletManagerTest's Gson round-trip test, since every
         // existing on-device account depends on that being true. See deriveSpendingAddress.
-        val spendingAddressIndex: Int = 0
+        val spendingAddressIndex: Int = 0,
+        // Highest spending-chain index the Manage Addresses screen has ever generated/shown —
+        // distinct from [spendingAddressIndex] (which is the address "Pay in Kaspa" currently
+        // sources from). Generating a new address raises this without changing which one is
+        // active; same Gson zero-default behavior as spendingAddressIndex above for old JSON.
+        val maxSpendingAddressIndex: Int = 0
     )
 
     private val gson = Gson()
@@ -246,15 +251,48 @@ class WalletManager @Inject constructor(
     /** Called only after a spending-address send is actually accepted by the network. */
     fun advanceSpendingAddressIndex(address: String) {
         val accounts = getAccounts().map {
-            if (it.address == address) it.copy(spendingAddressIndex = it.spendingAddressIndex + 1) else it
+            if (it.address == address) {
+                val next = it.spendingAddressIndex + 1
+                it.copy(spendingAddressIndex = next, maxSpendingAddressIndex = maxOf(it.maxSpendingAddressIndex, next))
+            } else it
         }
         saveAccounts(accounts)
     }
 
-    /** Sets an explicit recovered index — used by the wallet-import gap-limit scan. */
+    /** Sets an explicit index as the one "Pay in Kaspa" sources from — used by the wallet-import gap-limit scan, and by manually activating an address from the Manage Addresses screen. */
     fun setSpendingAddressIndex(address: String, index: Int) {
         val accounts = getAccounts().map {
-            if (it.address == address) it.copy(spendingAddressIndex = index) else it
+            if (it.address == address) {
+                it.copy(spendingAddressIndex = index, maxSpendingAddressIndex = maxOf(it.maxSpendingAddressIndex, index))
+            } else it
+        }
+        saveAccounts(accounts)
+    }
+
+    /** Derives one more spending-chain address for the Manage Addresses screen to show, without changing which one is currently active. Returns the new highest index. */
+    fun generateNextSpendingAddress(address: String): Int {
+        var newMax = 0
+        val accounts = getAccounts().map {
+            if (it.address == address) {
+                newMax = maxOf(it.maxSpendingAddressIndex, it.spendingAddressIndex) + 1
+                it.copy(maxSpendingAddressIndex = newMax)
+            } else it
+        }
+        saveAccounts(accounts)
+        return newMax
+    }
+
+    /**
+     * Raises [Account.maxSpendingAddressIndex] to at least [minIndex] without touching which
+     * address is currently active — used after a "Discover Addresses" scan turns up on-chain
+     * history past what the Manage Addresses screen currently shows (e.g. KAS sent directly to
+     * an address before it was ever generated locally).
+     */
+    fun ensureMaxSpendingAddressIndexAtLeast(address: String, minIndex: Int) {
+        val accounts = getAccounts().map {
+            if (it.address == address && minIndex > it.maxSpendingAddressIndex) {
+                it.copy(maxSpendingAddressIndex = minIndex)
+            } else it
         }
         saveAccounts(accounts)
     }

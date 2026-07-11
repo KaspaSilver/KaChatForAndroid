@@ -1,5 +1,8 @@
 package com.kachat.app.ui
 
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -220,7 +223,14 @@ fun MainShell(
         // which became a visible gap once a Scaffold there also added imePadding().
         NavHost(
             navController = navController,
-            startDestination = Screen.Chats.route
+            startDestination = Screen.Chats.route,
+            // NavHost's own default is a 700ms crossfade — noticeably sluggish for something
+            // that happens on every single tab switch/screen push. A short, snappy fade reads
+            // as instant without the jarring hard-cut of no animation at all.
+            enterTransition = { fadeIn(animationSpec = tween(150)) },
+            exitTransition = { fadeOut(animationSpec = tween(150)) },
+            popEnterTransition = { fadeIn(animationSpec = tween(150)) },
+            popExitTransition = { fadeOut(animationSpec = tween(150)) }
         ) {
             composable(Screen.Settings.route) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
@@ -241,14 +251,34 @@ fun MainShell(
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     ProfileScreen(
                         viewModel = walletViewModel,
-                        navController = navController,
-                        onNavigateToSeed = { navController.navigate("seed_phrase") }
+                        navController = navController
                     )
                 }
             }
 
             composable("seed_phrase") {
                 SeedPhraseScreen(
+                    viewModel = walletViewModel,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable("cold_storage") {
+                ColdStorageListScreen(navController = navController)
+            }
+
+            composable(
+                "cold_storage_detail/{accountId}",
+                arguments = listOf(navArgument("accountId") { type = NavType.StringType })
+            ) { backStackEntry ->
+                ColdStorageDetailScreen(
+                    accountId = backStackEntry.arguments?.getString("accountId") ?: "",
+                    navController = navController
+                )
+            }
+
+            composable("manage_addresses") {
+                ManageAddressesScreen(
                     viewModel = walletViewModel,
                     onBack = { navController.popBackStack() }
                 )

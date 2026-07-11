@@ -155,6 +155,7 @@ fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit, on
                         SavedAccountCard(
                             account = account,
                             onLogin = { viewModel.login(account.address) },
+                            onRename = { newName -> viewModel.renameAccount(account.address, newName) },
                             onDelete = { viewModel.deleteWallet(account.address) }
                         )
                         Spacer(modifier = Modifier.height(12.dp))
@@ -222,8 +223,14 @@ fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit, on
 fun SavedAccountCard(
     account: WalletManager.Account,
     onLogin: () -> Unit,
+    onRename: (String) -> Unit,
     onDelete: () -> Unit
 ) {
+    var showMenu by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var nameInput by remember { mutableStateOf(account.name) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -264,14 +271,100 @@ fun SavedAccountCard(
             )
         }
 
-        IconButton(onClick = onDelete) {
-            Icon(
-                imageVector = Icons.Default.Delete,
-                contentDescription = "Delete",
-                tint = Color.Red,
-                modifier = Modifier.size(20.dp)
-            )
+        Box {
+            IconButton(onClick = { showMenu = true }) {
+                Icon(
+                    imageVector = Icons.Default.Edit,
+                    contentDescription = "Edit account",
+                    tint = KaspaTeal,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Rename") },
+                    leadingIcon = { Icon(Icons.Default.Edit, null) },
+                    onClick = {
+                        showMenu = false
+                        nameInput = account.name
+                        showRenameDialog = true
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Delete") },
+                    leadingIcon = { Icon(Icons.Default.Delete, null, tint = Color.Red) },
+                    onClick = {
+                        showMenu = false
+                        showDeleteConfirm = true
+                    }
+                )
+            }
         }
+    }
+
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            containerColor = Color(0xFF1C1C1E),
+            title = { Text("Rename Account", color = Color.White) },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = KaspaTeal,
+                        unfocusedBorderColor = Color.Gray
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = nameInput.isNotBlank(),
+                    onClick = {
+                        onRename(nameInput)
+                        showRenameDialog = false
+                    }
+                ) {
+                    Text("Save", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            containerColor = Color(0xFF1C1C1E),
+            title = { Text("Delete Account", color = Color.White) },
+            text = {
+                Text(
+                    "This removes \"${account.name}\" from this device. Without its saved seed phrase, any remaining balance is unrecoverable.",
+                    color = Color.Gray
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteConfirm = false
+                    onDelete()
+                }) {
+                    Text("Delete", color = Color.Red, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
     }
 }
 

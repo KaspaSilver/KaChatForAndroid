@@ -102,4 +102,69 @@ class PortfolioRepository @Inject constructor(
 
         return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", csvFile)
     }
+
+    /**
+     * Parses a CSV in the format written by [exportCsv] (header + Type,Date,Quantity (KAS),Total
+     * (USD),Notes rows) and inserts each row as a new transaction. Malformed rows are skipped
+     * rather than aborting the whole import, since one bad line from a hand-edited file shouldn't
+     * cost the rest. Returns the number of rows successfully imported.
+     */
+    suspend fun importCsv(uri: Uri): Int {
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+        val lines = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readLines() ?: emptyList()
+        var imported = 0
+        for (line in lines.drop(1)) {
+            if (line.isBlank()) continue
+            val fields = parseCsvLine(line)
+            if (fields.size < 4) continue
+            val type = fields[0].trim().lowercase()
+            if (type != "buy" && type != "sell") continue
+            try {
+                val timestampMillis = dateFormat.parse(fields[1].trim())?.time ?: continue
+                val amountSompi = (fields[2].trim().toDouble() * 100_000_000).toLong()
+                val fiatValue = fields[3].trim().toDouble()
+                val notes = fields.getOrNull(4)?.takeIf { it.isNotEmpty() }
+                database.portfolioDao().insert(
+                    PortfolioTransactionEntity(
+                        id = UUID.randomUUID().toString(),
+                        type = type,
+                        amountSompi = amountSompi,
+                        fiatValue = fiatValue,
+                        timestampMillis = timestampMillis,
+                        notes = notes
+                    )
+                )
+                imported++
+            } catch (e: Exception) {
+                continue
+            }
+        }
+        return imported
+    }
+
+    /** Splits on commas outside double quotes, and unescapes "" back to " within a quoted field. */
+    private fun parseCsvLine(line: String): List<String> {
+        val fields = mutableListOf<String>()
+        val current = StringBuilder()
+        var inQuotes = false
+        var i = 0
+        while (i < line.length) {
+            val c = line[i]
+            when {
+                inQuotes && c == '"' && i + 1 < line.length && line[i + 1] == '"' -> {
+                    current.append('"')
+                    i++
+                }
+                c == '"' -> inQuotes = !inQuotes
+                c == ',' && !inQuotes -> {
+                    fields.add(current.toString())
+                    current.clear()
+                }
+                else -> current.append(c)
+            }
+            i++
+        }
+        fields.add(current.toString())
+        return fields
+    }
 }

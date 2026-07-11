@@ -8,6 +8,9 @@ import com.kachat.app.models.MessageEntity
 import com.kachat.app.repository.ChatRepository
 import com.kachat.app.util.KaspaAddress
 import com.kachat.app.util.MessageProtocol
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -101,17 +104,92 @@ class WalletService @Inject constructor(
         }
     }
 
-    /** Moves funds from the identity address into the current spending address — identity-sourced, exactly like every send worked before the spending-address feature existed. */
-    suspend fun topUpSpendingAddress(amountSompi: Long): String {
-        val result = walletEngine.sendKaspa(toAddress = walletManager.currentSpendingAddress(), amountSompi = amountSompi)
+    data class SpendingAddressEntry(
+        val index: Int,
+        val address: String,
+        val balanceSompi: Long,
+        val everUsed: Boolean,
+        val isCurrent: Boolean
+    )
 
-        if (result.isSuccess) {
-            refreshBalance()
-            refreshSpendingBalance()
-            return result.getOrThrow()
-        } else {
-            throw result.exceptionOrNull() ?: Exception("Unknown error during top-up")
+    /**
+     * Every spending-chain address derived/shown so far for the active account — index 0 through
+     * the higher of the current active index and the highest one the Manage Addresses screen has
+     * generated — each with its live balance and whether it's ever had any on-chain history
+     * (so the UI can steer the user away from reusing an already-used address).
+     */
+    suspend fun getSpendingAddressList(): List<SpendingAddressEntry> {
+        val account = walletManager.getActiveAccount() ?: return emptyList()
+        val maxIndex = maxOf(account.spendingAddressIndex, account.maxSpendingAddressIndex)
+        val api = networkService.kaspaRestApi.value ?: return emptyList()
+        // Each address's balance+history is an independent network round-trip — fetching them
+        // concurrently instead of one-by-one is what keeps this fast enough to feel live as the
+        // list grows past a couple of generated addresses.
+        return coroutineScope {
+            (0..maxIndex).map { index ->
+                async {
+                    val address = walletManager.deriveSpendingAddress(index)
+                    val balance = try { api.getBalance(address).balance } catch (e: Exception) { 0L }
+                    val everUsed = try { api.getTransactions(address, limit = 1).isNotEmpty() } catch (e: Exception) { false }
+                    SpendingAddressEntry(index, address, balance, everUsed, isCurrent = index == account.spendingAddressIndex)
+                }
+            }.awaitAll()
         }
+    }
+
+    /** Derives one more spending-chain address for the Manage Addresses screen, without changing which one "Pay in Kaspa" currently sources from. */
+    fun generateNextSpendingAddress(): Int {
+        val address = walletManager.getAddress()
+        return walletManager.generateNextSpendingAddress(address)
+    }
+
+    /**
+     * Makes [index] the address "Pay in Kaspa" sources from going forward. If the address that
+     * was active before this switches away from has any balance, it's swept over to the newly
+     * active one automatically — otherwise it'd be left stranded outside the one place the UI
+     * expects spendable KAS to live.
+     */
+    suspend fun setActiveSpendingAddress(index: Int) {
+        val identityAddress = walletManager.getAddress()
+        val previousIndex = walletManager.getActiveAccount()?.spendingAddressIndex
+        walletManager.setSpendingAddressIndex(identityAddress, index)
+
+        if (previousIndex != null && previousIndex != index) {
+            val previousAddress = walletManager.deriveSpendingAddress(previousIndex)
+            val api = networkService.kaspaRestApi.value
+            val previousBalance = try { api?.getBalance(previousAddress)?.balance ?: 0L } catch (e: Exception) { 0L }
+            if (previousBalance > 0) {
+                val newAddress = walletManager.deriveSpendingAddress(index)
+                walletEngine.sweepSpendingAddress(previousIndex, newAddress)
+            }
+        }
+    }
+
+    /**
+     * Sweeps every other spending-chain address's balance into the currently active one — for
+     * when KAS ended up scattered across several old addresses (e.g. from payments received
+     * directly, or before switching which one is starred) and the user wants it all back in one
+     * spendable place. Each address with a balance is its own real transaction; returns how many
+     * were actually swept.
+     */
+    suspend fun consolidateSpendingAddressesToCurrent(): Int {
+        val account = walletManager.getActiveAccount() ?: return 0
+        val currentIndex = account.spendingAddressIndex
+        val maxIndex = maxOf(account.spendingAddressIndex, account.maxSpendingAddressIndex)
+        val api = networkService.kaspaRestApi.value ?: return 0
+        val currentAddress = walletManager.deriveSpendingAddress(currentIndex)
+
+        var sweptCount = 0
+        for (index in 0..maxIndex) {
+            if (index == currentIndex) continue
+            val address = walletManager.deriveSpendingAddress(index)
+            val balance = try { api.getBalance(address).balance } catch (e: Exception) { 0L }
+            if (balance > 0 && walletEngine.sweepSpendingAddress(index, currentAddress).isSuccess) {
+                sweptCount++
+            }
+        }
+        refreshSpendingBalance()
+        return sweptCount
     }
 
     /**
