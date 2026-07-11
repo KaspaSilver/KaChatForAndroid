@@ -87,6 +87,13 @@ class NodePoolManager @Inject constructor() {
     private val maxDiscoveredEndpoints = 20
     private val maxDnsResolvedEndpoints = 20
 
+    // Roughly matches the floor of iOS's NodeProfiler (minActiveNodes = 8, maxActiveNodes = 12)
+    // without importing its full EWMA/network-epoch/replacement machinery — this class is
+    // deliberately simpler (see the class doc comment). Both DNS-seed refresh and peer-gossip
+    // discovery below keep trying as long as the pool has fewer than this many genuinely
+    // Active nodes, rather than stopping the moment a handful of the hardcoded seeds respond.
+    private val targetActiveNodes = 8
+
     // Don't re-resolve DNS on every unhealthy 30s probe cycle — a resolver failure/slowness
     // shouldn't turn into a hot loop of lookups; matches iOS's periodic-not-per-cycle refresh.
     private val dnsResolveCooldownMillis = 60_000L
@@ -148,9 +155,11 @@ class NodePoolManager @Inject constructor() {
         // (~90s) to formally flip to Quarantined. If those seeds are all actually dead (as they
         // periodically seem to go), that's 90 seconds of zero connectivity on every fresh launch
         // before the DNS fallback ever got a chance to run. Checking Active directly means this
-        // fires on the very first cycle whenever there isn't already a healthy pool.
+        // fires on the very first cycle whenever there isn't already a healthy pool. Compared
+        // against targetActiveNodes (not a small fixed number) so this keeps refreshing DNS
+        // seeds until the pool is genuinely healthy, not just "a few seeds happened to respond."
         val activeCount = registry.snapshot().count { registry.statusOf(it) == "Active" }
-        if (activeCount < 3) {
+        if (activeCount < targetActiveNodes) {
             resolveDnsSeedsIfNeeded()
         }
 
@@ -202,9 +211,15 @@ class NodePoolManager @Inject constructor() {
         // "Active" one — GetPeerAddresses only needs a live gRPC response, not a fully synced
         // node, and requiring Active here meant discovery could never get off the ground at
         // all if every seed was reachable-but-unsynced (Suspect) rather than cleanly Active.
-        val activeSeedCount = registry.snapshot()
-            .count { seeds.contains(it.address) && registry.statusOf(it) == "Active" }
-        if (activeSeedCount < 3 && discoveredEndpoints.size < maxDiscoveredEndpoints) {
+        //
+        // Gated on the pool's overall Active count against targetActiveNodes, not just the 6
+        // hardcoded seeds specifically — the previous "fewer than 3 of the *seeds*" check meant
+        // gossip discovery stopped expanding the moment 3 of those 6 fixed IPs happened to
+        // respond, even if the pool's real active total was still small. iOS's equivalent keeps
+        // discovering until it reaches a real active-node target (8-12), not until a handful of
+        // specific bootstrap addresses look fine.
+        val activeCountAfterProbe = registry.snapshot().count { registry.statusOf(it) == "Active" }
+        if (activeCountAfterProbe < targetActiveNodes && discoveredEndpoints.size < maxDiscoveredEndpoints) {
             val discoverFrom = registry.snapshot()
                 .filter { registry.statusOf(it) != "Quarantined" }
                 .minByOrNull { it.lastProbe?.latencyMs ?: Long.MAX_VALUE }
