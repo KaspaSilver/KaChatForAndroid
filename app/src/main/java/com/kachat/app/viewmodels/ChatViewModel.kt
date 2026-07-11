@@ -414,8 +414,14 @@ class ChatViewModel @Inject constructor(
     val estimateFeesEnabled: StateFlow<Boolean> = settings.estimateFees
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
 
+    // Messages/photos/voice notes are identity-address self-stashes; "Pay in Kaspa" sources
+    // from the spending address instead (see WalletManager's spending-address doc comment) —
+    // kept as two separate UTXO sets so the live fee preview below prices each correctly rather
+    // than one silently reusing the other's (possibly empty, possibly wrong-balance) UTXOs.
     private val _currentUtxos = MutableStateFlow<List<com.kachat.app.services.UtxoEntry>>(emptyList())
     val currentUtxos: StateFlow<List<com.kachat.app.services.UtxoEntry>> = _currentUtxos.asStateFlow()
+
+    private val _spendingUtxos = MutableStateFlow<List<com.kachat.app.services.UtxoEntry>>(emptyList())
 
     private val _paymentAmount = MutableStateFlow("")
     val paymentAmount: StateFlow<String> = _paymentAmount.asStateFlow()
@@ -464,10 +470,14 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    val estimatedFeeSompi: StateFlow<Long?> = combine(paymentAmount, previewPayloadSize, _currentUtxos, estimateFeesEnabled, _networkFeeRate) { amount, textPayloadSize, utxos, enabled, rate ->
+    private val utxosForFeeEstimate: Flow<Pair<List<com.kachat.app.services.UtxoEntry>, List<com.kachat.app.services.UtxoEntry>>> =
+        combine(_currentUtxos, _spendingUtxos) { identity, spending -> identity to spending }
+
+    val estimatedFeeSompi: StateFlow<Long?> = combine(paymentAmount, previewPayloadSize, utxosForFeeEstimate, estimateFeesEnabled, _networkFeeRate) { amount, textPayloadSize, utxosPair, enabled, rate ->
         if (!enabled || (amount.isEmpty() && textPayloadSize == 0)) return@combine null
 
         val isPayment = amount.isNotEmpty()
+        val utxos = if (isPayment) utxosPair.second else utxosPair.first
         val sompiNeeded = if (isPayment) {
             (amount.toDoubleOrNull() ?: 0.0) * 100_000_000
         } else {
@@ -528,6 +538,28 @@ class ChatViewModel @Inject constructor(
                 }
 
                 _currentUtxos.value = api.getUtxos(address)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    /** Same as [refreshUtxos] but for the spending address — "Pay in Kaspa"'s live fee preview needs its UTXOs, not the identity address's. */
+    fun refreshSpendingUtxos() {
+        viewModelScope.launch {
+            try {
+                val address = walletManager.currentSpendingAddress()
+                val api = networkService.kaspaRestApi.value ?: return@launch
+
+                try {
+                    val feeInfo = api.getFeeEstimate()
+                    _networkFeeRate.value = feeInfo.normalBuckets.firstOrNull()?.feerate
+                        ?: com.kachat.app.util.KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble()
+                } catch (e: Exception) {
+                    Log.w("ChatViewModel", "Could not fetch fee estimate, using network minimum")
+                }
+
+                _spendingUtxos.value = api.getUtxos(address)
             } catch (e: Exception) {
                 e.printStackTrace()
             }

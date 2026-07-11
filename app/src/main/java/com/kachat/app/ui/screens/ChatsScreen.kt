@@ -50,6 +50,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.filled.PersonAddAlt1
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.foundation.gestures.Orientation
@@ -425,6 +426,23 @@ fun ChatsScreen(
                 backgroundColor = Color(0xFF1C1C1E),
                 contentColor = KaspaTeal
             )
+
+            // Entry point for the Cold Storage feature (watch/spend a KasSigner air-gapped
+            // device via QR exchange) — mirrors "create_chat" above at the opposite corner.
+            // 16.dp here matches Material3 Scaffold's own internal FabSpacing exactly, so this
+            // hand-placed FAB lines up with the Scaffold-positioned one at the same margin from
+            // the bottom (rather than guessing a padding value that drifts out of alignment).
+            FloatingActionButton(
+                onClick = { navController.navigate("cold_storage") },
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(16.dp),
+                containerColor = KaspaTeal,
+                contentColor = Color.Black,
+                shape = CircleShape
+            ) {
+                Icon(Icons.Default.QrCodeScanner, "Cold Storage")
+            }
         }
     }
 }

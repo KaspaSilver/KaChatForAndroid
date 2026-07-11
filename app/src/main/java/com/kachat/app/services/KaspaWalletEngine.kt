@@ -250,6 +250,26 @@ class KaspaWalletEngine @Inject constructor(
         return result
     }
 
+    /**
+     * Moves an old spending-chain address's entire balance to another spending-chain address —
+     * used when the user manually activates a different address from the Manage Addresses
+     * screen, so KAS left behind on the previously-active one follows along automatically
+     * rather than sitting stranded. `amountSompi = 0` means [sendKaspa] skips the recipient
+     * output entirely and routes the whole swept balance out through [changeAddress] instead.
+     */
+    suspend fun sweepSpendingAddress(fromIndex: Int, toAddress: String): Result<String> {
+        val fromAddress = walletManager.deriveSpendingAddress(fromIndex)
+        val fromPrivateKey = walletManager.getSpendingPrivateKeyBytes(fromIndex)
+        return sendKaspa(
+            toAddress = toAddress,
+            amountSompi = 0,
+            fromAddress = fromAddress,
+            signingPrivateKey = fromPrivateKey,
+            changeAddress = toAddress,
+            sweepAll = true
+        )
+    }
+
     private fun isValidAddress(address: String): Boolean {
         return try {
             // Basic validation using KaspaAddress utility

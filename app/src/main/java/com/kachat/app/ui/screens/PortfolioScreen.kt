@@ -1,6 +1,9 @@
 package com.kachat.app.ui.screens
 
 import android.content.Intent
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,6 +30,8 @@ import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.material.icons.filled.MonetizationOn
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.TrendingDown
@@ -37,6 +42,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -123,6 +130,19 @@ fun PortfolioScreen(
     // (timestamp, price) while scrubbing the price sparkline above, null otherwise — lifted up
     // here (rather than kept local to PriceChartCard) since the summary card below needs it too.
     var scrubbedPrice by remember { mutableStateOf<Pair<Long, Double>?>(null) }
+    var showCsvMenu by remember { mutableStateOf(false) }
+
+    val importCsvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            viewModel.importCsv(uri) { result ->
+                val message = result.fold(
+                    onSuccess = { count -> "Imported $count transaction${if (count == 1) "" else "s"}" },
+                    onFailure = { "Import failed — check the CSV format" }
+                )
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     Scaffold(
         containerColor = Color.Black,
@@ -138,17 +158,35 @@ fun PortfolioScreen(
                     IconButton(onClick = { viewModel.refreshPrice() }) {
                         Icon(Icons.Default.Refresh, "Refresh price", tint = KaspaTeal)
                     }
-                    IconButton(onClick = {
-                        viewModel.exportCsv { uri ->
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/csv"
-                                putExtra(Intent.EXTRA_STREAM, uri)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            context.startActivity(Intent.createChooser(intent, "Export Portfolio CSV"))
+                    Box {
+                        IconButton(onClick = { showCsvMenu = true }) {
+                            Icon(Icons.Default.ImportExport, "Import or export CSV", tint = KaspaTeal)
                         }
-                    }) {
-                        Icon(Icons.Default.FileDownload, "Export as CSV", tint = KaspaTeal)
+                        DropdownMenu(expanded = showCsvMenu, onDismissRequest = { showCsvMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Export CSV") },
+                                leadingIcon = { Icon(Icons.Default.FileDownload, null) },
+                                onClick = {
+                                    showCsvMenu = false
+                                    viewModel.exportCsv { uri ->
+                                        val intent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/csv"
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(Intent.createChooser(intent, "Export Portfolio CSV"))
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Import CSV") },
+                                leadingIcon = { Icon(Icons.Default.FileUpload, null) },
+                                onClick = {
+                                    showCsvMenu = false
+                                    importCsvLauncher.launch(arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*"))
+                                }
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
