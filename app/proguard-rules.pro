@@ -32,6 +32,18 @@
 -keep class io.grpc.** { *; }
 -dontwarn io.grpc.**
 
+# Protobuf-lite (protowire.* generated messages, e.g. Messages.KaspadRequest/Rpc.RpcBlock):
+# GeneratedMessageLite finds its own fields by name via reflection at runtime (for
+# serialization), matching them against the schema descriptor — confirmed via device logcat,
+# every single node probe failed with "RuntimeException: Field id_ for zf.b not found" the
+# instant R8 renamed those fields, meaning every gRPC call threw before any network I/O ever
+# happened. This is what actually caused every "connection status stuck red" report — nothing
+# to do with networks/WiFi/seed nodes, which were red herrings from raw TCP-level testing that
+# never touched this reflection failure. Standard rule per protobuf-lite's own R8 guidance.
+-keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
+    <fields>;
+}
+
 # Hilt
 -keep class dagger.hilt.** { *; }
 -dontwarn dagger.hilt.**

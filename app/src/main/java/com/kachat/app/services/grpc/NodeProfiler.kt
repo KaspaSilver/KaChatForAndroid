@@ -1,5 +1,7 @@
 package com.kachat.app.services.grpc
 
+import android.util.Log
+
 /**
  * Result of probing one Kaspa node via real gRPC calls (GetInfo + GetBlockDagInfo).
  */
@@ -41,6 +43,10 @@ suspend fun probeExisting(address: String, connection: KaspadConnection): NodePr
             virtualDaaScore = dagInfo.virtualDaaScore
         )
     } catch (e: Exception) {
+        // Logged (not just captured in NodeProbeResult.error, which nothing currently reads) —
+        // every prior "why is the pool empty" investigation had to add this ad hoc since probe
+        // failures were otherwise completely silent.
+        Log.w("NodeProfiler", "Probe failed for $address: ${e.javaClass.simpleName}: ${e.message}")
         NodeProbeResult(
             address = address,
             reachable = false,
