@@ -36,6 +36,22 @@ class WalletManager @Inject constructor(
         private const val SECURE_PREFS_NAME = "kachat_secure_prefs"
         private const val PREF_ACCOUNTS = "accounts"
         private const val PREF_ACTIVE_ADDRESS = "active_address"
+
+        // bitcoinj's own `MnemonicCode.INSTANCE` static initializer loads its wordlist via
+        // `Class.getResourceAsStream`, which is documented by bitcoinj itself as "Won't work on
+        // Android" — it fails silently there, leaving INSTANCE null and crashing every wallet
+        // create/import with an NPE. Bundle the identical wordlist bitcoinj ships internally as
+        // an Android asset and initialize INSTANCE from it manually instead.
+        private const val WORDLIST_ASSET_NAME = "bip39-wordlist-english.txt"
+        private const val WORDLIST_SHA256 = "ad90bf3beb7b0eb7e5acd74727dc0da96e0a280a258354e7293fb7e211ac03db"
+    }
+
+    init {
+        if (MnemonicCode.INSTANCE == null) {
+            MnemonicCode.INSTANCE = context.assets.open(WORDLIST_ASSET_NAME).use {
+                MnemonicCode(it, WORDLIST_SHA256)
+            }
+        }
     }
 
     data class Account(
