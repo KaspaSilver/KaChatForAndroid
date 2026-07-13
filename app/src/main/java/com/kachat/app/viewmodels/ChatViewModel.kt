@@ -71,6 +71,29 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { settings.setChatPhotoQualityPreset(preset) }
     }
 
+    val requirePhotoApprovalForNewContacts: StateFlow<Boolean> = settings.requirePhotoApprovalForNewContacts
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
+
+    fun updateRequirePhotoApprovalForNewContacts(enabled: Boolean) {
+        viewModelScope.launch { settings.setRequirePhotoApprovalForNewContacts(enabled) }
+    }
+
+    val revealedPhotoTxIds: StateFlow<Set<String>> = settings.revealedPhotoTxIds
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptySet())
+
+    /** Permanently reveals a photo bubble that was hidden behind "Show Photo", by txId. */
+    fun revealPhoto(txId: String) {
+        viewModelScope.launch { settings.revealPhoto(txId) }
+    }
+
+    /** Per-contact override for the "Photos" picker in Chat Info — null clears back to Automatic. */
+    fun updateContactPhotoOverride(contactId: String, override: com.kachat.app.models.PhotoAutoDisplayMode?) {
+        viewModelScope.launch {
+            val existing = chatRepository.getContact(contactId) ?: return@launch
+            chatRepository.addContact(existing.copy(photoAutoDisplayOverride = override?.name))
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Chat history export/import — matches iOS's plaintext JSON archive, scoped to whichever
     // account is active. Export hands a file off to the share sheet; import always merges,
@@ -268,6 +291,52 @@ class ChatViewModel @Inject constructor(
     }
 
     // -------------------------------------------------------------------------
+    // Storage — mirrors iOS's "Local storage used" / "iCloud storage used" split in Settings.
+    // Android has no live per-record cloud sync (Google Drive backup is one flat JSON file per
+    // account instead of iOS's continuous CloudKit mirroring), so "cloud" here just means that
+    // one backup file's current size in Drive, not a per-message tally.
+    // -------------------------------------------------------------------------
+
+    private val _localStorageSizeBytes = MutableStateFlow<Long?>(null)
+    val localStorageSizeBytes: StateFlow<Long?> = _localStorageSizeBytes.asStateFlow()
+
+    /** Room's `kachat.db` file (+ `-wal`/`-shm` sidecars in WAL mode) on local disk — free, no network. */
+    fun refreshLocalStorageSize() {
+        val dbFile = appContext.getDatabasePath("kachat.db")
+        var total = dbFile.length()
+        for (suffix in listOf("-wal", "-shm")) {
+            val sidecar = java.io.File(dbFile.parentFile, dbFile.name + suffix)
+            if (sidecar.exists()) total += sidecar.length()
+        }
+        _localStorageSizeBytes.value = total
+    }
+
+    enum class DriveSizeStatus { IDLE, LOADING, LOADED, FAILED }
+    data class DriveSizeState(val status: DriveSizeStatus = DriveSizeStatus.IDLE, val bytes: Long? = null)
+
+    private val _driveBackupSizeState = MutableStateFlow(DriveSizeState())
+    val driveBackupSizeState: StateFlow<DriveSizeState> = _driveBackupSizeState.asStateFlow()
+
+    /** Live Drive API call - unlike [refreshLocalStorageSize], not run automatically since it costs a network request. */
+    fun refreshDriveBackupSize() {
+        if (_driveBackupSizeState.value.status == DriveSizeStatus.LOADING) return
+        viewModelScope.launch {
+            _driveBackupSizeState.value = DriveSizeState(status = DriveSizeStatus.LOADING)
+            val bytes = try {
+                googleDriveBackupService.currentBackupSizeBytes(walletManager.getAddress())
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Failed to check Google Drive backup size", e)
+                null
+            }
+            _driveBackupSizeState.value = if (bytes != null) {
+                DriveSizeState(status = DriveSizeStatus.LOADED, bytes = bytes)
+            } else {
+                DriveSizeState(status = DriveSizeStatus.FAILED)
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Danger Zone — matches iOS's three destructive settings actions exactly in scope
     // (SettingsView.swift:216-295): all three act on the currently active account only, never
     // other saved accounts on the device.
@@ -352,6 +421,19 @@ class ChatViewModel @Inject constructor(
 
     fun markAsRead(contactId: String) {
         viewModelScope.launch { chatRepository.markAsRead(contactId) }
+    }
+
+    fun markAsUnread(contactId: String) {
+        viewModelScope.launch { chatRepository.markAsUnread(contactId) }
+    }
+
+    /** Chat-list multi-select bulk actions. */
+    fun markContactsAsRead(contactIds: Collection<String>) {
+        viewModelScope.launch { contactIds.forEach { chatRepository.markAsRead(it) } }
+    }
+
+    fun markContactsAsUnread(contactIds: Collection<String>) {
+        viewModelScope.launch { contactIds.forEach { chatRepository.markAsUnread(it) } }
     }
 
     /** Permanently deletes the chat (contact + all local messages) — see ChatRepository.deleteChat. */
@@ -918,9 +1000,9 @@ class ChatViewModel @Inject constructor(
         _pendingPhotoUri.value = null
         viewModelScope.launch {
             try {
-                val bytes = ImagePrep.prepareForChatMessage(appContext, uri, chatPhotoQualityPreset.value.targetBytes)
-                val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                val json = ImageMessage.encode(fileName = "photo.jpg", sizeBytes = bytes.size.toLong(), base64Image = base64)
+                val prepared = ImagePrep.prepareForChatMessage(appContext, uri, chatPhotoQualityPreset.value.targetBytes)
+                val base64 = android.util.Base64.encodeToString(prepared.bytes, android.util.Base64.NO_WRAP)
+                val json = ImageMessage.encode(fileName = prepared.fileName, sizeBytes = prepared.bytes.size.toLong(), base64Image = base64, mimeType = prepared.mimeType)
                 sendMessage(contactId, json)
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error preparing photo message", e)

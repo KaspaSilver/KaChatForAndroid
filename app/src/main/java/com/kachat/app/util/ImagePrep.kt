@@ -41,15 +41,22 @@ object ImagePrep {
     private const val CHAT_MAX_DIMENSION = 1280
     private const val MAX_SHRINK_ATTEMPTS = 4
 
+    /** A compressed chat photo ready to embed in an outgoing message — mirrors iOS's `PreparedChatImage` (`ImagePrep.swift`). */
+    data class PreparedChatImage(val bytes: ByteArray, val fileName: String, val mimeType: String)
+
     /**
      * Compresses a picked image to fit directly in an on-chain chat message payload, targeting
-     * [targetBytes] of raw JPEG data. Downsamples during decode via [BitmapFactory.Options.inSampleSize]
+     * [targetBytes] of encoded data. Downsamples during decode via [BitmapFactory.Options.inSampleSize]
      * rather than decoding at full resolution first — a modern 12MP+ camera photo decoded straight to
-     * ARGB_8888 can be 40-50MB and OOM before any scaling ever happens. Re-encodes as JPEG (not PNG
-     * like [prepareForUpload]) since photos compress far better lossy, and chat bubbles don't need
-     * alpha transparency.
+     * ARGB_8888 can be 40-50MB and OOM before any scaling ever happens.
+     *
+     * Always JPEG. AVIF was tried here previously (and on iOS) for smaller on-chain payloads, but
+     * was removed: AVIF *decode* support is inconsistent across Android devices/OS builds even on
+     * ones with a working AV1 *encoder*, so a photo sent from either platform could permanently
+     * fail to render for some recipients with no way to detect or recover from that in advance.
+     * JPEG decodes everywhere, on every device on both platforms.
      */
-    fun prepareForChatMessage(context: Context, uri: Uri, targetBytes: Int = DEFAULT_CHAT_TARGET_BYTES): ByteArray {
+    fun prepareForChatMessage(context: Context, uri: Uri, targetBytes: Int = DEFAULT_CHAT_TARGET_BYTES): PreparedChatImage {
         val resolver = context.contentResolver
 
         // BitmapFactory.decodeStream() always returns null when inJustDecodeBounds is set (it only
@@ -70,16 +77,19 @@ object ImagePrep {
 
         // inSampleSize only halves, so the result can still overshoot the target — clamp exactly.
         val scale = CHAT_MAX_DIMENSION.toFloat() / maxOf(decoded.width, decoded.height)
-        var bitmap = if (scale < 1f) {
+        val bitmap = if (scale < 1f) {
             Bitmap.createScaledBitmap(decoded, (decoded.width * scale).toInt().coerceAtLeast(1), (decoded.height * scale).toInt().coerceAtLeast(1), true)
         } else {
             decoded
         }
 
+        var jpegBitmap = bitmap
         repeat(MAX_SHRINK_ATTEMPTS) { attempt ->
-            val compressed = compressToQualityBudget(bitmap, targetBytes)
-            if (compressed.size <= targetBytes || attempt == MAX_SHRINK_ATTEMPTS - 1) return compressed
-            bitmap = Bitmap.createScaledBitmap(bitmap, (bitmap.width * 0.7f).toInt().coerceAtLeast(1), (bitmap.height * 0.7f).toInt().coerceAtLeast(1), true)
+            val compressed = compressToQualityBudget(jpegBitmap, targetBytes)
+            if (compressed.size <= targetBytes || attempt == MAX_SHRINK_ATTEMPTS - 1) {
+                return PreparedChatImage(compressed, "photo.jpg", "image/jpeg")
+            }
+            jpegBitmap = Bitmap.createScaledBitmap(jpegBitmap, (jpegBitmap.width * 0.7f).toInt().coerceAtLeast(1), (jpegBitmap.height * 0.7f).toInt().coerceAtLeast(1), true)
         }
         error("unreachable") // repeat() above always returns before falling through
     }

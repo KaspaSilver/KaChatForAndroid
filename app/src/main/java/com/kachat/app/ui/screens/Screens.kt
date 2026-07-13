@@ -124,6 +124,8 @@ fun ChatThreadScreen(
     val contactBalances by chatViewModel.contactBalances.collectAsState()
     val contactBalance = contactBalances[contactId] ?: "0.00000000"
     val showContactBalance by chatViewModel.showContactBalance.collectAsState()
+    val requirePhotoApprovalForNewContacts by chatViewModel.requirePhotoApprovalForNewContacts.collectAsState()
+    val revealedPhotoTxIds by chatViewModel.revealedPhotoTxIds.collectAsState()
 
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val balance by walletViewModel.fullBalance.collectAsState()
@@ -205,7 +207,10 @@ fun ChatThreadScreen(
                 title = {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clickable { navController.navigate("chat_info/$contactId") }
+                        modifier = Modifier.clickable {
+                            clipboardManager.setText(AnnotatedString(contactId))
+                            Toast.makeText(micContext, "Address copied", Toast.LENGTH_SHORT).show()
+                        }
                     ) {
                         Text(
                             text = conversation?.contact?.alias ?: contactId.takeLast(8),
@@ -239,8 +244,8 @@ fun ChatThreadScreen(
                         Box(modifier = Modifier.size(10.dp).background(statusColor, CircleShape))
                     }
                     Spacer(Modifier.width(8.dp))
-                    IconButton(onClick = { clipboardManager.setText(AnnotatedString(contactId)) }) {
-                        Icon(Icons.Default.ContentCopy, "Copy Address", tint = KaspaTeal, modifier = Modifier.size(20.dp))
+                    IconButton(onClick = { navController.navigate("chat_info/$contactId") }) {
+                        Icon(Icons.Default.Info, "Chat Info", tint = KaspaTeal, modifier = Modifier.size(20.dp))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Black)
@@ -703,7 +708,13 @@ fun ChatThreadScreen(
                             onReply = { chatViewModel.startReplyTo(msg) },
                             onSavePhoto = savePhotoIfPermitted,
                             revealOffsetPx = revealOffsetPx,
-                            maxRevealOffsetPx = maxRevealOffsetPx
+                            maxRevealOffsetPx = maxRevealOffsetPx,
+                            photosBlocked = !com.kachat.app.repository.ChatRepository.shouldAutoDisplayPhotos(
+                                conversation?.contact,
+                                requirePhotoApprovalForNewContacts
+                            ),
+                            isPhotoRevealed = msg.id in revealedPhotoTxIds,
+                            onRevealPhoto = { chatViewModel.revealPhoto(msg.id) }
                         )
                     }
                     if (ChatViewModel.shouldShowUnnotifiedWarning(messages)) {
@@ -777,7 +788,10 @@ fun MessageBubble(
     onReply: () -> Unit = {},
     onSavePhoto: (ByteArray, String) -> Unit = { _, _ -> },
     revealOffsetPx: Animatable<Float, AnimationVector1D> = remember { Animatable(0f) },
-    maxRevealOffsetPx: Float = 1f
+    maxRevealOffsetPx: Float = 1f,
+    photosBlocked: Boolean = false,
+    isPhotoRevealed: Boolean = false,
+    onRevealPhoto: () -> Unit = {}
 ) {
     val isSent = message.direction == "sent"
     var showMenu by remember { mutableStateOf(false) }
@@ -956,7 +970,11 @@ fun MessageBubble(
                     imageContent = ImageMessage.parseOrNull(displayBody)!!,
                     isSent = isSent,
                     onLongPress = { showMenu = true },
-                    onDoubleClick = onReply
+                    onDoubleClick = onReply,
+                    photosBlocked = !isSent && photosBlocked,
+                    senderDisplayName = contactAvatarFallback,
+                    isRevealed = isPhotoRevealed,
+                    onReveal = onRevealPhoto
                 )
             } else {
                 val bodyText = displayBody ?: ""
@@ -1174,18 +1192,80 @@ fun AudioBubble(voiceContent: VoiceMessageContent, isSent: Boolean, onLongPress:
 }
 
 /**
+ * Decodes an incoming photo's raw bytes, trying [ImageDecoder] as a fallback if [BitmapFactory]
+ * returns null. Both platforms only ever send plain JPEG chat photos now (see
+ * `ImagePrep.prepareForChatMessage`'s doc comment for why AVIF was tried and removed), so this is
+ * mostly future-proofing/defense-in-depth for any other format that could reach this decode path -
+ * `ImageDecoder` has occasionally succeeded where `BitmapFactory` fails on the same bytes on some
+ * OEM builds.
+ */
+private fun decodeIncomingPhotoBitmap(bytes: ByteArray): android.graphics.Bitmap? {
+    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { return it }
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
+    return try {
+        val source = android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes))
+        android.graphics.ImageDecoder.decodeBitmap(source)
+    } catch (e: Exception) {
+        null
+    }
+}
+
+/**
  * A photo message bubble — decodes the embedded base64 image to a [Bitmap] once, renders it inline
  * capped to a max width, and opens a tap-to-dismiss full-screen viewer on tap. Same interaction
  * contract as [AudioBubble] (long-press for the context menu, double-click to reply).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ImageBubble(imageContent: VoiceMessageContent, isSent: Boolean, onLongPress: () -> Unit, onDoubleClick: () -> Unit = {}) {
+fun ImageBubble(
+    imageContent: VoiceMessageContent,
+    isSent: Boolean,
+    onLongPress: () -> Unit,
+    onDoubleClick: () -> Unit = {},
+    photosBlocked: Boolean = false,
+    senderDisplayName: String = "",
+    isRevealed: Boolean = false,
+    onReveal: () -> Unit = {}
+) {
+    // Hidden behind a manual reveal - mirrors iOS's LazyImageBubble.hiddenBubble. Skips decoding
+    // the bitmap entirely until revealed, matching the "don't auto-render" intent, not just
+    // "don't show" - see ChatRepository.shouldAutoDisplayPhotos.
+    if (photosBlocked && !isRevealed) {
+        Surface(
+            color = Color(0xFF1C1C1E),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.widthIn(max = 220.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp).widthIn(min = 180.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(Icons.Default.VisibilityOff, null, tint = Color.Gray, modifier = Modifier.size(24.dp))
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "$senderDisplayName sent a photo",
+                    color = Color.Gray,
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onReveal,
+                    colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)
+                ) {
+                    Text("Show Photo", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        return
+    }
+
     var showFullScreen by remember { mutableStateOf(false) }
     val bitmap = remember(imageContent.content) {
         try {
             val bytes = android.util.Base64.decode(ImageMessage.base64Payload(imageContent), android.util.Base64.DEFAULT)
-            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            decodeIncomingPhotoBitmap(bytes)
         } catch (e: Exception) {
             android.util.Log.e("ImageBubble", "Could not decode photo message", e)
             null
@@ -2341,6 +2421,7 @@ fun SettingsScreen(
     val estimateFees by chatViewModel.estimateFeesEnabled.collectAsState()
     val hideAutoCreatedPaymentChats by chatViewModel.hideAutoCreatedPaymentChats.collectAsState()
     val showContactBalance by chatViewModel.showContactBalance.collectAsState()
+    val requirePhotoApprovalForNewContacts by chatViewModel.requirePhotoApprovalForNewContacts.collectAsState()
     val notificationsEnabled by settingsViewModel.notificationsEnabled.collectAsState()
     val chatPhotoQualityPreset by chatViewModel.chatPhotoQualityPreset.collectAsState()
     val syncSystemContactsEnabled by chatViewModel.syncSystemContactsEnabled.collectAsState()
@@ -2405,6 +2486,10 @@ fun SettingsScreen(
                 SettingsDivider()
                 SettingsSwitchItem("Show contact balance", showContactBalance) {
                     chatViewModel.updateShowContactBalance(it)
+                }
+                SettingsDivider()
+                SettingsSwitchItem("Require approval for photos from new contacts", requirePhotoApprovalForNewContacts) {
+                    chatViewModel.updateRequirePhotoApprovalForNewContacts(it)
                 }
                 SettingsDivider()
                 SettingsNavigationItem(
@@ -2480,6 +2565,51 @@ fun SettingsScreen(
                     else -> "Off by default. Backs up chat history to your own Google Drive — hidden storage, not visible in your regular Drive files."
                 }
                 SettingsFooter(backupFooterText)
+
+                // Local vs. cloud storage — mirrors iOS's "Local storage used"/"iCloud storage
+                // used" split. Android has no live per-record cloud sync like CloudKit; Google
+                // Drive backup is one flat JSON file per account, so "cloud" here is just that
+                // one file's current size in Drive.
+                SettingsDivider()
+                val context = LocalContext.current
+                val localStorageSizeBytes by chatViewModel.localStorageSizeBytes.collectAsState()
+                LaunchedEffect(Unit) { chatViewModel.refreshLocalStorageSize() }
+                SettingsInfoItem(
+                    label = "Local storage used",
+                    value = localStorageSizeBytes?.let { android.text.format.Formatter.formatShortFileSize(context, it) }
+                        ?: "Calculating..."
+                )
+
+                SettingsDivider()
+                val driveBackupSizeState by chatViewModel.driveBackupSizeState.collectAsState()
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Google Drive backup used", color = Color.White, style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            text = when (driveBackupSizeState.status) {
+                                ChatViewModel.DriveSizeStatus.IDLE -> "Not checked"
+                                ChatViewModel.DriveSizeStatus.LOADING -> "Checking..."
+                                ChatViewModel.DriveSizeStatus.LOADED -> driveBackupSizeState.bytes?.let {
+                                    android.text.format.Formatter.formatShortFileSize(context, it)
+                                } ?: "No backup found"
+                                ChatViewModel.DriveSizeStatus.FAILED -> "Unavailable"
+                            },
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    if (driveBackupSizeState.status == ChatViewModel.DriveSizeStatus.LOADING) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = KaspaTeal, strokeWidth = 2.dp)
+                    } else {
+                        IconButton(onClick = { chatViewModel.refreshDriveBackupSize() }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Check Drive backup size", tint = KaspaTeal)
+                        }
+                    }
+                }
 
                 if (googleBackupEnabled) {
                     SettingsDivider()
@@ -2851,7 +2981,12 @@ fun SettingsSwitchItem(label: String, checked: Boolean, onCheckedChange: (Boolea
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(text = label, color = Color.White, style = MaterialTheme.typography.bodyLarge)
+        Text(
+            text = label,
+            color = Color.White,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f).padding(end = 12.dp)
+        )
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
@@ -2936,7 +3071,12 @@ fun TopStatusBar(
     balance: String,
     onStatusClick: () -> Unit,
     onAddClick: () -> Unit = {},
-    dotColorHex: Long = 0xFF4CD964
+    dotColorHex: Long = 0xFF4CD964,
+    showEditButton: Boolean = false,
+    isEditing: Boolean = false,
+    onEditClick: () -> Unit = {},
+    selectAllLabel: String? = null,
+    onSelectAllClick: () -> Unit = {}
 ) {
     val statusColor = Color(dotColorHex)
 
@@ -2967,18 +3107,44 @@ fun TopStatusBar(
             )
         )
 
-        IconButton(
-            onClick = onAddClick,
-            modifier = Modifier
-                .size(40.dp)
-                .background(Color(0xFF1C1C1E), CircleShape)
-        ) {
-            Icon(
-                imageVector = Icons.Default.PersonAddAlt1,
-                contentDescription = "Add Contact",
-                tint = KaspaTeal,
-                modifier = Modifier.size(20.dp)
-            )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (isEditing && selectAllLabel != null) {
+                TextButton(onClick = onSelectAllClick) {
+                    Text(selectAllLabel, color = KaspaTeal, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+                Spacer(Modifier.width(4.dp))
+            }
+            if (showEditButton) {
+                IconButton(
+                    onClick = onEditClick,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(Color(0xFF1C1C1E), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = if (isEditing) Icons.Default.Close else Icons.Default.Edit,
+                        contentDescription = if (isEditing) "Done" else "Select Chats",
+                        tint = KaspaTeal,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                if (!isEditing) Spacer(Modifier.width(8.dp))
+            }
+            if (!isEditing) {
+            IconButton(
+                onClick = onAddClick,
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(Color(0xFF1C1C1E), CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PersonAddAlt1,
+                    contentDescription = "Add Contact",
+                    tint = KaspaTeal,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            }
         }
     }
 }
@@ -4148,6 +4314,46 @@ fun ChatInfoScreen(
                         Icon(Icons.Default.UnfoldMore, null, tint = Color.Gray, modifier = Modifier.size(16.dp))
                     }
                     SettingsFooter("Default follows Settings > Notifications. Off disables notifications for this contact.")
+                }
+
+                SettingsSection(title = "Photos") {
+                    val requirePhotoApproval by chatViewModel.requirePhotoApprovalForNewContacts.collectAsState()
+                    val photoOverride = com.kachat.app.models.PhotoAutoDisplayMode.fromName(conversation?.contact?.photoAutoDisplayOverride)
+                    val automaticResolvesToShow = !requirePhotoApproval || conversation?.contact?.conversationStatus == "active"
+
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            val options = listOf(
+                                Triple("Automatic", com.kachat.app.models.PhotoAutoDisplayMode.AUTOMATIC, 0),
+                                Triple("Always Show", com.kachat.app.models.PhotoAutoDisplayMode.ALWAYS_SHOW, 1),
+                                Triple("Always Hide", com.kachat.app.models.PhotoAutoDisplayMode.ALWAYS_HIDE, 2)
+                            )
+                            options.forEach { (label, value, index) ->
+                                SegmentedButton(
+                                    selected = photoOverride == value,
+                                    onClick = {
+                                        chatViewModel.updateContactPhotoOverride(
+                                            contactId,
+                                            if (value == com.kachat.app.models.PhotoAutoDisplayMode.AUTOMATIC) null else value
+                                        )
+                                    },
+                                    shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
+                                    colors = SegmentedButtonDefaults.colors(
+                                        activeContainerColor = Color(0xFF2C2C2E),
+                                        activeContentColor = Color.White,
+                                        inactiveContainerColor = Color(0xFF1C1C1E),
+                                        inactiveContentColor = Color.Gray
+                                    )
+                                ) {
+                                    Text(label, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                    SettingsFooter(
+                        "Automatic currently ${if (automaticResolvesToShow) "shows" else "hides"} photos from this contact. " +
+                            "It hides photos from contacts you haven't added or messaged yet, until you tap to reveal them."
+                    )
                 }
             }
 
