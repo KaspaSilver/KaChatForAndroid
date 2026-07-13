@@ -31,7 +31,7 @@ import com.kachat.app.models.PortfolioTransactionEntity
         MessageSyncCursorEntity::class,
         PortfolioTransactionEntity::class,
     ],
-    version = 18,
+    version = 19,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {
@@ -119,6 +119,18 @@ abstract class KaChatDatabase : RoomDatabase() {
                         "`fiatValue` REAL NOT NULL, `timestampMillis` INTEGER NOT NULL, `notes` TEXT, " +
                         "PRIMARY KEY(`id`))"
                 )
+            }
+        }
+
+        /**
+         * v18 -> v19: adds `contacts.photoAutoDisplayOverride` (nullable [PhotoAutoDisplayMode]
+         * name, null = automatic) backing the per-contact photo auto-display picker in Chat Info.
+         * A single nullable column addition, so a plain `ALTER TABLE ... ADD COLUMN` suffices —
+         * no rebuild-the-table dance needed (that was only required for the v15->v16 column drop).
+         */
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `contacts` ADD COLUMN `photoAutoDisplayOverride` TEXT DEFAULT NULL")
             }
         }
     }

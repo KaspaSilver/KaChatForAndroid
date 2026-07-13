@@ -186,6 +186,19 @@ class GoogleDriveBackupService @Inject constructor(
             .files?.firstOrNull()?.id
     }
 
+    /** Current size in bytes of [walletAddress]'s backup file already sitting in Drive, or null
+     * if not signed in, no backup exists yet, or the request fails. Drive's API returns file size
+     * as a decimal string, hence the parse. */
+    suspend fun currentBackupSizeBytes(walletAddress: String): Long? {
+        val auth = bearerToken() ?: return null
+        return try {
+            api.listFiles(auth, query = "name='${backupFileNameFor(walletAddress)}' and 'appDataFolder' in parents")
+                .files?.firstOrNull()?.size?.toLongOrNull()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     private fun bearerToken(): String? = cachedAccessToken?.let { "Bearer $it" }
 
     companion object {

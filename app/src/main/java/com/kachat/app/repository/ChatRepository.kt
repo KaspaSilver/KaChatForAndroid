@@ -7,6 +7,7 @@ import com.kachat.app.models.DeletedContactEntity
 import com.kachat.app.models.HandshakePayload
 import com.kachat.app.models.MessageEntity
 import com.kachat.app.models.MessageSyncCursorEntity
+import com.kachat.app.models.PhotoAutoDisplayMode
 import com.kachat.app.models.UnreadCount
 import com.kachat.app.services.ContextualMessageIndexerResponse
 import com.kachat.app.services.HandshakeIndexerResponse
@@ -114,6 +115,11 @@ class ChatRepository @Inject constructor(
 
     suspend fun markAsRead(contactId: String) {
         database.messageDao().markAllAsRead(contactId, walletManager.getAddress())
+    }
+
+    /** Chat-list swipe/bulk "Mark as Unread" — see [MessageDao.markLatestAsUnread]. */
+    suspend fun markAsUnread(contactId: String) {
+        database.messageDao().markLatestAsUnread(contactId, walletManager.getAddress())
     }
 
     fun getContacts(): Flow<List<ContactEntity>> {
@@ -526,6 +532,29 @@ class ChatRepository @Inject constructor(
                 existingHandshakeComplete -> "active"
                 incomingIsResponse -> "active"
                 else -> "pending"
+            }
+        }
+
+        /**
+         * Whether an incoming photo bubble from [contact] should auto-decode and render, vs.
+         * staying hidden behind a "Show Photo" tap. Mirrors iOS's
+         * `ContactsManager.shouldAutoDisplayPhotos(for:settings:)`.
+         *
+         * Unlike iOS (which added a dedicated `isAutoAdded`/`hasSentOutgoingMessage` pair),
+         * Android already has an equivalent trust signal in [ContactEntity.conversationStatus]:
+         * "pending" means an unsolicited incoming handshake the user hasn't accepted (or replied
+         * to with their own handshake) yet, while "active" means either the user added/messaged
+         * them first or accepted their request — see [deriveIncomingHandshakeStatus] and
+         * `ChatViewModel.addContact`, which defaults manually-added contacts to "active". Since a
+         * contact can't send a photo message at all without a completed handshake, this reuses
+         * that field instead of duplicating it.
+         */
+        fun shouldAutoDisplayPhotos(contact: ContactEntity?, requirePhotoApprovalForNewContacts: Boolean): Boolean {
+            return when (PhotoAutoDisplayMode.fromName(contact?.photoAutoDisplayOverride)) {
+                PhotoAutoDisplayMode.ALWAYS_SHOW -> true
+                PhotoAutoDisplayMode.ALWAYS_HIDE -> false
+                PhotoAutoDisplayMode.AUTOMATIC ->
+                    !requirePhotoApprovalForNewContacts || contact?.conversationStatus == "active"
             }
         }
 

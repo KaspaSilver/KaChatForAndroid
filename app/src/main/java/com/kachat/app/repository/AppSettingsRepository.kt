@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.google.gson.Gson
 import com.kachat.app.models.PendingKnsCommit
 import kotlinx.coroutines.flow.Flow
@@ -44,6 +45,16 @@ class AppSettingsRepository @Inject constructor(
         val KEY_ESTIMATE_FEES    = booleanPreferencesKey("estimate_fees")
         val KEY_HIDE_AUTO_PAYMENT_CHATS = booleanPreferencesKey("hide_auto_payment_chats")
         val KEY_SHOW_CONTACT_BALANCE = booleanPreferencesKey("show_contact_balance")
+        // How hard chat photos get compressed before sending — mirrors iOS's
+        // `chatPhotoQualityPreset` setting. Only affects photos sent, not received.
+        val KEY_CHAT_PHOTO_QUALITY_PRESET = stringPreferencesKey("chat_photo_quality_preset")
+        // Whether photos from contacts you haven't added/messaged yet stay hidden behind a
+        // "Show Photo" tap by default — mirrors iOS's `requirePhotoApprovalForNewContacts`.
+        // Default true, unlike most toggles here, since this is opt-out protection.
+        val KEY_REQUIRE_PHOTO_APPROVAL = booleanPreferencesKey("require_photo_approval_new_contacts")
+        // Flat, chain-wide set of txIds the user has manually revealed a hidden photo for —
+        // mirrors iOS's `PhotoRevealStore`. Not per-wallet: txIds are unique on-chain already.
+        val KEY_REVEALED_PHOTO_TX_IDS = stringSetPreferencesKey("revealed_photo_tx_ids")
 
         // Notifications — mirrors iOS's notificationMode/sound/vibration settings, minus
         // the remote-push mode (there's no FCM/APNs-equivalent registration wired up yet,
@@ -117,6 +128,18 @@ class AppSettingsRepository @Inject constructor(
 
     val showContactBalance: Flow<Boolean> = dataStore.data.map {
         it[KEY_SHOW_CONTACT_BALANCE] ?: true
+    }
+
+    val chatPhotoQualityPreset: Flow<com.kachat.app.models.ChatPhotoQualityPreset> = dataStore.data.map {
+        com.kachat.app.models.ChatPhotoQualityPreset.fromName(it[KEY_CHAT_PHOTO_QUALITY_PRESET])
+    }
+
+    val requirePhotoApprovalForNewContacts: Flow<Boolean> = dataStore.data.map {
+        it[KEY_REQUIRE_PHOTO_APPROVAL] ?: true
+    }
+
+    val revealedPhotoTxIds: Flow<Set<String>> = dataStore.data.map {
+        it[KEY_REVEALED_PHOTO_TX_IDS] ?: emptySet()
     }
 
     val broadcastPopularEnabled: Flow<Boolean> = dataStore.data.map {
@@ -205,6 +228,11 @@ class AppSettingsRepository @Inject constructor(
     suspend fun setEstimateFees(value: Boolean) = dataStore.edit { it[KEY_ESTIMATE_FEES] = value }
     suspend fun setHideAutoCreatedPaymentChats(value: Boolean) = dataStore.edit { it[KEY_HIDE_AUTO_PAYMENT_CHATS] = value }
     suspend fun setShowContactBalance(value: Boolean) = dataStore.edit { it[KEY_SHOW_CONTACT_BALANCE] = value }
+    suspend fun setChatPhotoQualityPreset(value: com.kachat.app.models.ChatPhotoQualityPreset) = dataStore.edit { it[KEY_CHAT_PHOTO_QUALITY_PRESET] = value.name }
+    suspend fun setRequirePhotoApprovalForNewContacts(value: Boolean) = dataStore.edit { it[KEY_REQUIRE_PHOTO_APPROVAL] = value }
+    suspend fun revealPhoto(txId: String) = dataStore.edit {
+        it[KEY_REVEALED_PHOTO_TX_IDS] = (it[KEY_REVEALED_PHOTO_TX_IDS] ?: emptySet()) + txId
+    }
     suspend fun setBroadcastPopularEnabled(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_POPULAR_ENABLED] = value }
     suspend fun setBroadcastShowKnsAvatars(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_SHOW_KNS_AVATARS] = value }
     suspend fun setBroadcastAutoAvatarSearch(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_AUTO_AVATAR_SEARCH] = value }

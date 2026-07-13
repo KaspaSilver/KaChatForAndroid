@@ -27,7 +27,7 @@ interface GoogleDriveApi {
         @Header("Authorization") authorization: String,
         @Query("spaces") spaces: String = "appDataFolder",
         @Query("q") query: String,
-        @Query("fields") fields: String = "files(id,name,modifiedTime)"
+        @Query("fields") fields: String = "files(id,name,modifiedTime,size)"
     ): DriveFileListResponse
 
     /** Creates the backup file for the first time. */
@@ -65,4 +65,4 @@ interface GoogleDriveApi {
 
 data class DriveFileListResponse(val files: List<DriveFile>?)
 
-data class DriveFile(val id: String?, val name: String? = null, val modifiedTime: String? = null)
+data class DriveFile(val id: String?, val name: String? = null, val modifiedTime: String? = null, val size: String? = null)

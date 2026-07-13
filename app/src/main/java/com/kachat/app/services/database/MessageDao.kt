@@ -41,6 +41,19 @@ interface MessageDao {
     @Query("UPDATE messages SET isRead = 1 WHERE contactId = :contactId AND walletAddress = :walletAddress AND isRead = 0")
     suspend fun markAllAsRead(contactId: String, walletAddress: String)
 
+    /** Chat-list "mark as unread" (swipe/bulk action) — flips just the single latest received
+     * message back to unread, which is enough to make the contact reappear with a nonzero badge
+     * in [getUnreadCounts] (a derived COUNT), without needing a separate stored unread flag. */
+    @Query(
+        """
+        UPDATE messages SET isRead = 0 WHERE id = (
+            SELECT id FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress AND direction = 'received'
+            ORDER BY blockTimestamp DESC LIMIT 1
+        )
+        """
+    )
+    suspend fun markLatestAsUnread(contactId: String, walletAddress: String)
+
     /** Contacts (within this wallet) whose entire message history is payment-only — never a real handshake/comm message. */
     @Query(
         """

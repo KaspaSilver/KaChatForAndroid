@@ -54,14 +54,23 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.animation.core.animate
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.MarkEmailRead
+import androidx.compose.material.icons.filled.MarkEmailUnread
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
+import kotlin.math.roundToInt
 
 /**
  * Chats tab — conversation list.
@@ -80,6 +89,8 @@ fun ChatsScreen(
     val conversations by chatViewModel.conversations.collectAsState()
     val isRefreshing by chatViewModel.isRefreshing.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     // Matches on whatever's already shown per row — display name/alias, KNS domain, the raw
     // address (so pasting/typing part of an address you recognize still finds it), and the last
@@ -154,7 +165,25 @@ fun ChatsScreen(
                         balance = balance,
                         onStatusClick = { navController.navigate("connection_status") },
                         dotColorHex = dotColorHex,
-                        showAddButton = false
+                        showAddButton = false,
+                        showEditButton = conversations.isNotEmpty(),
+                        isEditing = isSelectionMode,
+                        onEditClick = {
+                            isSelectionMode = !isSelectionMode
+                            if (!isSelectionMode) selectedContactIds = emptySet()
+                        },
+                        selectAllLabel = if (selectedContactIds.size == filteredConversations.size && filteredConversations.isNotEmpty()) {
+                            "Deselect All"
+                        } else {
+                            "Select All"
+                        },
+                        onSelectAllClick = {
+                            selectedContactIds = if (selectedContactIds.size == filteredConversations.size) {
+                                emptySet()
+                            } else {
+                                filteredConversations.map { it.contact.id }.toSet()
+                            }
+                        }
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -252,6 +281,46 @@ fun ChatsScreen(
             ) {
                 Icon(Icons.Default.PersonAddAlt1, "Create chat")
             }
+        },
+        bottomBar = {
+            if (isSelectionMode) {
+                Column(modifier = Modifier.background(Color.Black).navigationBarsPadding()) {
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                chatViewModel.markContactsAsRead(selectedContactIds)
+                                isSelectionMode = false
+                                selectedContactIds = emptySet()
+                            },
+                            enabled = selectedContactIds.isNotEmpty(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2E)),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.MarkEmailRead, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Mark as Read", color = Color.White, fontSize = 13.sp)
+                        }
+                        Button(
+                            onClick = {
+                                chatViewModel.markContactsAsUnread(selectedContactIds)
+                                isSelectionMode = false
+                                selectedContactIds = emptySet()
+                            },
+                            enabled = selectedContactIds.isNotEmpty(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2E)),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.MarkEmailUnread, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Mark as Unread", color = Color.White, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
         }
     ) { padding ->
         Box(
@@ -338,52 +407,52 @@ fun ChatsScreen(
 
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(filteredConversations, key = { it.contact.id }) { convo ->
-                        val dismissState = rememberSwipeToDismissBoxState(
-                            confirmValueChange = {
-                                if (it == SwipeToDismissBoxValue.EndToStart) {
-                                    contactToDelete = convo.contact.id
+                        SwipeActionRow(
+                            enabled = !isSelectionMode,
+                            leadingIcon = if (convo.unreadCount > 0) Icons.Default.MarkEmailRead else Icons.Default.MarkEmailUnread,
+                            leadingLabel = if (convo.unreadCount > 0) "Read" else "Unread",
+                            leadingColor = KaspaTeal,
+                            onLeadingClick = {
+                                if (convo.unreadCount > 0) {
+                                    chatViewModel.markAsRead(convo.contact.id)
+                                } else {
+                                    chatViewModel.markAsUnread(convo.contact.id)
                                 }
-                                false
-                            }
-                        )
-
-                        SwipeToDismissBox(
-                            state = dismissState,
-                            enableDismissFromStartToEnd = false,
-                            backgroundContent = {
-                                val color = when (dismissState.targetValue) {
-                                    SwipeToDismissBoxValue.EndToStart -> Color(0xFF1C1C1E)
-                                    else -> Color.Transparent
+                            },
+                            trailingIcon = Icons.Default.Delete,
+                            trailingLabel = "Delete",
+                            trailingColor = Color(0xFFFF3B30),
+                            onTrailingClick = { contactToDelete = convo.contact.id }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().background(Color.Black)
+                            ) {
+                                if (isSelectionMode) {
+                                    Icon(
+                                        imageVector = if (convo.contact.id in selectedContactIds) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                        contentDescription = "Select chat",
+                                        tint = if (convo.contact.id in selectedContactIds) KaspaTeal else Color.Gray,
+                                        modifier = Modifier.padding(start = 16.dp).size(22.dp)
+                                    )
                                 }
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .background(color)
-                                        .padding(horizontal = 24.dp),
-                                    contentAlignment = Alignment.CenterEnd
-                                ) {
-                                    // Only show icon if we are actually swiping
-                                    if (dismissState.progress > 0.1f && dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart) {
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                            Icon(
-                                                imageVector = Icons.Default.Delete,
-                                                contentDescription = "Delete",
-                                                tint = Color.White
-                                            )
-                                            Text("Delete", color = Color.White, style = MaterialTheme.typography.bodySmall)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    ConversationRow(convo) {
+                                        if (isSelectionMode) {
+                                            selectedContactIds = if (convo.contact.id in selectedContactIds) {
+                                                selectedContactIds - convo.contact.id
+                                            } else {
+                                                selectedContactIds + convo.contact.id
+                                            }
+                                        } else {
+                                            navController.navigate("chat/${convo.contact.id}")
                                         }
                                     }
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(start = 72.dp),
+                                        color = Color.DarkGray.copy(alpha = 0.5f)
+                                    )
                                 }
-                            }
-                        ) {
-                            Column(modifier = Modifier.background(Color.Black)) {
-                                ConversationRow(convo) {
-                                    navController.navigate("chat/${convo.contact.id}")
-                                }
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(start = 72.dp),
-                                    color = Color.DarkGray.copy(alpha = 0.5f)
-                                )
                             }
                         }
                     }
@@ -462,6 +531,114 @@ private fun messagePreviewText(message: MessageEntity?, contactLabel: String): S
     if (VoiceMessage.parseOrNull(body) != null) return "🎤 Audio message"
     if (ImageMessage.parseOrNull(body) != null) return "📷 Photo"
     return body
+}
+
+/**
+ * A row that reveals a leading and/or trailing action button as you drag it open — like iOS's
+ * `.swipeActions`, the drag only *reveals* the button; the action itself only runs when you tap
+ * the revealed button, never just from completing the drag motion (unlike Material3's
+ * `SwipeToDismissBox`, whose `confirmValueChange` fires as soon as the swipe crosses its
+ * threshold, with no separate tap step).
+ */
+@Composable
+private fun SwipeActionRow(
+    enabled: Boolean = true,
+    leadingIcon: ImageVector,
+    leadingLabel: String,
+    leadingColor: Color,
+    onLeadingClick: () -> Unit,
+    trailingIcon: ImageVector,
+    trailingLabel: String,
+    trailingColor: Color,
+    onTrailingClick: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val density = LocalDensity.current
+    val actionWidthDp = 88.dp
+    val actionWidthPx = with(density) { actionWidthDp.toPx() }
+    var offsetX by remember { mutableStateOf(0f) }
+
+    val draggableState = rememberDraggableState { delta ->
+        offsetX = (offsetX + delta).coerceIn(-actionWidthPx, actionWidthPx)
+    }
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Row(modifier = Modifier.matchParentSize()) {
+            Box(
+                modifier = Modifier
+                    .width(actionWidthDp)
+                    .fillMaxHeight()
+                    .background(leadingColor)
+                    .clickable(enabled = offsetX > 1f) {
+                        onLeadingClick()
+                        offsetX = 0f
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(leadingIcon, contentDescription = leadingLabel, tint = Color.Black)
+                    Text(leadingLabel, color = Color.Black, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            Box(
+                modifier = Modifier
+                    .width(actionWidthDp)
+                    .fillMaxHeight()
+                    .background(trailingColor)
+                    .clickable(enabled = offsetX < -1f) {
+                        onTrailingClick()
+                        offsetX = 0f
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(trailingIcon, contentDescription = trailingLabel, tint = Color.White)
+                    Text(trailingLabel, color = Color.White, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(offsetX.roundToInt(), 0) }
+                .then(
+                    if (enabled) {
+                        Modifier.draggable(
+                            state = draggableState,
+                            orientation = Orientation.Horizontal,
+                            onDragStopped = {
+                                val target = when {
+                                    offsetX > actionWidthPx / 2 -> actionWidthPx
+                                    offsetX < -actionWidthPx / 2 -> -actionWidthPx
+                                    else -> 0f
+                                }
+                                animate(initialValue = offsetX, targetValue = target) { value, _ -> offsetX = value }
+                            }
+                        )
+                    } else {
+                        Modifier
+                    }
+                )
+        ) {
+            content()
+            // While revealed, tapping the row itself closes it rather than firing its normal
+            // click/select action underneath — matches the reference apps' swipe-action rows.
+            if (kotlin.math.abs(offsetX) > 1f) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {
+                            offsetX = 0f
+                        }
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(enabled) {
+        if (!enabled) offsetX = 0f
+    }
 }
 
 @Composable

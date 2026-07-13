@@ -131,14 +131,18 @@ class NodePoolManager @Inject constructor() {
         for (hostname in dnsSeedHostnames) {
             if (dnsResolvedEndpoints.size >= maxDnsResolvedEndpoints) break
             try {
-                // IPv4 only, matching iOS's resolveDNSSeed (hints.ai_family = AF_INET) — an IPv6
-                // literal's own colons would collide with the ":port" suffix below, and
-                // KaspadConnection's plaintext gRPC target string isn't set up to bracket them.
+                // Accept both IPv4 and IPv6 answers — on-device testing on an IPv6-heavy/NAT64
+                // network found these hostnames resolving almost entirely to AAAA records, so an
+                // IPv4-only filter (as iOS's resolveDNSSeed does, matching hints.ai_family =
+                // AF_INET) left this fallback with zero usable endpoints whenever the hardcoded
+                // IPv4 [seeds] were also down — exactly the permanently-red-dot scenario this
+                // fallback exists to prevent. IPv6 literals get bracketed for the gRPC target
+                // string, matching standard host:port authority syntax (RFC 3986).
                 java.net.InetAddress.getAllByName(hostname)
-                    .filterIsInstance<java.net.Inet4Address>()
                     .forEach { addr ->
                         if (dnsResolvedEndpoints.size < maxDnsResolvedEndpoints) {
-                            dnsResolvedEndpoints.add("${addr.hostAddress}:$dnsSeedPort")
+                            val host = if (addr is java.net.Inet6Address) "[${addr.hostAddress}]" else addr.hostAddress
+                            dnsResolvedEndpoints.add("$host:$dnsSeedPort")
                         }
                     }
             } catch (e: Exception) {
