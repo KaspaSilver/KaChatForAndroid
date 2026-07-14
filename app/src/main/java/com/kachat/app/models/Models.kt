@@ -135,5 +135,8 @@ data class PendingKnsCommit(
     val commitAmountSompi: Long,
     val revealAmountSompi: Long,
     val revealTargetAddress: String,
-    val operationType: String // "domain" | "profile" — for the recovery prompt's wording only
+    val operationType: String, // "domain" | "profile" — for the recovery prompt's wording only
+    // Nullable so Gson leaves it null (falls back to the identity address) when deserializing a
+    // commit persisted before this field existed, rather than failing to parse it entirely.
+    val changeAddress: String? = null
 )

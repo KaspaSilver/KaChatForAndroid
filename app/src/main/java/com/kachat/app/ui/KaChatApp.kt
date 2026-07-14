@@ -277,6 +277,35 @@ fun MainShell(
                 )
             }
 
+            composable(
+                "cold_storage_tx_history/{address}",
+                arguments = listOf(navArgument("address") { type = NavType.StringType })
+            ) { backStackEntry ->
+                ColdStorageTxHistoryScreen(
+                    address = backStackEntry.arguments?.getString("address") ?: "",
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable(
+                "cold_storage_hidden/{accountId}",
+                arguments = listOf(navArgument("accountId") { type = NavType.StringType })
+            ) { backStackEntry ->
+                // Shares ColdStorageDetailScreen's own ViewModel instance (the only screen this
+                // one is ever reached from) rather than getting a fresh one scoped to this
+                // destination — a fresh instance would need its own full gap-limit rescan just to
+                // reconstruct a list the detail screen already has loaded, showing an empty state
+                // the whole time that rescan is in flight.
+                val parentEntry = remember(backStackEntry) {
+                    navController.getBackStackEntry("cold_storage_detail/{accountId}")
+                }
+                ColdStorageHiddenAddressesScreen(
+                    accountId = backStackEntry.arguments?.getString("accountId") ?: "",
+                    navController = navController,
+                    viewModel = hiltViewModel(parentEntry)
+                )
+            }
+
             composable("manage_addresses") {
                 ManageAddressesScreen(
                     viewModel = walletViewModel,
@@ -286,6 +315,13 @@ fun MainShell(
 
             composable("edit_kns_profile") {
                 EditKnsProfileScreen(
+                    viewModel = walletViewModel,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable("kns_domains") {
+                KnsDomainsScreen(
                     viewModel = walletViewModel,
                     onBack = { navController.popBackStack() }
                 )

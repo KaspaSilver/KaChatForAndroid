@@ -264,6 +264,12 @@ class WalletManager @Inject constructor(
         return deriveSpendingAddress(index)
     }
 
+    /** Signing key for [currentSpendingAddress] — same index, so callers always get a matching pair. */
+    fun currentSpendingPrivateKeyBytes(): ByteArray {
+        val index = getActiveAccount()?.spendingAddressIndex ?: throw IllegalStateException("No active account")
+        return getSpendingPrivateKeyBytes(index)
+    }
+
     /** Called only after a spending-address send is actually accepted by the network. */
     fun advanceSpendingAddressIndex(address: String) {
         val accounts = getAccounts().map {

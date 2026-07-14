@@ -138,6 +138,33 @@ class WalletViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Sends KAS out of one specific spending-chain address (not necessarily the currently
+     * active one) to [toAddress] — unlike [WalletService.sendKaspa]/`onSendClicked` (identity)
+     * or the "Pay in Kaspa" sweep-all-and-rotate flow, this targets a single address by
+     * [index] and leaves any leftover balance right where it is (change returns to the same
+     * address rather than sweeping or rotating). Reuses [sendResult]/[isSending] — only one of
+     * these send dialogs can be open at a time, so sharing that state is fine.
+     */
+    fun withdrawFromSpendingAddress(index: Int, toAddress: String, amountSompi: Long) {
+        viewModelScope.launch {
+            _isSending.value = true
+            val fromAddress = walletManager.deriveSpendingAddress(index)
+            val result = walletEngine.sendKaspa(
+                toAddress = toAddress,
+                amountSompi = amountSompi,
+                fromAddress = fromAddress,
+                signingPrivateKey = walletManager.getSpendingPrivateKeyBytes(index),
+                changeAddress = fromAddress
+            )
+            _sendResult.value = result
+            _isSending.value = false
+            if (result.isSuccess) {
+                loadManageAddresses()
+            }
+        }
+    }
+
     private val _discoveringAddresses = MutableStateFlow(false)
     val discoveringAddresses: StateFlow<Boolean> = _discoveringAddresses.asStateFlow()
 

@@ -25,6 +25,8 @@ class ColdStorageManager @Inject constructor(
     companion object {
         private const val SECURE_PREFS_NAME = "cold_storage_secure_prefs"
         private const val PREF_ACCOUNTS = "cold_accounts"
+        private const val PREF_ADDRESS_LABELS = "cold_address_labels"
+        private const val PREF_HIDDEN_ADDRESSES = "cold_hidden_addresses"
     }
 
     data class ColdAccount(
@@ -33,9 +35,16 @@ class ColdStorageManager @Inject constructor(
         val kpub: String,
         // Highest external-chain (chain 0) index ever derived/shown for this account — bounds
         // the Manage-style address list the same way WalletManager.Account.maxSpendingAddressIndex
-        // bounds the spending-chain list.
+        // bounds the spending-chain list. "Generate More Addresses" bumps this directly, ahead of
+        // whatever the gap-limit scan itself would have stopped at.
         val maxDerivedIndex: Int = 0
     )
+
+    /** A user-given label for one specific derived address — flat list keyed by (accountId, index) rather than nested in [ColdAccount], so labeling is independent of the gap-limit-scanned address list's own lifecycle. */
+    private data class AddressLabel(val accountId: String, val index: Int, val label: String)
+
+    /** One address a user chose to hide from the main list — same flat (accountId, index) keying as [AddressLabel]. Hiding never deletes anything; it's purely a display preference. */
+    private data class HiddenAddress(val accountId: String, val index: Int)
 
     private val gson = Gson()
 
@@ -88,5 +97,45 @@ class ColdStorageManager @Inject constructor(
                 if (it.id == id && minIndex > it.maxDerivedIndex) it.copy(maxDerivedIndex = minIndex) else it
             }
         )
+    }
+
+    private fun getAllAddressLabels(): List<AddressLabel> {
+        val json = sharedPrefs.getString(PREF_ADDRESS_LABELS, null) ?: return emptyList()
+        val type = object : TypeToken<List<AddressLabel>>() {}.type
+        return gson.fromJson(json, type)
+    }
+
+    private fun saveAddressLabels(labels: List<AddressLabel>) {
+        sharedPrefs.edit().putString(PREF_ADDRESS_LABELS, gson.toJson(labels)).apply()
+    }
+
+    /** index -> label, for every labeled address under [accountId]. Unlabeled addresses just aren't present in the map. */
+    fun getAddressLabels(accountId: String): Map<Int, String> =
+        getAllAddressLabels().filter { it.accountId == accountId }.associate { it.index to it.label }
+
+    /** A blank [label] clears any existing label for this address rather than storing an empty string. */
+    fun setAddressLabel(accountId: String, index: Int, label: String) {
+        val remaining = getAllAddressLabels().filterNot { it.accountId == accountId && it.index == index }
+        val trimmed = label.trim()
+        saveAddressLabels(if (trimmed.isNotEmpty()) remaining + AddressLabel(accountId, index, trimmed) else remaining)
+    }
+
+    private fun getAllHiddenAddresses(): List<HiddenAddress> {
+        val json = sharedPrefs.getString(PREF_HIDDEN_ADDRESSES, null) ?: return emptyList()
+        val type = object : TypeToken<List<HiddenAddress>>() {}.type
+        return gson.fromJson(json, type)
+    }
+
+    private fun saveHiddenAddresses(hidden: List<HiddenAddress>) {
+        sharedPrefs.edit().putString(PREF_HIDDEN_ADDRESSES, gson.toJson(hidden)).apply()
+    }
+
+    /** Indices hidden under [accountId] — never deletes the address itself, just what the main list filters out. */
+    fun getHiddenIndices(accountId: String): Set<Int> =
+        getAllHiddenAddresses().filter { it.accountId == accountId }.map { it.index }.toSet()
+
+    fun setAddressHidden(accountId: String, index: Int, hidden: Boolean) {
+        val remaining = getAllHiddenAddresses().filterNot { it.accountId == accountId && it.index == index }
+        saveHiddenAddresses(if (hidden) remaining + HiddenAddress(accountId, index) else remaining)
     }
 }

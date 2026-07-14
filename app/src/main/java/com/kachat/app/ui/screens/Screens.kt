@@ -81,6 +81,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -111,6 +112,7 @@ import com.kachat.app.viewmodels.ConnectionViewModel
 import com.kachat.app.viewmodels.NodeInfo
 import com.kachat.app.viewmodels.SettingsViewModel
 import com.kachat.app.viewmodels.WalletViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -1375,16 +1377,16 @@ fun ProfileScreen(
     val spendingBalance by viewModel.spendingBalance.collectAsState()
     var showIdentityQr by remember { mutableStateOf(false) }
     var showSpendingQr by remember { mutableStateOf(false) }
+    var showFundIdentityQr by remember { mutableStateOf(false) }
+    // Deliberately separate from showSpendingQr — "Accept Kaspa As Payment" shows the same
+    // address as the Spending Address section's own "Show QR Code" row, but with its own bigger
+    // green border, so it can't be styled without also affecting that unrelated row.
+    var showAcceptPaymentQr by remember { mutableStateOf(false) }
+    var showWithdrawDialog by remember { mutableStateOf(false) }
 
     val ownedDomainAssets by viewModel.ownedDomainAssets.collectAsState()
-    val primaryDomainName by viewModel.primaryDomainName.collectAsState()
-    val setPrimaryState by viewModel.setPrimaryState.collectAsState()
-    val domainPreview by viewModel.domainPreview.collectAsState()
     val knsInscribeState by viewModel.knsInscribeState.collectAsState()
     val pendingKnsCommit by viewModel.pendingKnsCommit.collectAsState()
-    var showInscribeDialog by remember { mutableStateOf(false) }
-    var domainLabelInput by remember { mutableStateOf("") }
-    var transferDialogDomain by remember { mutableStateOf<com.kachat.app.services.KnsAsset?>(null) }
 
     val profileAssetId by viewModel.profileDomainAssetId.collectAsState()
     val knsProfile by viewModel.knsProfile.collectAsState()
@@ -1454,13 +1456,15 @@ fun ProfileScreen(
                         Icon(Icons.Default.Info, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "Register a domain below first — a profile attaches to a domain.",
+                            "Register a domain first — a profile attaches to a domain.",
                             color = Color.Gray,
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
                 } else {
-                    Column {
+                    Column(
+                        modifier = Modifier.clickable { navController.navigate("edit_kns_profile") }
+                    ) {
                         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             ContactAvatar(
                                 imageUrl = knsProfile?.avatarUrl,
@@ -1470,94 +1474,101 @@ fun ProfileScreen(
                             Spacer(Modifier.width(16.dp))
                             Column {
                                 Text(activeProfileDomainName, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                                val bio = knsProfile?.bio?.takeIf { it.isNotBlank() }
                                 Text(
-                                    if (hasAnyProfileData) "On-chain profile data available." else "No on-chain profile data yet.",
+                                    bio ?: if (hasAnyProfileData) "On-chain profile data available." else "No on-chain profile data yet.",
                                     color = Color.Gray,
-                                    style = MaterialTheme.typography.bodySmall
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
+                            Spacer(Modifier.weight(1f))
+                            Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
                         }
-                        HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { navController.navigate("edit_kns_profile") }
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Edit, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Edit KNS Profile", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                        val website = knsProfile?.website?.takeIf { it.isNotBlank() }
+                        if (website != null) {
+                            HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                            val context = LocalContext.current
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val url = if (website.startsWith("http")) website else "https://$website"
+                                        try {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                        } catch (e: Exception) { /* no browser available */ }
+                                    }
+                                    .padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Language, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(website, color = KaspaTeal, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
             }
 
-            CollapsibleAddressSection(title = "KNS Domains") {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    if (ownedDomainAssets.isEmpty()) {
-                        Text(text = "No domains yet.", color = Color.Gray)
-                    } else {
-                        ownedDomainAssets.forEachIndexed { index, domainAsset ->
-                            val name = domainAsset.asset ?: return@forEachIndexed
-                            val assetId = domainAsset.assetId
-                            val isPrimary = name == primaryDomainName
-                            val settingThisOne = setPrimaryState.inFlight && setPrimaryState.assetId == assetId
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                if (settingThisOne) {
-                                    CircularProgressIndicator(color = KaspaTeal, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                                } else {
-                                    Icon(
-                                        if (isPrimary) Icons.Default.Star else Icons.Default.StarBorder,
-                                        contentDescription = if (isPrimary) "Primary domain" else "Set as primary",
-                                        tint = if (isPrimary) KaspaTeal else Color.Gray,
-                                        modifier = Modifier
-                                            .size(18.dp)
-                                            .then(
-                                                if (!isPrimary && assetId != null) Modifier.clickable { viewModel.setPrimaryDomain(assetId) }
-                                                else Modifier
-                                            )
-                                    )
-                                }
-                                Spacer(Modifier.width(10.dp))
-                                Text(name, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                                if (assetId != null) {
-                                    Icon(
-                                        Icons.Default.SwapHoriz,
-                                        contentDescription = "Transfer domain",
-                                        tint = Color.Gray,
-                                        modifier = Modifier
-                                            .size(20.dp)
-                                            .clickable {
-                                                viewModel.resetTransferDomainState()
-                                                transferDialogDomain = domainAsset
-                                            }
-                                    )
-                                }
-                            }
-                            val setPrimaryError = setPrimaryState.errorMessage
-                            if (setPrimaryState.assetId == assetId && setPrimaryError != null) {
-                                Text(setPrimaryError, color = Color(0xFFFF3B30), style = MaterialTheme.typography.bodySmall)
-                            }
-                            if (index < ownedDomainAssets.lastIndex) Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xFF1C1C1E))
+                    .clickable { navController.navigate("kns_domains") }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "KNS Domains (${ownedDomainAssets.size})",
+                    color = Color.White,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+            }
+
+            run {
+                val clipboardManager = LocalClipboardManager.current
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0xFF1C1C1E))
+                        .clickable {
+                            spendingAddress?.let { clipboardManager.setText(AnnotatedString(it)) }
+                            showAcceptPaymentQr = true
                         }
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.clickable {
-                            domainLabelInput = ""
-                            viewModel.clearDomainPreview()
-                            viewModel.resetKnsInscribeState()
-                            showInscribeDialog = true
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "Accept Kaspa As Payment",
+                        color = Color.White,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0xFF1C1C1E))
+                        .clickable {
+                            address?.let { clipboardManager.setText(AnnotatedString(it)) }
+                            showFundIdentityQr = true
                         }
-                    ) {
-                        Icon(Icons.Default.AddCircleOutline, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Inscribe New Domain", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                    }
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "Fund Identity Address For Chatting",
+                        color = Color.White,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
 
@@ -1586,6 +1597,17 @@ fun ProfileScreen(
                         Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Show QR Code", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showWithdrawDialog = true },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Withdraw Kaspa", color = KaspaTeal, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -1634,17 +1656,6 @@ fun ProfileScreen(
                 }
             }
 
-            SettingsSection(title = "Gift") {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Verified, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Gift already claimed", color = Color.Gray)
-                }
-            }
-
             SettingsSection(title = "Info") {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -1665,6 +1676,260 @@ fun ProfileScreen(
         if (showSpendingQr) {
             QrCodeOverlay(value = spendingAddress ?: "", onDismiss = { showSpendingQr = false })
         }
+        if (showFundIdentityQr) {
+            QrCodeOverlay(
+                value = address ?: "",
+                onDismiss = { showFundIdentityQr = false },
+                message = "Just send 5-10 KAS at a time, that's plenty to cover chat fees for a while (about 500 messages per KAS)",
+                borderColor = Color(0xFF4CD964),
+                borderWidth = 4.dp
+            )
+        }
+        if (showAcceptPaymentQr) {
+            QrCodeOverlay(
+                value = spendingAddress ?: "",
+                onDismiss = { showAcceptPaymentQr = false },
+                borderColor = Color(0xFF4CD964),
+                borderWidth = 4.dp
+            )
+        }
+        }
+    }
+
+    if (showWithdrawDialog) {
+        var recipientInput by remember { mutableStateOf("") }
+        var amountInput by remember { mutableStateOf("") }
+        val isSending by viewModel.isSending.collectAsState()
+        val sendResult by viewModel.sendResult.collectAsState()
+        val identityBalanceSompi by viewModel.balanceSompi.collectAsState()
+        val context = LocalContext.current
+        val clipboardManager = LocalClipboardManager.current
+
+        LaunchedEffect(sendResult) {
+            val result = sendResult ?: return@LaunchedEffect
+            if (result.isSuccess) {
+                Toast.makeText(context, "Withdrawal sent", Toast.LENGTH_SHORT).show()
+                showWithdrawDialog = false
+            } else {
+                Toast.makeText(context, result.exceptionOrNull()?.message ?: "Withdrawal failed", Toast.LENGTH_SHORT).show()
+            }
+            viewModel.clearSendResult()
+        }
+
+        val amountSompi = amountInput.toDoubleOrNull()?.let { Math.round(it * 100_000_000.0) }
+        val isValidAddress = remember(recipientInput) { KaspaAddress.isValid(recipientInput) }
+
+        AlertDialog(
+            onDismissRequest = { if (!isSending) showWithdrawDialog = false },
+            containerColor = Color(0xFF1C1C1E),
+            title = { Text("Withdraw Kaspa", color = Color.White) },
+            text = {
+                Column {
+                    Text(
+                        "Sends KAS out of your identity address — the one you fund for chatting.",
+                        color = Color.Gray,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = recipientInput,
+                        onValueChange = { recipientInput = it },
+                        label = { Text("Recipient address") },
+                        singleLine = true,
+                        enabled = !isSending,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = KaspaTeal,
+                            unfocusedBorderColor = Color.Gray,
+                            focusedLabelColor = KaspaTeal,
+                            unfocusedLabelColor = Color.Gray
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    TextButton(
+                        onClick = { clipboardManager.getText()?.text?.let { recipientInput = it.trim() } },
+                        enabled = !isSending
+                    ) {
+                        Text("Paste from Clipboard", color = KaspaTeal, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = amountInput,
+                        onValueChange = { amountInput = it },
+                        label = { Text("Amount (KAS)") },
+                        singleLine = true,
+                        enabled = !isSending,
+                        trailingIcon = {
+                            TextButton(
+                                onClick = {
+                                    val mass = com.kachat.app.util.KaspaMass.calculateMass(
+                                        numInputs = 1,
+                                        outputScriptLens = listOf(34, 34),
+                                        payloadSize = 0
+                                    )
+                                    val fee = com.kachat.app.util.KaspaMass.calculateFee(mass, com.kachat.app.util.KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
+                                    val maxSompi = (identityBalanceSompi - fee).coerceAtLeast(0L)
+                                    amountInput = "%.8f".format(java.util.Locale.US, maxSompi / 100_000_000.0)
+                                },
+                                enabled = !isSending
+                            ) {
+                                Text("Max", color = KaspaTeal)
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = KaspaTeal,
+                            unfocusedBorderColor = Color.Gray,
+                            focusedLabelColor = KaspaTeal,
+                            unfocusedLabelColor = Color.Gray
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text("Available: $balance", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    if (isSending) {
+                        Spacer(Modifier.height(12.dp))
+                        InscribeProgressRow("Sending...")
+                    }
+                }
+            },
+            confirmButton = {
+                val canSend = !isSending && isValidAddress && (amountSompi ?: 0) > 0
+                TextButton(
+                    onClick = { amountSompi?.let { viewModel.onSendClicked(recipientInput.trim(), it) } },
+                    enabled = canSend
+                ) {
+                    Text("Withdraw", color = if (canSend) KaspaTeal else Color.Gray, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                if (!isSending) {
+                    TextButton(onClick = { showWithdrawDialog = false }) {
+                        Text("Cancel", color = Color.Gray)
+                    }
+                }
+            }
+        )
+    }
+}
+
+/**
+ * Dedicated KNS domain-management screen — the owned-domain list (star to mark primary, swap
+ * icon to transfer), plus inscribing a new domain. Used to live inline as a collapsible section
+ * on [ProfileScreen] itself; broken out once the list plus its two dialogs (inscribe/transfer)
+ * made that screen too crowded to scan at a glance.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
+    val ownedDomainAssets by viewModel.ownedDomainAssets.collectAsState()
+    val primaryDomainName by viewModel.primaryDomainName.collectAsState()
+    val setPrimaryState by viewModel.setPrimaryState.collectAsState()
+    val domainPreview by viewModel.domainPreview.collectAsState()
+    val knsInscribeState by viewModel.knsInscribeState.collectAsState()
+    var showInscribeDialog by remember { mutableStateOf(false) }
+    var domainLabelInput by remember { mutableStateOf("") }
+    var transferDialogDomain by remember { mutableStateOf<com.kachat.app.services.KnsAsset?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshOwnedDomains()
+    }
+
+    Scaffold(
+        containerColor = Color.Black,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("KNS Domains", color = Color.White, fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = {
+                    domainLabelInput = ""
+                    viewModel.clearDomainPreview()
+                    viewModel.resetKnsInscribeState()
+                    showInscribeDialog = true
+                },
+                containerColor = KaspaTeal,
+                contentColor = Color.Black,
+                shape = CircleShape
+            ) {
+                Icon(Icons.Default.AddCircleOutline, "Inscribe new domain")
+            }
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Spacer(Modifier.height(16.dp))
+            if (ownedDomainAssets.isEmpty()) {
+                Text(text = "No domains yet.", color = Color.Gray, modifier = Modifier.padding(16.dp))
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0xFF1C1C1E))
+                        .padding(16.dp)
+                ) {
+                    ownedDomainAssets.forEachIndexed { index, domainAsset ->
+                        val name = domainAsset.asset ?: return@forEachIndexed
+                        val assetId = domainAsset.assetId
+                        val isPrimary = name == primaryDomainName
+                        val settingThisOne = setPrimaryState.inFlight && setPrimaryState.assetId == assetId
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            if (settingThisOne) {
+                                CircularProgressIndicator(color = KaspaTeal, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(
+                                    if (isPrimary) Icons.Default.Star else Icons.Default.StarBorder,
+                                    contentDescription = if (isPrimary) "Primary domain" else "Set as primary",
+                                    tint = if (isPrimary) KaspaTeal else Color.Gray,
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .then(
+                                            if (!isPrimary && assetId != null) Modifier.clickable { viewModel.setPrimaryDomain(assetId) }
+                                            else Modifier
+                                        )
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Text(name, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            if (assetId != null) {
+                                Icon(
+                                    Icons.Default.SwapHoriz,
+                                    contentDescription = "Transfer domain",
+                                    tint = Color.Gray,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .clickable {
+                                            viewModel.resetTransferDomainState()
+                                            transferDialogDomain = domainAsset
+                                        }
+                                )
+                            }
+                        }
+                        val setPrimaryError = setPrimaryState.errorMessage
+                        if (setPrimaryState.assetId == assetId && setPrimaryError != null) {
+                            Text(setPrimaryError, color = Color(0xFFFF3B30), style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (index < ownedDomainAssets.lastIndex) Spacer(Modifier.height(8.dp))
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(100.dp))
         }
     }
 
@@ -1945,6 +2210,7 @@ fun ManageAddressesScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
     var showIdentityWarning by remember { mutableStateOf(false) }
     var activateIndex by remember { mutableStateOf<Int?>(null) }
     var qrAddress by remember { mutableStateOf<String?>(null) }
+    var withdrawEntry by remember { mutableStateOf<com.kachat.app.services.WalletService.SpendingAddressEntry?>(null) }
     var showActionsMenu by remember { mutableStateOf(false) }
     var showConsolidateConfirm by remember { mutableStateOf(false) }
     val pullRefreshState = rememberPullToRefreshState()
@@ -2122,6 +2388,17 @@ fun ManageAddressesScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                                 modifier = Modifier.size(20.dp)
                             )
                         }
+                        IconButton(
+                            onClick = { if (entry.balanceSompi > 0) withdrawEntry = entry },
+                            enabled = entry.balanceSompi > 0
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Withdraw from this address",
+                                tint = if (entry.balanceSompi > 0) KaspaTeal else Color.Gray,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -2219,6 +2496,117 @@ fun ManageAddressesScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
             }
         )
     }
+
+    withdrawEntry?.let { entry ->
+        var recipientInput by remember(entry) { mutableStateOf("") }
+        var amountInput by remember(entry) { mutableStateOf("") }
+        val isSending by viewModel.isSending.collectAsState()
+        val sendResult by viewModel.sendResult.collectAsState()
+
+        LaunchedEffect(sendResult) {
+            val result = sendResult ?: return@LaunchedEffect
+            if (result.isSuccess) {
+                Toast.makeText(context, "Withdrawal sent", Toast.LENGTH_SHORT).show()
+                withdrawEntry = null
+            } else {
+                Toast.makeText(context, result.exceptionOrNull()?.message ?: "Withdrawal failed", Toast.LENGTH_SHORT).show()
+            }
+            viewModel.clearSendResult()
+        }
+
+        val amountSompi = amountInput.toDoubleOrNull()?.let { Math.round(it * 100_000_000.0) }
+        val isValidAddress = remember(recipientInput) { KaspaAddress.isValid(recipientInput) }
+
+        AlertDialog(
+            onDismissRequest = { if (!isSending) withdrawEntry = null },
+            containerColor = Color(0xFF1C1C1E),
+            title = { Text("Withdraw From This Address", color = Color.White) },
+            text = {
+                Column {
+                    Text(entry.address, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = recipientInput,
+                        onValueChange = { recipientInput = it },
+                        label = { Text("Recipient address") },
+                        singleLine = true,
+                        enabled = !isSending,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = KaspaTeal,
+                            unfocusedBorderColor = Color.Gray,
+                            focusedLabelColor = KaspaTeal,
+                            unfocusedLabelColor = Color.Gray
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    TextButton(
+                        onClick = { clipboardManager.getText()?.text?.let { recipientInput = it.trim() } },
+                        enabled = !isSending
+                    ) {
+                        Text("Paste from Clipboard", color = KaspaTeal, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = amountInput,
+                        onValueChange = { amountInput = it },
+                        label = { Text("Amount (KAS)") },
+                        singleLine = true,
+                        enabled = !isSending,
+                        trailingIcon = {
+                            TextButton(
+                                onClick = {
+                                    val mass = com.kachat.app.util.KaspaMass.calculateMass(
+                                        numInputs = 1,
+                                        outputScriptLens = listOf(34, 34),
+                                        payloadSize = 0
+                                    )
+                                    val fee = com.kachat.app.util.KaspaMass.calculateFee(mass, com.kachat.app.util.KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
+                                    val maxSompi = (entry.balanceSompi - fee).coerceAtLeast(0L)
+                                    amountInput = "%.8f".format(java.util.Locale.US, maxSompi / 100_000_000.0)
+                                },
+                                enabled = !isSending
+                            ) {
+                                Text("Max", color = KaspaTeal)
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = KaspaTeal,
+                            unfocusedBorderColor = Color.Gray,
+                            focusedLabelColor = KaspaTeal,
+                            unfocusedLabelColor = Color.Gray
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text("Available: %.8f KAS".format(java.util.Locale.US, entry.balanceSompi / 100_000_000.0), color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    if (isSending) {
+                        Spacer(Modifier.height(12.dp))
+                        InscribeProgressRow("Sending...")
+                    }
+                }
+            },
+            confirmButton = {
+                val canSend = !isSending && isValidAddress && (amountSompi ?: 0) > 0
+                TextButton(
+                    onClick = { amountSompi?.let { viewModel.withdrawFromSpendingAddress(entry.index, recipientInput.trim(), it) } },
+                    enabled = canSend
+                ) {
+                    Text("Withdraw", color = if (canSend) KaspaTeal else Color.Gray, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                if (!isSending) {
+                    TextButton(onClick = { withdrawEntry = null }) {
+                        Text("Cancel", color = Color.Gray)
+                    }
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -2271,6 +2659,25 @@ fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
     val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) viewModel.setPendingAvatar(uri) }
     val bannerPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) viewModel.setPendingBanner(uri) }
 
+    var showSaveDialog by remember { mutableStateOf(false) }
+
+    // What "Save" is actually about to submit — each entry becomes its own on-chain commit/reveal
+    // transaction, so this doubles as both the confirm dialog's change list and its cost count.
+    val pendingChanges = remember(bio, x, website, telegram, discord, email, github, redirect, pendingAvatarUri, pendingBannerUri, knsProfile) {
+        buildList {
+            if (pendingAvatarUri != null) add("Avatar")
+            if (pendingBannerUri != null) add("Banner")
+            if (bio.trim() != (knsProfile?.bio ?: "")) add("Bio")
+            if (x.trim() != (knsProfile?.x ?: "")) add("X")
+            if (website.trim() != (knsProfile?.website ?: "")) add("Website")
+            if (telegram.trim() != (knsProfile?.telegram ?: "")) add("Telegram")
+            if (discord.trim() != (knsProfile?.discord ?: "")) add("Discord")
+            if (email.trim() != (knsProfile?.contactEmail ?: "")) add("Email")
+            if (github.trim() != (knsProfile?.github ?: "")) add("GitHub")
+            if (redirect.trim() != (knsProfile?.redirectUrl ?: "")) add("Redirect")
+        }
+    }
+
     val inFlight = editState.step !in listOf(
         WalletViewModel.EditProfileStep.IDLE,
         WalletViewModel.EditProfileStep.SUCCESS,
@@ -2290,23 +2697,10 @@ fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                 },
                 actions = {
                     TextButton(
-                        onClick = {
-                            viewModel.saveKnsProfile(
-                                mapOf(
-                                    "bio" to bio,
-                                    "x" to x,
-                                    "website" to website,
-                                    "telegram" to telegram,
-                                    "discord" to discord,
-                                    "contactEmail" to email,
-                                    "github" to github,
-                                    "redirectUrl" to redirect
-                                )
-                            )
-                        },
-                        enabled = !inFlight
+                        onClick = { if (pendingChanges.isNotEmpty()) showSaveDialog = true },
+                        enabled = !inFlight && pendingChanges.isNotEmpty()
                     ) {
-                        Text("Save", color = if (!inFlight) KaspaTeal else Color.Gray, fontWeight = FontWeight.Bold)
+                        Text("Save", color = if (!inFlight && pendingChanges.isNotEmpty()) KaspaTeal else Color.Gray, fontWeight = FontWeight.Bold)
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
@@ -2349,10 +2743,6 @@ fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                             }
                         }
                     }
-                    if (editState.step == WalletViewModel.EditProfileStep.UPLOADING_AVATAR) {
-                        Spacer(Modifier.height(8.dp))
-                        InscribeProgressRow("Uploading avatar...")
-                    }
                 }
             }
 
@@ -2382,10 +2772,6 @@ fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                             }
                         }
                     }
-                    if (editState.step == WalletViewModel.EditProfileStep.UPLOADING_BANNER) {
-                        Spacer(Modifier.height(8.dp))
-                        InscribeProgressRow("Uploading banner...")
-                    }
                 }
             }
 
@@ -2402,33 +2788,125 @@ fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                 }
             }
 
-            if (editState.step == WalletViewModel.EditProfileStep.SUBMITTING_FIELD) {
-                InscribeProgressRow("Submitting ${editState.currentFieldLabel}...")
-            }
-            if (editState.step == WalletViewModel.EditProfileStep.SUCCESS) {
+            Spacer(Modifier.height(60.dp))
+        }
+    }
+
+    if (showSaveDialog) {
+        val terminal = editState.step in listOf(
+            WalletViewModel.EditProfileStep.SUCCESS,
+            WalletViewModel.EditProfileStep.PARTIAL_FAILURE,
+            WalletViewModel.EditProfileStep.FAILED
+        )
+        fun closeDialog() {
+            showSaveDialog = false
+            viewModel.resetEditProfileState()
+        }
+        AlertDialog(
+            onDismissRequest = {
+                when (editState.step) {
+                    WalletViewModel.EditProfileStep.IDLE -> showSaveDialog = false
+                    else -> if (terminal) closeDialog()
+                }
+            },
+            containerColor = Color(0xFF1C1C1E),
+            title = {
                 Text(
-                    if (editState.fieldResults.isEmpty()) "Nothing to save." else "Saved.",
-                    color = Color(0xFF4CD964),
-                    fontWeight = FontWeight.Bold
+                    when (editState.step) {
+                        WalletViewModel.EditProfileStep.IDLE -> "Confirm Changes"
+                        WalletViewModel.EditProfileStep.SUCCESS -> "Saved"
+                        WalletViewModel.EditProfileStep.PARTIAL_FAILURE -> "Some Changes Failed"
+                        WalletViewModel.EditProfileStep.FAILED -> "Save Failed"
+                        else -> "Saving..."
+                    },
+                    color = Color.White
                 )
-            }
-            if (editState.step == WalletViewModel.EditProfileStep.PARTIAL_FAILURE) {
-                Column {
-                    Text("Some changes failed to save:", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
-                    editState.fieldResults.filter { !it.success }.forEach {
-                        Text("${it.fieldKey}: ${it.errorMessage ?: "failed"}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            },
+            text = {
+                when (editState.step) {
+                    WalletViewModel.EditProfileStep.IDLE -> Column {
+                        Text(
+                            "${pendingChanges.size} change${if (pendingChanges.size == 1) "" else "s"} — each is submitted as its own on-chain transaction from your spending address:",
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        pendingChanges.forEach { Text("• $it", color = Color.Gray, style = MaterialTheme.typography.bodySmall) }
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Each transaction temporarily uses ~2 KAS; ~1 KAS returns immediately as change — only the small network fee is a real cost.",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    WalletViewModel.EditProfileStep.UPLOADING_AVATAR,
+                    WalletViewModel.EditProfileStep.UPLOADING_BANNER,
+                    WalletViewModel.EditProfileStep.SUBMITTING_FIELD -> Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                        CircularProgressIndicator(color = KaspaTeal)
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            when (editState.step) {
+                                WalletViewModel.EditProfileStep.UPLOADING_AVATAR -> "Uploading avatar..."
+                                WalletViewModel.EditProfileStep.UPLOADING_BANNER -> "Uploading banner..."
+                                else -> "Submitting ${editState.currentFieldLabel}..."
+                            },
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    WalletViewModel.EditProfileStep.SUCCESS -> Text(
+                        if (editState.fieldResults.isEmpty()) "Nothing to save." else "All changes saved.",
+                        color = Color(0xFF4CD964),
+                        fontWeight = FontWeight.Bold
+                    )
+                    WalletViewModel.EditProfileStep.PARTIAL_FAILURE -> Column {
+                        Text("Some changes failed to save:", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                        editState.fieldResults.filter { !it.success }.forEach {
+                            Text("${it.fieldKey}: ${it.errorMessage ?: "failed"}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    WalletViewModel.EditProfileStep.FAILED -> Text(
+                        editState.fieldResults.firstOrNull { !it.success }?.errorMessage ?: "Save failed",
+                        color = Color(0xFFFF3B30)
+                    )
+                }
+            },
+            confirmButton = {
+                when (editState.step) {
+                    WalletViewModel.EditProfileStep.IDLE -> TextButton(
+                        onClick = {
+                            viewModel.saveKnsProfile(
+                                mapOf(
+                                    "bio" to bio,
+                                    "x" to x,
+                                    "website" to website,
+                                    "telegram" to telegram,
+                                    "discord" to discord,
+                                    "contactEmail" to email,
+                                    "github" to github,
+                                    "redirectUrl" to redirect
+                                )
+                            )
+                        }
+                    ) {
+                        Text("Confirm", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                    }
+                    WalletViewModel.EditProfileStep.SUCCESS,
+                    WalletViewModel.EditProfileStep.PARTIAL_FAILURE,
+                    WalletViewModel.EditProfileStep.FAILED -> TextButton(onClick = { closeDialog() }) {
+                        Text("Done", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                    }
+                    else -> {}
+                }
+            },
+            dismissButton = {
+                if (editState.step == WalletViewModel.EditProfileStep.IDLE) {
+                    TextButton(onClick = { showSaveDialog = false }) {
+                        Text("Cancel", color = Color.Gray)
                     }
                 }
             }
-            if (editState.step == WalletViewModel.EditProfileStep.FAILED) {
-                Text(
-                    editState.fieldResults.firstOrNull { !it.success }?.errorMessage ?: "Save failed",
-                    color = Color(0xFFFF3B30)
-                )
-            }
-
-            Spacer(Modifier.height(60.dp))
-        }
+        )
     }
 }
 
@@ -4224,17 +4702,68 @@ fun rememberQrBitmapPainter(
     return BitmapPainter(bitmap)
 }
 
-/** Full-bleed QR overlay over the current screen's content area — tap anywhere to dismiss. */
+/**
+ * Byte-mode QR encoding for raw binary payloads (e.g. a KSPT transaction frame) — ISO-8859-1 maps
+ * every byte 1:1 to a char and back, so wrapping [bytes] this way and forcing ZXing's
+ * `CHARACTER_SET` hint round-trips the exact bytes through its String-based encoder in byte mode,
+ * matching KasSigner's own raw-byte QR encoding (`qrcode::QrCode::new(&[u8])`) on the other end.
+ */
 @Composable
-fun QrCodeOverlay(value: String, onDismiss: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .clickable(onClick = onDismiss),
-        contentAlignment = Alignment.Center
-    ) {
-        val qrPainter = rememberQrBitmapPainter(value)
+fun rememberQrBitmapPainter(
+    bytes: ByteArray,
+    size: Int = 512,
+    padding: Int = 0
+): BitmapPainter {
+    val density = LocalDensity.current
+    val sizePx = with(density) { size.dp.roundToPx() }
+
+    val bitmap = remember(bytes) {
+        if (bytes.isEmpty()) {
+            Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888).asImageBitmap()
+        } else {
+            val content = String(bytes, Charsets.ISO_8859_1)
+            val matrix = QRCodeWriter().encode(
+                content,
+                BarcodeFormat.QR_CODE,
+                sizePx,
+                sizePx,
+                mapOf(EncodeHintType.MARGIN to padding, EncodeHintType.CHARACTER_SET to "ISO-8859-1")
+            )
+            val bmp = Bitmap.createBitmap(matrix.width, matrix.height, Bitmap.Config.ARGB_8888)
+            for (x in 0 until matrix.width) {
+                for (y in 0 until matrix.height) {
+                    bmp.setPixel(x, y, if (matrix.get(x, y)) AndroidColor.BLACK else AndroidColor.WHITE)
+                }
+            }
+            bmp.asImageBitmap()
+        }
+    }
+    return BitmapPainter(bitmap)
+}
+
+/**
+ * Cycles through [frames] at a fixed interval — the display half of KasSigner's animated multi-
+ * frame QR protocol (see [com.kachat.app.util.QrFrameChunker]). A single-frame list just renders
+ * a static code with no play/pause controls or frame counter.
+ */
+@Composable
+fun AnimatedQrDisplay(frames: List<ByteArray>, modifier: Modifier = Modifier, frameDelayMs: Long = 2500L) {
+    var frameIndex by remember(frames) { mutableStateOf(0) }
+    // Matches KasSee's own 2.5s auto-advance (kassee/web/js/app.js's displayKsptQr) — a scanning
+    // camera needs real time to lock onto and decode each frame; a faster cycle (this used to
+    // default to 200ms) skips past frames before the scanner ever catches them.
+    var isPlaying by remember(frames) { mutableStateOf(true) }
+
+    LaunchedEffect(frames, isPlaying) {
+        if (frames.size <= 1 || !isPlaying) return@LaunchedEffect
+        while (true) {
+            delay(frameDelayMs)
+            frameIndex = (frameIndex + 1) % frames.size
+        }
+    }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = modifier) {
+        val painter = rememberQrBitmapPainter(bytes = frames[frameIndex.coerceIn(frames.indices)])
         Box(
             modifier = Modifier
                 .size(280.dp)
@@ -4244,11 +4773,88 @@ fun QrCodeOverlay(value: String, onDismiss: () -> Unit) {
                 .padding(16.dp),
             contentAlignment = Alignment.Center
         ) {
-            Image(
-                painter = qrPainter,
-                contentDescription = "QR Code",
-                modifier = Modifier.fillMaxSize()
-            )
+            Image(painter = painter, contentDescription = "QR code", modifier = Modifier.fillMaxSize())
+        }
+        if (frames.size > 1) {
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                frames.indices.forEach { i ->
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(if (i == frameIndex) KaspaTeal else Color(0xFF2C2C2E))
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Manual stepping works whether playing or paused — tapping prev/next doesn't
+                // require pausing first, matching KasSee's own frame-nav buttons.
+                IconButton(onClick = { frameIndex = (frameIndex - 1 + frames.size) % frames.size }) {
+                    Icon(Icons.Default.SkipPrevious, "Previous frame", tint = KaspaTeal)
+                }
+                IconButton(onClick = { isPlaying = !isPlaying }) {
+                    Icon(
+                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        if (isPlaying) "Pause" else "Play",
+                        tint = KaspaTeal
+                    )
+                }
+                IconButton(onClick = { frameIndex = (frameIndex + 1) % frames.size }) {
+                    Icon(Icons.Default.SkipNext, "Next frame", tint = KaspaTeal)
+                }
+                Text("Frame ${frameIndex + 1} / ${frames.size}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+/** Full-bleed QR overlay over the current screen's content area — tap anywhere to dismiss. [message], if given, renders as a caption below the code (e.g. funding guidance). */
+@Composable
+fun QrCodeOverlay(
+    value: String,
+    onDismiss: () -> Unit,
+    message: String? = null,
+    borderColor: Color = KaspaTeal,
+    borderWidth: Dp = 2.dp
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            val qrPainter = rememberQrBitmapPainter(value)
+            Box(
+                modifier = Modifier
+                    .size(280.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color.White)
+                    .border(borderWidth, borderColor, RoundedCornerShape(20.dp))
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = qrPainter,
+                    contentDescription = "QR Code",
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            if (message != null) {
+                Spacer(Modifier.height(20.dp))
+                Text(
+                    text = message,
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .widthIn(max = 280.dp)
+                        .padding(horizontal = 16.dp)
+                )
+            }
         }
     }
 }

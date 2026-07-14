@@ -24,7 +24,6 @@ import kotlin.math.ceil
 @Singleton
 class KnsInscriptionEngine @Inject constructor(
     private val networkService: NetworkService,
-    private val walletManager: WalletManager,
     private val nodePoolManager: NodePoolManager,
     private val settings: AppSettingsRepository
 ) {
@@ -45,19 +44,25 @@ class KnsInscriptionEngine @Inject constructor(
         commitAmountSompi: Long,
         revealAmountSompi: Long,
         revealTargetAddress: String,
-        operationType: String
+        operationType: String,
+        fundingAddress: String,
+        fundingPrivateKey: ByteArray,
+        ownerPrivateKey: ByteArray
     ): CommitResult = mutex.withLock {
-        val fromAddress = walletManager.getAddress()
         val api = networkService.kaspaRestApi.value ?: throw IllegalStateException("Network service unavailable")
 
-        val hrp = fromAddress.substringBefore(":")
-        val xOnlyPubKey = Schnorr.publicKeyXOnly(walletManager.getPrivateKeyBytes())
+        // The redeem script's embedded pubkey is [ownerPrivateKey]'s (identity), not the funding
+        // key's — that's what the KNS indexer treats as the domain/profile's owner, and what the
+        // later reveal signature must satisfy. [fundingAddress]/[fundingPrivateKey] only pay for
+        // the commit output; they never touch ownership.
+        val hrp = fundingAddress.substringBefore(":")
+        val xOnlyPubKey = Schnorr.publicKeyXOnly(ownerPrivateKey)
         val redeemScript = KnsInscriptionScript.buildRedeemScript(xOnlyPubKey, "kns", payloadJson)
         val commitAddress = KnsInscriptionScript.commitAddress(redeemScript, hrp)
         val commitScriptPubKeyHex = KaspaAddress.getScriptPublicKey(commitAddress)
-        val changeScriptHex = KaspaAddress.getScriptPublicKey(fromAddress)
+        val changeScriptHex = KaspaAddress.getScriptPublicKey(fundingAddress)
 
-        val utxos = api.getUtxos(fromAddress)
+        val utxos = api.getUtxos(fundingAddress)
         if (utxos.isEmpty()) throw IllegalStateException("No spendable UTXOs available for KNS inscription")
 
         val feeRateSompiPerGram = fetchFeeRate(api)
@@ -85,13 +90,15 @@ class KnsInscriptionEngine @Inject constructor(
             inputs = selection.selectedUtxos.map { RawInput(previousOutpoint = it.outpoint, signatureScript = "") },
             outputs = outputs
         )
-        val signedTx = KaspaTransactionSigner.signTransaction(rawTx, selection.selectedUtxos, walletManager.getPrivateKeyBytes())
+        val signedTx = KaspaTransactionSigner.signTransaction(rawTx, selection.selectedUtxos, fundingPrivateKey)
         val commitTxId = nodePoolManager.getBroadcastConnection().submitTransaction(signedTx, allowOrphan = false)
 
         val result = CommitResult(commitTxId, redeemScript, commitScriptPubKeyHex, commitAmountSompi, revealAmountSompi)
 
         // Persist BEFORE attempting reveal — if reveal fails or the app dies here, the commit
-        // amount is still recoverable on next launch instead of silently stuck.
+        // amount is still recoverable on next launch instead of silently stuck. changeAddress is
+        // needed so a retry (possibly after the active spending address has since rotated) still
+        // returns the reveal's leftover change to the same address the commit was funded from.
         settings.setPendingKnsCommit(
             PendingKnsCommit(
                 commitTxId = commitTxId,
@@ -100,19 +107,24 @@ class KnsInscriptionEngine @Inject constructor(
                 commitAmountSompi = commitAmountSompi,
                 revealAmountSompi = revealAmountSompi,
                 revealTargetAddress = revealTargetAddress,
-                operationType = operationType
+                operationType = operationType,
+                changeAddress = fundingAddress
             )
         )
 
         result
     }
 
-    suspend fun buildAndSubmitReveal(commit: CommitResult, revealTargetAddress: String): String = mutex.withLock {
-        val fromAddress = walletManager.getAddress()
+    suspend fun buildAndSubmitReveal(
+        commit: CommitResult,
+        revealTargetAddress: String,
+        changeAddress: String,
+        ownerPrivateKey: ByteArray
+    ): String = mutex.withLock {
         val api = networkService.kaspaRestApi.value ?: throw IllegalStateException("Network service unavailable")
 
         val targetScriptHex = KaspaAddress.getScriptPublicKey(revealTargetAddress)
-        val changeScriptHex = KaspaAddress.getScriptPublicKey(fromAddress)
+        val changeScriptHex = KaspaAddress.getScriptPublicKey(changeAddress)
         val feeRateSompiPerGram = fetchFeeRate(api)
 
         val recipientOutput = if (commit.revealAmountSompi > 0) {
@@ -163,7 +175,7 @@ class KnsInscriptionEngine @Inject constructor(
         require(outputs.isNotEmpty()) { "KNS reveal transaction has no spendable outputs after fees" }
 
         val commitUtxo = UtxoEntry(
-            address = fromAddress,
+            address = changeAddress,
             outpoint = Outpoint(transactionId = commit.commitTxId, index = 0),
             utxoEntry = UtxoData(
                 amount = commit.commitAmountSompi,
@@ -177,7 +189,7 @@ class KnsInscriptionEngine @Inject constructor(
             inputs = listOf(RawInput(previousOutpoint = commitUtxo.outpoint, signatureScript = "")),
             outputs = outputs
         )
-        val signedTx = KaspaTransactionSigner.signRevealInput(rawTx, commitUtxo, commit.redeemScript, walletManager.getPrivateKeyBytes())
+        val signedTx = KaspaTransactionSigner.signRevealInput(rawTx, commitUtxo, commit.redeemScript, ownerPrivateKey)
 
         val connection = nodePoolManager.getBroadcastConnection()
         val revealTxId = try {

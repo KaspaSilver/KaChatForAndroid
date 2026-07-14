@@ -362,16 +362,28 @@ class WalletService @Inject constructor(
         val payloadJson = Gson().toJson(KnsCreateDomainPayload(op = "create", p = "domain", v = label)).toByteArray()
         val revealTarget = if (availability.isReservedDomain) myAddress else MAINNET_REVENUE_ADDRESS
 
+        // Registration/profile/transfer fees are paid from the spending-address chain, not the
+        // identity address — same "Pay in Kaspa" funding source as any other spend (see
+        // WalletManager's spending-address doc comment). Domain OWNERSHIP still lands on the
+        // identity address above (revealTarget for reserved domains, and the redeem script's
+        // embedded pubkey) — only the funding source and self-change move to spending.
+        val identityPrivateKey = walletManager.getPrivateKeyBytes()
+        val spendingAddress = walletManager.currentSpendingAddress()
+        val spendingPrivateKey = walletManager.currentSpendingPrivateKeyBytes()
+
         onStep(KnsInscribeStep.SUBMITTING_COMMIT)
         val commit = knsInscriptionEngine.buildAndSubmitCommit(
             payloadJson = payloadJson,
             commitAmountSompi = commitSompi,
             revealAmountSompi = revealSompi,
             revealTargetAddress = revealTarget,
-            operationType = "domain"
+            operationType = "domain",
+            fundingAddress = spendingAddress,
+            fundingPrivateKey = spendingPrivateKey,
+            ownerPrivateKey = identityPrivateKey
         )
         onStep(KnsInscribeStep.SUBMITTING_REVEAL)
-        val revealTxId = knsInscriptionEngine.buildAndSubmitReveal(commit, revealTarget)
+        val revealTxId = knsInscriptionEngine.buildAndSubmitReveal(commit, revealTarget, spendingAddress, identityPrivateKey)
 
         onStep(KnsInscribeStep.VERIFYING)
         val verified = verifyDomainOwnership(fullDomain, myAddress)
@@ -404,20 +416,28 @@ class WalletService @Inject constructor(
         val trimmedAssetId = assetId.trim()
         require(trimmedAssetId.isNotEmpty()) { "Missing KNS asset id" }
         val trimmedValue = value.trim()
-        val myAddress = walletManager.getAddress()
 
         val payloadJson = Gson().toJson(KnsAddProfilePayload(op = "addProfile", id = trimmedAssetId, key = fieldKey, value = trimmedValue)).toByteArray()
+
+        // Self-funded and self-returned — both the fee and the ~1 KAS reveal "change" come out of
+        // and back into the spending-address chain, same as inscribeDomain's funding source.
+        val identityPrivateKey = walletManager.getPrivateKeyBytes()
+        val spendingAddress = walletManager.currentSpendingAddress()
+        val spendingPrivateKey = walletManager.currentSpendingPrivateKeyBytes()
 
         onStep(KnsInscribeStep.SUBMITTING_COMMIT)
         val commit = knsInscriptionEngine.buildAndSubmitCommit(
             payloadJson = payloadJson,
             commitAmountSompi = PROFILE_COMMIT_SOMPI,
             revealAmountSompi = PROFILE_REVEAL_SOMPI,
-            revealTargetAddress = myAddress,
-            operationType = "profile"
+            revealTargetAddress = spendingAddress,
+            operationType = "profile",
+            fundingAddress = spendingAddress,
+            fundingPrivateKey = spendingPrivateKey,
+            ownerPrivateKey = identityPrivateKey
         )
         onStep(KnsInscribeStep.SUBMITTING_REVEAL)
-        val revealTxId = knsInscriptionEngine.buildAndSubmitReveal(commit, myAddress)
+        val revealTxId = knsInscriptionEngine.buildAndSubmitReveal(commit, spendingAddress, spendingAddress, identityPrivateKey)
 
         onStep(KnsInscribeStep.VERIFYING)
         val verified = verifyProfileField(trimmedAssetId, fieldKey, trimmedValue)
@@ -456,16 +476,26 @@ class WalletService @Inject constructor(
 
         val payloadJson = Gson().toJson(KnsTransferDomainPayload(op = "transfer", p = "domain", id = trimmedAssetId, to = toAddress)).toByteArray()
 
+        // Ownership moves via the payload's "to" field, authorized by the current owner's
+        // (identity) signature — the commit/reveal fee itself is just paid from spending, same as
+        // inscribeDomain/updateKnsProfileField.
+        val identityPrivateKey = walletManager.getPrivateKeyBytes()
+        val spendingAddress = walletManager.currentSpendingAddress()
+        val spendingPrivateKey = walletManager.currentSpendingPrivateKeyBytes()
+
         onStep(KnsInscribeStep.SUBMITTING_COMMIT)
         val commit = knsInscriptionEngine.buildAndSubmitCommit(
             payloadJson = payloadJson,
             commitAmountSompi = TRANSFER_COMMIT_SOMPI,
             revealAmountSompi = TRANSFER_REVEAL_SOMPI,
-            revealTargetAddress = myAddress,
-            operationType = "transfer"
+            revealTargetAddress = spendingAddress,
+            operationType = "transfer",
+            fundingAddress = spendingAddress,
+            fundingPrivateKey = spendingPrivateKey,
+            ownerPrivateKey = identityPrivateKey
         )
         onStep(KnsInscribeStep.SUBMITTING_REVEAL)
-        val revealTxId = knsInscriptionEngine.buildAndSubmitReveal(commit, myAddress)
+        val revealTxId = knsInscriptionEngine.buildAndSubmitReveal(commit, spendingAddress, spendingAddress, identityPrivateKey)
 
         onStep(KnsInscribeStep.VERIFYING)
         val verified = verifyDomainOwnership(fullDomain, toAddress)
@@ -515,7 +545,15 @@ class WalletService @Inject constructor(
             commitAmountSompi = pending.commitAmountSompi,
             revealAmountSompi = pending.revealAmountSompi
         )
-        val revealTxId = knsInscriptionEngine.buildAndSubmitReveal(commit, pending.revealTargetAddress)
+        // changeAddress falls back to the identity address for a commit persisted before that
+        // field existed — the reveal signature is always the identity key regardless (it has to
+        // match the redeem script's embedded pubkey from when the commit was originally built).
+        val revealTxId = knsInscriptionEngine.buildAndSubmitReveal(
+            commit,
+            pending.revealTargetAddress,
+            pending.changeAddress ?: walletManager.getAddress(),
+            walletManager.getPrivateKeyBytes()
+        )
         refreshBalance()
         return revealTxId
     }
