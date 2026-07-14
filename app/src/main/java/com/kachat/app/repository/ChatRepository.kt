@@ -483,7 +483,16 @@ class ChatRepository @Inject constructor(
         val payloadBytes = tx.payload?.hexToBytes() ?: ByteArray(0)
         if (MessageProtocol.isKaChatPayload(payloadBytes)) return // real message/handshake, not a plain payment
 
-        val sender = tx.inputs.firstOrNull()?.previousOutpointAddress ?: return
+        // Checks every input for a resolved address, not just the first — the REST API's
+        // resolve_previous_outpoints=light can leave an individual input's address unresolved
+        // (e.g. transient lookup gap) even when a later input in the same tx resolved fine.
+        // Previously this bailed out entirely on inputs[0] being unresolved, silently dropping
+        // an otherwise-valid received payment with no message, no contact, and no notification.
+        val sender = tx.inputs.firstNotNullOfOrNull { it.previousOutpointAddress }
+        if (sender == null) {
+            Log.w("ChatRepository", "Dropping payment ${tx.transactionId}: no input address resolved")
+            return
+        }
         if (sender == myAddress) return // our own outgoing transaction — already recorded locally at send time
 
         val receivedSompi = tx.outputs.filter { it.scriptPublicKeyAddress == myAddress }.sumOf { it.amount }
