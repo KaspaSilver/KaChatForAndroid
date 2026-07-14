@@ -45,7 +45,20 @@ object VoiceMessage {
             // Gson's reflection-based Kotlin deserialization doesn't honor non-null defaults for
             // JSON keys that are simply absent — a field declared non-null String can still come
             // back null at runtime, throwing an NPE on the checks above rather than a
-            // JsonSyntaxException, so this has to catch broadly, not just parse errors.
+            // JsonSyntaxException, so this has to catch broadly, not just parse errors. Logs the
+            // real exception + a shape summary (never the full payload) so a real-world parse
+            // failure is actually diagnosable instead of silently falling back to plain text.
+            // try/catch around the log call itself: android.util.Log isn't mocked in plain JUnit
+            // tests (throws instead of no-op'ing), and this same catch block above is legitimately
+            // hit for perfectly ordinary non-file JSON text, so it has to stay harmless there too.
+            try {
+                android.util.Log.w(
+                    "VoiceMessage",
+                    "parseOrNull failed: ${e.javaClass.simpleName}: ${e.message} | len=${text.length} tail=${text.takeLast(20)}"
+                )
+            } catch (loggingFailure: Throwable) {
+                // Ignored — see comment above.
+            }
             null
         }
     }

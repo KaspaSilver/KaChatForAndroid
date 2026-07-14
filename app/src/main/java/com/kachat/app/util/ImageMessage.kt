@@ -30,7 +30,24 @@ object ImageMessage {
             val parsed = gson.fromJson(text, VoiceMessageContent::class.java) ?: return null
             if (parsed.mimeType.startsWith("image/") && parsed.content.startsWith("data:")) parsed else null
         } catch (e: Exception) {
-            // Same reflection/non-null-default caveat as VoiceMessage.parseOrNull.
+            // Same reflection/non-null-default caveat as VoiceMessage.parseOrNull. Logs the real
+            // exception + a shape summary (never the full payload — could be tens of KB) so a
+            // real-world parse failure (e.g. a truncated/corrupted message from another client)
+            // is actually diagnosable instead of just falling back to a raw-text bubble with no
+            // trace of why. In particular, whether the tail looks like valid JSON (ends `"}`) is
+            // the fastest way to tell a truncated payload from a genuine structural mismatch.
+            // try/catch around the log call itself: android.util.Log isn't mocked in plain JUnit
+            // tests (throws instead of no-op'ing), and this same catch block above is legitimately
+            // hit for perfectly ordinary non-file JSON text (e.g. a user just typing `{"a":"b"}`),
+            // so it has to stay harmless there too, not just in tests.
+            try {
+                android.util.Log.w(
+                    "ImageMessage",
+                    "parseOrNull failed: ${e.javaClass.simpleName}: ${e.message} | len=${text.length} tail=${text.takeLast(20)}"
+                )
+            } catch (loggingFailure: Throwable) {
+                // Ignored — see comment above.
+            }
             null
         }
     }
