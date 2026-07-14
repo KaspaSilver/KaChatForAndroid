@@ -1653,18 +1653,26 @@ fun ProfileScreen(
                         Spacer(Modifier.width(8.dp))
                         Text("Manage Addresses", color = KaspaTeal, fontWeight = FontWeight.Bold)
                     }
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { navController.navigate("cold_storage") },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.QrCodeScanner, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Cold Storage Devices", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                    }
                 }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xFF1C1C1E))
+                    .clickable { navController.navigate("cold_storage") }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.QrCodeScanner, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    "Cold Storage Devices",
+                    color = Color.White,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
             }
 
             SettingsSection(title = "Info") {
