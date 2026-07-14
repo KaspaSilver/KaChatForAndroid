@@ -1,5 +1,7 @@
 package com.kachat.app.ui
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -232,22 +234,50 @@ fun MainShell(
             popEnterTransition = { fadeIn(animationSpec = tween(150)) },
             popExitTransition = { fadeOut(animationSpec = tween(150)) }
         ) {
-            composable(Screen.Settings.route) {
+            // The four bottom-tab destinations get an instant swap, overriding the NavHost-level
+            // 150ms fade above just for these routes — that fade is a good fit for pushed detail
+            // screens, but a tab bar's own instant selected-tint feedback reads as sluggish when
+            // paired with any fade on the content behind it, however short.
+            composable(
+                Screen.Settings.route,
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None }
+            ) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     SettingsScreen(navController, walletViewModel)
                 }
             }
-            composable(Screen.Chats.route) {
+            composable(
+                Screen.Chats.route,
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None }
+            ) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     ChatsScreen(navController, walletViewModel, chatViewModel = chatViewModel)
                 }
             }
-            composable(Screen.Portfolio.route) {
+            composable(
+                Screen.Portfolio.route,
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None }
+            ) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     PortfolioScreen(onBack = { navController.popBackStack() })
                 }
             }
-            composable(Screen.Profile.route) {
+            composable(
+                Screen.Profile.route,
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None }
+            ) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     ProfileScreen(
                         viewModel = walletViewModel,
