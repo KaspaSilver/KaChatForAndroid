@@ -1,5 +1,7 @@
 package com.kachat.app.ui
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -212,17 +214,40 @@ fun MainShell(
             navController = navController,
             startDestination = Screen.Chats.route
         ) {
-            composable(Screen.Settings.route) {
+            // The three bottom-tab destinations get an instant swap instead of NavHost's default
+            // 700ms cross-fade — that default reads as sluggish for a tab bar, where every other
+            // app (and the tab bar's own selected-tint feedback) switches immediately. Only these
+            // three routes are overridden; "pushed" detail screens (chat thread, settings
+            // sub-screens, etc.) keep the default transition, which fits that navigation style.
+            composable(
+                Screen.Settings.route,
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None }
+            ) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     SettingsScreen(navController, walletViewModel)
                 }
             }
-            composable(Screen.Chats.route) {
+            composable(
+                Screen.Chats.route,
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None }
+            ) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     ChatsScreen(navController, walletViewModel, chatViewModel = chatViewModel)
                 }
             }
-            composable(Screen.Profile.route) {
+            composable(
+                Screen.Profile.route,
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None }
+            ) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     ProfileScreen(
                         viewModel = walletViewModel,
