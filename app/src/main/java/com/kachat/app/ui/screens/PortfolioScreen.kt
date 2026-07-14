@@ -275,6 +275,13 @@ fun PortfolioScreen(
                 }
                 showAddDialog = false
                 editingTransaction = null
+            },
+            onDelete = existing?.let { tx ->
+                {
+                    viewModel.deleteTransaction(tx.id)
+                    showAddDialog = false
+                    editingTransaction = null
+                }
             }
         )
     }
@@ -528,7 +535,8 @@ private fun TransactionDialog(
     existing: PortfolioTransactionEntity?,
     currentPriceUsd: Double?,
     onDismiss: () -> Unit,
-    onSave: (type: String, amountKas: Double, fiatValue: Double, timestampMillis: Long, notes: String?) -> Unit
+    onSave: (type: String, amountKas: Double, fiatValue: Double, timestampMillis: Long, notes: String?) -> Unit,
+    onDelete: (() -> Unit)? = null
 ) {
     var isBuy by remember { mutableStateOf(existing?.let { it.type == "buy" } ?: true) }
     var quantityText by remember {
@@ -566,8 +574,15 @@ private fun TransactionDialog(
             Column(modifier = Modifier.padding(20.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text(if (existing != null) "Edit Transaction" else "Add Transaction", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.Close, "Close", tint = Color.Gray)
+                    Row {
+                        if (onDelete != null) {
+                            IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Delete, "Delete transaction", tint = Color(0xFFFF3B30))
+                            }
+                        }
+                        IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Default.Close, "Close", tint = Color.Gray)
+                        }
                     }
                 }
                 Spacer(Modifier.height(16.dp))
