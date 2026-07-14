@@ -1193,21 +1193,39 @@ fun AudioBubble(voiceContent: VoiceMessageContent, isSent: Boolean, onLongPress:
 
 /**
  * Decodes an incoming photo's raw bytes, trying [ImageDecoder] as a fallback if [BitmapFactory]
- * returns null. Both platforms only ever send plain JPEG chat photos now (see
- * `ImagePrep.prepareForChatMessage`'s doc comment for why AVIF was tried and removed), so this is
- * mostly future-proofing/defense-in-depth for any other format that could reach this decode path -
- * `ImageDecoder` has occasionally succeeded where `BitmapFactory` fails on the same bytes on some
- * OEM builds.
+ * returns null. Android and (as of the AVIF-removal fix) iOS only ever send plain JPEG chat photos
+ * now (see `ImagePrep.prepareForChatMessage`'s doc comment), but the real Kasia web client is a
+ * third-party project we don't control and its uploader actively prefers `image/webp` over JPEG
+ * whenever it's smaller — so a genuinely different format can still reach this decode path in
+ * practice, not just hypothetically. `ImageDecoder` has also occasionally succeeded where
+ * `BitmapFactory` fails on the same bytes on some OEM builds.
+ *
+ * On a decode failure (both attempts return null/throw), logs the declared [mimeType] plus the
+ * byte count and a hex dump of the first few bytes (where a format's magic header lives — e.g.
+ * JPEG starts `ffd8ff`, PNG `89504e47`, WebP `52494646....57454250` i.e. "RIFF....WEBP") so a real
+ * failure can actually be diagnosed from a logcat capture instead of just showing "Photo
+ * unavailable" with no trace of what the bytes even were.
  */
-private fun decodeIncomingPhotoBitmap(bytes: ByteArray): android.graphics.Bitmap? {
+private fun decodeIncomingPhotoBitmap(bytes: ByteArray, mimeType: String): android.graphics.Bitmap? {
     android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { return it }
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
-    return try {
-        val source = android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes))
-        android.graphics.ImageDecoder.decodeBitmap(source)
-    } catch (e: Exception) {
+    val fromImageDecoder = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
         null
+    } else {
+        try {
+            val source = android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes))
+            android.graphics.ImageDecoder.decodeBitmap(source)
+        } catch (e: Exception) {
+            null
+        }
     }
+    if (fromImageDecoder == null) {
+        val headerHex = bytes.take(16).joinToString("") { "%02x".format(it) }
+        android.util.Log.w(
+            "ImageBubble",
+            "Failed to decode photo: mimeType=$mimeType size=${bytes.size}B header=$headerHex sdk=${Build.VERSION.SDK_INT}"
+        )
+    }
+    return fromImageDecoder
 }
 
 /**
@@ -1265,7 +1283,7 @@ fun ImageBubble(
     val bitmap = remember(imageContent.content) {
         try {
             val bytes = android.util.Base64.decode(ImageMessage.base64Payload(imageContent), android.util.Base64.DEFAULT)
-            decodeIncomingPhotoBitmap(bytes)
+            decodeIncomingPhotoBitmap(bytes, imageContent.mimeType)
         } catch (e: Exception) {
             android.util.Log.e("ImageBubble", "Could not decode photo message", e)
             null
