@@ -76,13 +76,20 @@ data class ContactEntity(
 )
 
 /**
- * A tombstone marking that [contactId] was deleted (by this wallet) at [deletedAt] — survives
- * the contact's own row being deleted, unlike the old "archive" flag. `syncContextualMessages`/
+ * A tombstone marking that [contactId] was deleted (by this wallet), keyed by [deletedAt] —
+ * survives the contact's own row being deleted, unlike the old "archive" flag. `syncContextualMessages`/
  * `processHandshake` check this before ever re-inserting a message or recreating a contact: any
  * message or handshake with `blockTimestamp <= deletedAt` is skipped, so a full re-sync of that
  * sender's on-chain history (which the indexer always returns in full, not just "since last seen")
  * can't silently resurrect a deleted conversation. A genuinely new handshake sent *after*
  * [deletedAt] still creates a fresh contact/conversation normally.
+ *
+ * [deletedAt] MUST be in the indexer's block_time clock domain (the max blockTimestamp already
+ * seen for this contact — see ChatRepository.deleteChat), NOT the device's wall-clock time. Using
+ * wall-clock time here caused a real bug: reject a handshake, then immediately re-handshake the
+ * same person, and the brand new (legitimately later) handshake/reply could still get silently
+ * filtered out if the device clock was even slightly ahead of the indexer's block_time — the two
+ * clocks aren't the same and aren't guaranteed to agree on ordering close to the cutoff.
  */
 @Entity(tableName = "deleted_contacts", primaryKeys = ["contactId", "walletAddress"])
 data class DeletedContactEntity(
