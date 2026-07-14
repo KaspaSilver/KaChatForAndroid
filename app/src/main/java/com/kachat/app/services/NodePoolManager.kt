@@ -11,11 +11,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -98,6 +100,12 @@ class NodePoolManager @Inject constructor() {
     // shouldn't turn into a hot loop of lookups; matches iOS's periodic-not-per-cycle refresh.
     private val dnsResolveCooldownMillis = 60_000L
 
+    // Cycle cadence while the pool is below targetActiveNodes — see startProbing().
+    private val unhealthyRetryDelayMillis = 5_000L
+
+    // Per-hostname bound for resolveDnsSeedsIfNeeded()'s parallel lookups.
+    private val dnsLookupTimeoutMillis = 5_000L
+
     private var probeJob: Job? = null
 
     init {
@@ -110,7 +118,13 @@ class NodePoolManager @Inject constructor() {
         probeJob = scope.launch {
             while (true) {
                 probeCycle()
-                delay(30_000)
+                // While the pool hasn't reached a healthy active count yet (e.g. right after a
+                // fresh app launch, before any node has been confirmed reachable+synced), retry
+                // much sooner than the normal steady-state cadence — a flat 30s here meant a cold
+                // launch could sit on "Disconnected"/0 active for a full 30-90+ seconds even
+                // though a retry a few seconds later would very likely succeed.
+                val activeCount = registry.snapshot().count { registry.statusOf(it) == "Active" }
+                delay(if (activeCount < targetActiveNodes) unhealthyRetryDelayMillis else 30_000)
             }
         }
     }
@@ -123,32 +137,46 @@ class NodePoolManager @Inject constructor() {
      * the hardcoded [seeds] IPs above have no way to recover if they go stale/unreachable, so this
      * gives the pool an independent way to find fresh nodes without an app update. Cooldown-gated
      * so a run of unhealthy 30s probe cycles doesn't turn into a DNS-lookup hot loop.
+     *
+     * Looks up all hostnames in parallel, each bounded by [dnsLookupTimeoutMillis] — this used to
+     * be a sequential `for` loop calling the blocking `InetAddress.getAllByName` one hostname at a
+     * time with no timeout, which meant a single slow/hanging resolver lookup delayed every other
+     * hostname behind it, and — since this runs unconditionally on the very first probe cycle,
+     * gating node discovery on a cold launch — could stall the whole pool's first probe pass for
+     * many seconds before a single node was even attempted.
      */
     private suspend fun resolveDnsSeedsIfNeeded() {
         val now = System.currentTimeMillis()
         if (now - lastDnsResolveAt < dnsResolveCooldownMillis) return
         lastDnsResolveAt = now
-        for (hostname in dnsSeedHostnames) {
-            if (dnsResolvedEndpoints.size >= maxDnsResolvedEndpoints) break
-            try {
-                // Accept both IPv4 and IPv6 answers — on-device testing on an IPv6-heavy/NAT64
-                // network found these hostnames resolving almost entirely to AAAA records, so an
-                // IPv4-only filter (as iOS's resolveDNSSeed does, matching hints.ai_family =
-                // AF_INET) left this fallback with zero usable endpoints whenever the hardcoded
-                // IPv4 [seeds] were also down — exactly the permanently-red-dot scenario this
-                // fallback exists to prevent. IPv6 literals get bracketed for the gRPC target
-                // string, matching standard host:port authority syntax (RFC 3986).
-                java.net.InetAddress.getAllByName(hostname)
-                    .forEach { addr ->
-                        if (dnsResolvedEndpoints.size < maxDnsResolvedEndpoints) {
-                            val host = if (addr is java.net.Inet6Address) "[${addr.hostAddress}]" else addr.hostAddress
-                            dnsResolvedEndpoints.add("$host:$dnsSeedPort")
-                        }
+        val resolved = coroutineScope {
+            dnsSeedHostnames.map { hostname ->
+                async {
+                    try {
+                        withTimeoutOrNull(dnsLookupTimeoutMillis) {
+                            // Accept both IPv4 and IPv6 answers — on-device testing on an
+                            // IPv6-heavy/NAT64 network found these hostnames resolving almost
+                            // entirely to AAAA records, so an IPv4-only filter (as iOS's
+                            // resolveDNSSeed does, matching hints.ai_family = AF_INET) left this
+                            // fallback with zero usable endpoints whenever the hardcoded IPv4
+                            // [seeds] were also down. IPv6 literals get bracketed for the gRPC
+                            // target string, matching standard host:port authority syntax (RFC 3986).
+                            java.net.InetAddress.getAllByName(hostname).map { addr ->
+                                val host = if (addr is java.net.Inet6Address) "[${addr.hostAddress}]" else addr.hostAddress
+                                "$host:$dnsSeedPort"
+                            }
+                        } ?: emptyList()
+                    } catch (e: Exception) {
+                        // This seed's DNS lookup failed (resolver down, host unreachable, etc.) —
+                        // the cooldown above means all of them get retried again shortly.
+                        emptyList()
                     }
-            } catch (e: Exception) {
-                // This seed's DNS lookup failed (resolver down, host unreachable, etc.) — try
-                // the rest; the cooldown above means all of them get retried again shortly.
-            }
+                }
+            }.awaitAll()
+        }.flatten()
+        for (endpoint in resolved) {
+            if (dnsResolvedEndpoints.size >= maxDnsResolvedEndpoints) break
+            dnsResolvedEndpoints.add(endpoint)
         }
     }
 
