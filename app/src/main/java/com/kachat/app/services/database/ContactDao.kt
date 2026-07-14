@@ -37,8 +37,9 @@ interface ContactDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun markContactDeleted(marker: DeletedContactEntity)
 
-    @Query("SELECT deletedAt FROM deleted_contacts WHERE contactId = :contactId AND walletAddress = :walletAddress")
-    suspend fun getContactDeletedAt(contactId: String, walletAddress: String): Long?
+    /** Full tombstone row (not just [DeletedContactEntity.deletedAt]) — callers need [DeletedContactEntity.deletedAtTxIds] too, see ChatRepository.isTombstoned. */
+    @Query("SELECT * FROM deleted_contacts WHERE contactId = :contactId AND walletAddress = :walletAddress")
+    suspend fun getDeletedContact(contactId: String, walletAddress: String): DeletedContactEntity?
 
     /** Every deletion tombstone for this wallet, gone — used when wiping an entire account, so a same-address re-import later starts genuinely clean. */
     @Query("DELETE FROM deleted_contacts WHERE walletAddress = :walletAddress")

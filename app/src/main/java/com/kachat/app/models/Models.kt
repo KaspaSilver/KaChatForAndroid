@@ -78,11 +78,13 @@ data class ContactEntity(
 /**
  * A tombstone marking that [contactId] was deleted (by this wallet), keyed by [deletedAt] —
  * survives the contact's own row being deleted, unlike the old "archive" flag. `syncContextualMessages`/
- * `processHandshake` check this before ever re-inserting a message or recreating a contact: any
- * message or handshake with `blockTimestamp <= deletedAt` is skipped, so a full re-sync of that
- * sender's on-chain history (which the indexer always returns in full, not just "since last seen")
- * can't silently resurrect a deleted conversation. A genuinely new handshake sent *after*
- * [deletedAt] still creates a fresh contact/conversation normally.
+ * `processHandshake`/`processPayment` check this (via `ChatRepository.isTombstoned`) before ever
+ * re-inserting a message or recreating a contact, so a full re-sync of that sender's on-chain
+ * history (which the indexer/REST API always returns in full, not just "since last seen" —
+ * `syncPayments` in particular has no per-contact cursor and re-fetches the same recent
+ * transactions on every ~2s poll) can't silently resurrect a deleted conversation. A genuinely
+ * new handshake/message/payment sent *after* [deletedAt] still creates a fresh contact/conversation
+ * normally.
  *
  * [deletedAt] MUST be in the indexer's block_time clock domain (the max blockTimestamp already
  * seen for this contact — see ChatRepository.deleteChat), NOT the device's wall-clock time. Using
@@ -90,12 +92,21 @@ data class ContactEntity(
  * same person, and the brand new (legitimately later) handshake/reply could still get silently
  * filtered out if the device clock was even slightly ahead of the indexer's block_time — the two
  * clocks aren't the same and aren't guaranteed to agree on ordering close to the cutoff.
+ *
+ * [deletedAtTxIds] — comma-joined transaction/message ids that had `blockTimestamp == deletedAt`
+ * at the moment of deletion (usually just one). Needed because a plain `blockTime <= deletedAt`
+ * comparison isn't safe on its own: Kaspa's DAG-based block_time isn't strictly monotonic per
+ * sender, so a genuinely new, different transaction sent shortly after deletion can legitimately
+ * land at the exact same block_time as the tombstoned one and would otherwise be wrongly filtered
+ * out forever. `isTombstoned` only treats an exact `blockTime == deletedAt` match as "old" when the
+ * transaction id is also one of these — a different id at that same timestamp is treated as new.
  */
 @Entity(tableName = "deleted_contacts", primaryKeys = ["contactId", "walletAddress"])
 data class DeletedContactEntity(
     val contactId: String,
     val walletAddress: String,
-    val deletedAt: Long = System.currentTimeMillis()
+    val deletedAt: Long = System.currentTimeMillis(),
+    val deletedAtTxIds: String = ""
 )
 
 /**

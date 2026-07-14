@@ -31,7 +31,7 @@ import com.kachat.app.models.PortfolioTransactionEntity
         MessageSyncCursorEntity::class,
         PortfolioTransactionEntity::class,
     ],
-    version = 19,
+    version = 20,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {
@@ -131,6 +131,25 @@ abstract class KaChatDatabase : RoomDatabase() {
         val MIGRATION_18_19 = object : Migration(18, 19) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `contacts` ADD COLUMN `photoAutoDisplayOverride` TEXT DEFAULT NULL")
+            }
+        }
+
+        /**
+         * v19 -> v20: adds `deleted_contacts.deletedAtTxIds`, a comma-joined tie-breaker set of the
+         * transaction ids that shared the tombstone's exact `deletedAt` block_time — see
+         * [DeletedContactEntity.deletedAtTxIds]'s doc comment. Fixes a real bug: a plain
+         * `blockTime &lt;= deletedAt` comparison could wrongly filter out a genuinely new interaction
+         * from a re-contacted, previously-deleted sender whenever it happened to land at the exact
+         * same block_time as the deleted one (Kaspa's DAG-based block_time isn't strictly
+         * monotonic per sender) — most reproducible via a payment, since `syncPayments` has no
+         * per-contact cursor and re-checks the tombstone on every ~2s poll. Existing tombstone rows
+         * default to `''` (no tie-breaker ids), which is strictly safe: it only means an *old*
+         * tombstoned transaction that happens to be re-checked won't get the txId-match protection
+         * pre-upgrade — it still gets caught by the more common `blockTime &lt; deletedAt` branch.
+         */
+        val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `deleted_contacts` ADD COLUMN `deletedAtTxIds` TEXT NOT NULL DEFAULT ''")
             }
         }
     }

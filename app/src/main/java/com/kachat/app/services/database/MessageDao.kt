@@ -93,6 +93,15 @@ interface MessageDao {
     @Query("SELECT MAX(blockTimestamp) FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress")
     suspend fun getMaxBlockTimestampForContact(contactId: String, walletAddress: String): Long?
 
+    /**
+     * Every message id sharing this contact's exact latest blockTimestamp — read alongside
+     * [getMaxBlockTimestampForContact] by ChatRepository.deleteChat to build the tombstone's
+     * [com.kachat.app.models.DeletedContactEntity.deletedAtTxIds] tie-breaker set. See that field's
+     * doc comment for why an exact-timestamp match alone isn't a safe "this is the old tx" signal.
+     */
+    @Query("SELECT id FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress AND blockTimestamp = :blockTimestamp")
+    suspend fun getMessageIdsAtBlockTimestamp(contactId: String, walletAddress: String, blockTimestamp: Long): List<String>
+
     /** Every message for this wallet, gone — used when wiping an entire account. */
     @Query("DELETE FROM messages WHERE walletAddress = :walletAddress")
     suspend fun deleteAllForWallet(walletAddress: String)
