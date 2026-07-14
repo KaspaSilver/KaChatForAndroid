@@ -382,6 +382,13 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(24.dp)
+                // Without this, the "Account Name" field and "Generate Account" button below it
+                // (this Column has no scroll of its own — it relies on a weight(1f) spacer to push
+                // the button to the bottom) can end up rendered behind the keyboard on devices
+                // where edge-to-edge means windowSoftInputMode="adjustResize" alone doesn't shrink
+                // the window — Compose has to react to the IME inset itself.
+                .imePadding()
+                .verticalScroll(rememberScrollState())
         ) {
             // Back button
             IconButton(
@@ -512,7 +519,10 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                 singleLine = true
             )
 
-            Spacer(modifier = Modifier.weight(1f))
+            // A fixed gap, not weight(1f) — a scrollable Column (added above for imePadding to
+            // actually help) can't host a weight()'d child, since scrolling gives it unbounded
+            // height to measure against.
+            Spacer(modifier = Modifier.height(32.dp))
 
             // Generate button
             Button(
@@ -537,6 +547,8 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }
@@ -570,6 +582,10 @@ fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImporte
             modifier = Modifier
                 .fillMaxSize()
                 .padding(24.dp)
+                // Already scrollable, but without imePadding() the keyboard can still cover the
+                // "Account Name" field and "Import Account" button on devices where edge-to-edge
+                // means windowSoftInputMode="adjustResize" alone doesn't shrink the window.
+                .imePadding()
                 .verticalScroll(rememberScrollState())
         ) {
             IconButton(
