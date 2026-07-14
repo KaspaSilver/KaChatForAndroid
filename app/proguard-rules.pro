@@ -4,6 +4,17 @@
 -keepclassmembers class com.kachat.app.services.** { *; }
 -keepclassmembers class com.kachat.app.models.** { *; }
 
+# Same as above, for the Gson-deserialized inline-message envelopes that live in util instead of
+# models (VoiceMessageContent in VoiceMessage.kt/ImageMessage.kt, MessageReplyContent in
+# MessageReply.kt) — this package had no keep rule at all, so R8 was free to rename their fields
+# in release builds. Gson's reflection then couldn't match "mimeType"/"content"/etc. from incoming
+# JSON to the renamed fields, leaving them null even though the JSON genuinely had that data —
+# confirmed via device logcat: every incoming photo/voice message failed to parse with
+# "NullPointerException: Parameter specified as non-null is null" on an obfuscated method name,
+# rendering as a raw JSON/base64 text bubble instead of an image, in release builds only (debug
+# has isMinifyEnabled = false so this never reproduced there).
+-keepclassmembers class com.kachat.app.util.** { *; }
+
 # Gson: retain generic signatures of TypeToken and its (usually anonymous, e.g.
 # `object : TypeToken<List<Account>>() {}`) subclasses. Without this, R8 can merge/strip those
 # synthetic subclasses and drop the generic signature Gson reads at runtime, throwing
