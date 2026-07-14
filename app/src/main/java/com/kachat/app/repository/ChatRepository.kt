@@ -134,10 +134,20 @@ class ChatRepository @Inject constructor(
      */
     suspend fun deleteChat(contactId: String) {
         val myAddress = walletManager.getAddress()
+        // In blockTime clock domain, not wall-clock — see DeletedContactEntity's doc comment for
+        // why mixing clocks here previously caused a genuinely new re-handshake to get dropped.
+        val lastKnownBlockTime = database.messageDao().getMaxBlockTimestampForContact(contactId, myAddress)
         database.contactDao().markContactDeleted(
-            DeletedContactEntity(contactId = contactId, walletAddress = myAddress)
+            DeletedContactEntity(
+                contactId = contactId,
+                walletAddress = myAddress,
+                deletedAt = lastKnownBlockTime ?: System.currentTimeMillis()
+            )
         )
         database.messageDao().deleteAllForContact(contactId, myAddress)
+        // So a later re-handshake with this same address starts its indexer sync clean instead of
+        // resuming from a stale per-contact cursor left over from before the deletion.
+        database.messageDao().deleteSyncCursorsForContact(contactId, myAddress)
         database.contactDao().deleteContact(contactId, myAddress)
     }
 

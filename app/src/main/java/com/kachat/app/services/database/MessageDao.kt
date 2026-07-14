@@ -85,6 +85,14 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress")
     suspend fun deleteAllForContact(contactId: String, walletAddress: String)
 
+    /**
+     * The latest blockTimestamp already seen for this contact, if any — read by ChatRepository.deleteChat
+     * BEFORE deleting their messages, so the resulting tombstone's cutoff lives in the indexer's
+     * block_time clock domain rather than the device's wall clock. See DeletedContactEntity's doc comment.
+     */
+    @Query("SELECT MAX(blockTimestamp) FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress")
+    suspend fun getMaxBlockTimestampForContact(contactId: String, walletAddress: String): Long?
+
     /** Every message for this wallet, gone — used when wiping an entire account. */
     @Query("DELETE FROM messages WHERE walletAddress = :walletAddress")
     suspend fun deleteAllForWallet(walletAddress: String)
@@ -106,4 +114,8 @@ interface MessageDao {
     /** Resets every per-contact sync cursor for this wallet — used by "wipe and re-sync" so it actually re-fetches full history again instead of picking up where the (now-deleted) cache left off. */
     @Query("DELETE FROM message_sync_cursors WHERE walletAddress = :walletAddress")
     suspend fun deleteSyncCursorsForWallet(walletAddress: String)
+
+    /** Clears this one contact's sync cursors — used by ChatRepository.deleteChat so a later re-handshake with the same address starts its indexer sync clean instead of resuming from a stale cursor left over from before the deletion. */
+    @Query("DELETE FROM message_sync_cursors WHERE contactId = :contactId AND walletAddress = :walletAddress")
+    suspend fun deleteSyncCursorsForContact(contactId: String, walletAddress: String)
 }
