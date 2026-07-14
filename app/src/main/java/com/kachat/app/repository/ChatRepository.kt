@@ -137,11 +137,16 @@ class ChatRepository @Inject constructor(
         // In blockTime clock domain, not wall-clock — see DeletedContactEntity's doc comment for
         // why mixing clocks here previously caused a genuinely new re-handshake to get dropped.
         val lastKnownBlockTime = database.messageDao().getMaxBlockTimestampForContact(contactId, myAddress)
+        // Tie-breaker ids for isTombstoned — see DeletedContactEntity.deletedAtTxIds's doc comment.
+        val lastKnownTxIds = lastKnownBlockTime
+            ?.let { database.messageDao().getMessageIdsAtBlockTimestamp(contactId, myAddress, it) }
+            ?: emptyList()
         database.contactDao().markContactDeleted(
             DeletedContactEntity(
                 contactId = contactId,
                 walletAddress = myAddress,
-                deletedAt = lastKnownBlockTime ?: System.currentTimeMillis()
+                deletedAt = lastKnownBlockTime ?: System.currentTimeMillis(),
+                deletedAtTxIds = lastKnownTxIds.joinToString(",")
             )
         )
         database.messageDao().deleteAllForContact(contactId, myAddress)
@@ -149,6 +154,22 @@ class ChatRepository @Inject constructor(
         // resuming from a stale per-contact cursor left over from before the deletion.
         database.messageDao().deleteSyncCursorsForContact(contactId, myAddress)
         database.contactDao().deleteContact(contactId, myAddress)
+    }
+
+    /**
+     * True if [txId]/[blockTime] is the tombstoned pre-deletion transaction (or predates it) and
+     * should be filtered out of a re-sync, rather than a genuinely new interaction that happens to
+     * land at the same block_time — see [DeletedContactEntity.deletedAtTxIds]'s doc comment for why
+     * a plain `blockTime <= deletedAt` check isn't safe on its own against Kaspa's non-strictly-
+     * monotonic per-sender block_time.
+     */
+    private fun isTombstoned(deleted: DeletedContactEntity?, txId: String, blockTime: Long): Boolean {
+        if (deleted == null) return false
+        if (blockTime < deleted.deletedAt) return true
+        if (blockTime == deleted.deletedAt) {
+            return deleted.deletedAtTxIds.split(",").contains(txId)
+        }
+        return false
     }
 
     suspend fun addContact(contact: ContactEntity) {
@@ -309,8 +330,8 @@ class ChatRepository @Inject constructor(
         // contact (e.g. a fresh handshake after deletion) has no cursor yet, so that one fetch can
         // still surface the old pre-deletion handshake transaction if the indexer hasn't pruned it.
         // Only a handshake sent *after* the deletion creates a real contact/conversation.
-        val deletedAt = database.contactDao().getContactDeletedAt(handshake.sender, myAddress)
-        if (deletedAt != null && handshake.blockTime <= deletedAt) return
+        val deleted = database.contactDao().getDeletedContact(handshake.sender, myAddress)
+        if (isTombstoned(deleted, handshake.txId, handshake.blockTime)) return
 
         val encryptedBytes = handshake.messagePayload.hexToBytes()
         val encryptedMessage = KasiaCipher.EncryptedMessage.fromBytes(encryptedBytes) ?: return
@@ -360,7 +381,7 @@ class ChatRepository @Inject constructor(
             // See processHandshake's identical tombstone check — still needed even with the
             // block_time cursor below, since a newly re-created contact's first-ever sync has no
             // cursor yet and could otherwise surface old pre-deletion messages.
-            val deletedAt = database.contactDao().getContactDeletedAt(contact.id, myAddress)
+            val deleted = database.contactDao().getDeletedContact(contact.id, myAddress)
 
             // Legacy: the alias they told us in their handshake reply, if any. Deterministic:
             // derivable purely from both addresses, so it's always tryable even with no
@@ -386,7 +407,7 @@ class ChatRepository @Inject constructor(
                 for (message in messages) {
                     try {
                         if (database.messageDao().exists(message.txId, myAddress)) continue
-                        if (deletedAt != null && message.blockTime <= deletedAt) continue
+                        if (isTombstoned(deleted, message.txId, message.blockTime)) continue
                         processContextualMessage(myAddress, contact, message)
                     } catch (e: Exception) {
                         Log.w("ChatRepository", "Failed to process message ${message.txId}", e)
@@ -499,10 +520,16 @@ class ChatRepository @Inject constructor(
         if (receivedSompi <= 0) return
 
         // Same tombstone check as processHandshake/syncContextualMessages — an auto-detected
-        // payment can just as easily resurrect a deleted contact as a message can.
+        // payment can just as easily resurrect a deleted contact as a message can. This one
+        // matters especially here: syncPayments has no per-contact cursor, so it re-fetches the
+        // same recent transactions from the REST API on every ~2s poll — isTombstoned's txId
+        // tie-breaker is what stops a just-deleted payment contact from reappearing on the very
+        // next cycle, while still letting a genuinely new payment (that happens to land at the
+        // exact same block_time as the deleted one — Kaspa's DAG-based block_time isn't strictly
+        // monotonic per sender) through instead of being silently dropped forever.
         val blockTime = tx.blockTime ?: System.currentTimeMillis()
-        val deletedAt = database.contactDao().getContactDeletedAt(sender, myAddress)
-        if (deletedAt != null && blockTime <= deletedAt) return
+        val deleted = database.contactDao().getDeletedContact(sender, myAddress)
+        if (isTombstoned(deleted, tx.transactionId, blockTime)) return
 
         if (database.contactDao().getContact(sender, myAddress) == null) {
             database.contactDao().insert(ContactEntity(id = sender, walletAddress = myAddress, alias = null, knsName = null, publicKeyHex = null))
