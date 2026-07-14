@@ -1673,25 +1673,25 @@ fun ProfileScreen(
                 }
             }
 
-            SettingsSection(title = "Gift") {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Verified, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Gift already claimed", color = Color.Gray)
-                }
-            }
-
             SettingsSection(title = "Info") {
                 Row(
-                    modifier = Modifier.padding(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // spacedBy guarantees a minimum gap even when the two texts' combined width
+                    // fills the row — SpaceBetween alone degrades to zero gap in that case, which
+                    // on narrower screens made "Created" butt up directly against the date with
+                    // no visible space between them.
                     Text("Created", color = Color.White)
-                    Text("Apr 22, 2026 at 8:33 AM", color = Color.Gray)
+                    Text(
+                        "Apr 22, 2026 at 8:33 AM",
+                        color = Color.Gray,
+                        modifier = Modifier.weight(1f),
+                        textAlign = TextAlign.End
+                    )
                 }
             }
 
