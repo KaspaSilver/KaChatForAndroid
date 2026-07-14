@@ -3995,7 +3995,11 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
     }
     // "Verified" = currently reachable at all (Active or Suspect), a broader real count
     // than "Active" (Active additionally requires being in-sync and not recently failing).
-    val verifiedCount = allNodes.count { it.status == "Active" || it.status == "Suspect" }
+    // Excludes nodes that haven't been probed even once yet (latency == "—") — those also
+    // report as "Suspect" (see NodeRegistry.statusOf's lastProbe == null branch), but counting
+    // them as "Verified" is misleading: right after a fresh launch/DNS-seed resolution this made
+    // the whole pool look "Verified" before a single probe had actually completed.
+    val verifiedCount = allNodes.count { (it.status == "Active" || it.status == "Suspect") && it.latency != "—" }
 
     Scaffold(
         containerColor = Color.Black,
