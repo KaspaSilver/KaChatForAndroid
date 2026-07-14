@@ -21,7 +21,6 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
@@ -31,6 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -102,13 +103,21 @@ fun ColdStorageListScreen(navController: NavController, viewModel: ColdStorageVi
         },
         floatingActionButtonPosition = FabPosition.Center,
         floatingActionButton = {
-            LargeFloatingActionButton(
+            FloatingActionButton(
                 onClick = { showScanner = true },
                 containerColor = KaspaTeal,
                 contentColor = Color.Black,
-                shape = CircleShape
+                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier
+                    .height(56.dp)
+                    .widthIn(min = 120.dp)
             ) {
-                Icon(Icons.Default.QrCodeScanner, "Scan kpub from KasSigner", modifier = Modifier.size(36.dp))
+                Text(
+                    "Scan",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.semantics { contentDescription = "Scan kpub from KasSigner" }
+                )
             }
         }
     ) { padding ->
