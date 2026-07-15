@@ -450,7 +450,12 @@ fun MainShell(
             composable("manage_addresses") {
                 ManageAddressesScreen(
                     viewModel = walletViewModel,
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    // Reuses Cold Storage's transaction-history screen/route — its data fetch
+                    // (ColdStorageAddressDiscovery.getTransactionHistory) is keyed purely by
+                    // address string, nothing cold-storage-specific about it, so it works
+                    // identically for a regular spending address.
+                    onNavigateToTxHistory = { address -> navController.navigate("cold_storage_tx_history/$address") }
                 )
             }
 

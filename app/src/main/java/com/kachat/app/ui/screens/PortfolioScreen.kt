@@ -262,59 +262,65 @@ fun PortfolioTransactionsScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
                     }
                 },
-                actions = {
-                    Box {
-                        IconButton(onClick = { showCsvMenu = true }) {
-                            Icon(Icons.Default.ImportExport, "Import or export CSV", tint = KaspaTeal)
-                        }
-                        DropdownMenu(expanded = showCsvMenu, onDismissRequest = { showCsvMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Export CSV") },
-                                leadingIcon = { Icon(Icons.Default.FileDownload, null) },
-                                onClick = {
-                                    showCsvMenu = false
-                                    viewModel.exportCsv { uri ->
-                                        val intent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/csv"
-                                            putExtra(Intent.EXTRA_STREAM, uri)
-                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                        }
-                                        context.startActivity(Intent.createChooser(intent, "Export Portfolio CSV"))
-                                    }
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Import CSV") },
-                                leadingIcon = { Icon(Icons.Default.FileUpload, null) },
-                                onClick = {
-                                    showCsvMenu = false
-                                    importCsvLauncher.launch(arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*"))
-                                }
-                            )
-                        }
-                    }
-                },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
             )
         },
         floatingActionButtonPosition = FabPosition.Center,
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showAddDialog = true },
-                containerColor = KaspaTeal,
-                contentColor = Color.Black,
-                shape = RoundedCornerShape(28.dp),
-                modifier = Modifier
-                    .height(56.dp)
-                    .widthIn(min = 120.dp)
-            ) {
-                Text(
-                    "Add Transaction",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    modifier = Modifier.padding(horizontal = 20.dp)
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                FloatingActionButton(
+                    onClick = { showAddDialog = true },
+                    containerColor = KaspaTeal,
+                    contentColor = Color.Black,
+                    shape = RoundedCornerShape(28.dp),
+                    modifier = Modifier
+                        .height(56.dp)
+                        .widthIn(min = 120.dp)
+                ) {
+                    Text(
+                        "Add Transaction",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+                }
+                Box {
+                    FloatingActionButton(
+                        onClick = { showCsvMenu = true },
+                        containerColor = KaspaTeal,
+                        contentColor = Color.Black,
+                        shape = CircleShape,
+                        modifier = Modifier.size(56.dp)
+                    ) {
+                        Icon(Icons.Default.ImportExport, "Import or export CSV")
+                    }
+                    DropdownMenu(expanded = showCsvMenu, onDismissRequest = { showCsvMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Export CSV") },
+                            leadingIcon = { Icon(Icons.Default.FileDownload, null) },
+                            onClick = {
+                                showCsvMenu = false
+                                viewModel.exportCsv { uri ->
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/csv"
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(intent, "Export Portfolio CSV"))
+                                }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Import CSV") },
+                            leadingIcon = { Icon(Icons.Default.FileUpload, null) },
+                            onClick = {
+                                showCsvMenu = false
+                                importCsvLauncher.launch(arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*"))
+                            }
+                        )
+                    }
+                }
             }
         }
     ) { padding ->

@@ -1630,25 +1630,6 @@ fun ProfileScreen(
                 }
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1C1C1E))
-                    .clickable { navController.navigate("cold_storage") }
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.QrCodeScanner, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    "Cold Storage Devices",
-                    color = Color.White,
-                    modifier = Modifier.weight(1f)
-                )
-                Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
-            }
-
             SettingsSection(title = "Info") {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -2199,7 +2180,7 @@ fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ManageAddressesScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
+fun ManageAddressesScreen(viewModel: WalletViewModel, onBack: () -> Unit, onNavigateToTxHistory: (String) -> Unit = {}) {
     val identityAddress by viewModel.address.collectAsState()
     val addresses by viewModel.manageAddresses.collectAsState()
     val loading by viewModel.manageAddressesLoading.collectAsState()
@@ -2348,6 +2329,7 @@ fun ManageAddressesScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(Color(0xFF1C1C1E))
+                            .clickable { onNavigateToTxHistory(entry.address) }
                             .padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
