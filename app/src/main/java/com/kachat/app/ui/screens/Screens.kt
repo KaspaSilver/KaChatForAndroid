@@ -1736,7 +1736,11 @@ fun ProfileScreen(
         }
 
         if (showIdentityQr) {
-            QrCodeOverlay(value = address ?: "", onDismiss = { showIdentityQr = false })
+            QrCodeOverlay(
+                value = address ?: "",
+                onDismiss = { showIdentityQr = false },
+                message = "Just send 5-10 KAS at a time, that's plenty to cover chat fees for a while (about 500 messages per KAS)"
+            )
         }
         if (showSpendingQr) {
             QrCodeOverlay(value = spendingAddress ?: "", onDismiss = { showSpendingQr = false })
