@@ -1587,7 +1587,7 @@ fun ProfileScreen(
                     }
                     ProfileCircleAction(
                         icon = Icons.Default.QrCode,
-                        label = "Fund Identity Address For Chatting",
+                        label = "Fund Chatting Address",
                         modifier = Modifier.weight(1f)
                     ) {
                         address?.let { clipboardManager.setText(AnnotatedString(it)) }
@@ -1596,7 +1596,7 @@ fun ProfileScreen(
                 }
             }
 
-            CollapsibleAddressSection(title = "Identity Address", balance = balance) {
+            CollapsibleAddressSection(title = "Chatting Address", balance = balance) {
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                     Row(
                         modifier = Modifier
@@ -2324,7 +2324,7 @@ fun ManageAddressesScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Identity Address", color = Color.Gray, fontWeight = FontWeight.Bold)
+                        Text("Chatting Address", color = Color.Gray, fontWeight = FontWeight.Bold)
                         Text(
                             text = identityAddress ?: "Loading...",
                             color = Color.Gray,
@@ -2422,7 +2422,7 @@ fun ManageAddressesScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showIdentityWarning = false },
             containerColor = Color(0xFF1C1C1E),
-            title = { Text("Identity Address", color = Color.White) },
+            title = { Text("Chatting Address", color = Color.White) },
             text = {
                 Text(
                     "Never send Kaspa you intend to spend to this address.",
@@ -3729,7 +3729,7 @@ fun CollapsibleSettingsSection(
     }
 }
 
-/** A circular icon button with its label centered underneath — used in pairs on [ProfileScreen] (Accept Kaspa As Payment / Fund Identity Address For Chatting). */
+/** A circular icon button with its label centered underneath — used in pairs on [ProfileScreen] (Accept Kaspa As Payment / Fund Chatting Address). */
 @Composable
 private fun ProfileCircleAction(
     icon: ImageVector,
