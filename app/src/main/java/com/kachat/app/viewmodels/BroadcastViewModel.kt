@@ -84,15 +84,15 @@ class BroadcastViewModel @Inject constructor(
                 val activeName = KnsService.pickActiveDomain(ownedNames, null, primary)
                 _senderKnsNames.value = _senderKnsNames.value + (address to activeName)
 
-                // Avatar lookup is opt-in (see autoAvatarSearchEnabled) — an avatarUrl is an
-                // arbitrary attacker-controlled string, and fetching it just from a message
-                // rendering on screen (no user action) is a real tracking risk. Name resolution
-                // above carries no such risk (it only ever talks to KNS's own indexer, never an
+                // Avatar lookup is gated by showKnsAvatarsEnabled — an avatarUrl is an arbitrary
+                // attacker-controlled string, and fetching it just from a message rendering on
+                // screen (no user action) is a real tracking risk. Name resolution above carries
+                // no such risk (it only ever talks to KNS's own indexer, never an
                 // attacker-supplied URL), so it stays unconditional. The viewer's own address is
                 // always exempt from the gate — it's your own profile, so there's no attacker or
                 // tracking risk in fetching it, and your own picture should keep showing normally
                 // in broadcast rooms regardless of this setting.
-                if (!autoAvatarSearchEnabled.value && address != walletManager.getAddress()) return@launch
+                if (!showKnsAvatarsEnabled.value && address != walletManager.getAddress()) return@launch
 
                 // The active/primary domain's own profile might have no avatar even though a
                 // different domain the same address owns does — Edit Profile always writes
@@ -245,27 +245,16 @@ class BroadcastViewModel @Inject constructor(
         viewModelScope.launch { settings.setBroadcastPopularEnabled(enabled) }
     }
 
-    /** Whether senders' KNS profile pictures render in broadcast rooms — toggled from the same gear icon; off shows fallback initials for everyone instead. */
+    /**
+     * Whether senders' KNS profile pictures render in broadcast rooms, and whether
+     * [ensureSenderProfileFetched] is allowed to look up a sender's avatar at all — toggled from
+     * the same gear icon; off shows fallback initials for everyone and never fetches an avatar.
+     */
     val showKnsAvatarsEnabled: StateFlow<Boolean> = settings.broadcastShowKnsAvatars
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
     fun setShowKnsAvatarsEnabled(enabled: Boolean) {
         viewModelScope.launch { settings.setBroadcastShowKnsAvatars(enabled) }
-    }
-
-    /**
-     * Whether [ensureSenderProfileFetched] is allowed to look up a sender's avatar at all —
-     * separate from [showKnsAvatarsEnabled] above, which only controls whether an already-fetched
-     * URL gets rendered. A KNS avatarUrl is an arbitrary attacker-controlled string (see the
-     * comment on KEY_BROADCAST_AUTO_AVATAR_SEARCH), and the fetch fires just from a message
-     * rendering on screen with no user action — so this defaults to off, unlike the display-only
-     * toggle, and the settings UI should warn the user about the tracking risk before enabling it.
-     */
-    val autoAvatarSearchEnabled: StateFlow<Boolean> = settings.broadcastAutoAvatarSearch
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-
-    fun setAutoAvatarSearchEnabled(enabled: Boolean) {
-        viewModelScope.launch { settings.setBroadcastAutoAvatarSearch(enabled) }
     }
 
     /** The active account's hidden sender addresses — set via "Hide User" on a sender's avatar. */

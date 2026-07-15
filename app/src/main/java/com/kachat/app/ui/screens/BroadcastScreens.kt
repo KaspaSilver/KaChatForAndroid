@@ -84,12 +84,10 @@ fun BroadcastListScreen(
     val channels by broadcastViewModel.joinedChannels.collectAsState()
     val popularTabEnabled by broadcastViewModel.popularTabEnabled.collectAsState()
     val showKnsAvatarsEnabled by broadcastViewModel.showKnsAvatarsEnabled.collectAsState()
-    val autoAvatarSearchEnabled by broadcastViewModel.autoAvatarSearchEnabled.collectAsState()
     val hiddenSenderAddresses by broadcastViewModel.hiddenSenderAddresses.collectAsState()
     val joinState by broadcastViewModel.joinChannelState.collectAsState()
     var showJoinDialog by remember { mutableStateOf(false) }
     var showBroadcastSettingsDialog by remember { mutableStateOf(false) }
-    var showAutoAvatarWarningDialog by remember { mutableStateOf(false) }
     var channelInput by remember { mutableStateOf("") }
     var channelToLeave by remember { mutableStateOf<String?>(null) }
     var retentionSettingsChannelName by remember { mutableStateOf<String?>(null) }
@@ -515,7 +513,7 @@ fun BroadcastListScreen(
                             Text("KNS Profile Pictures", color = Color.White, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                "Shows senders' KNS avatars in rooms. Off shows plain initials for everyone instead.",
+                                "Shows senders' KNS avatars in rooms and looks them up automatically as messages appear. Off shows plain initials for everyone and never fetches avatars.",
                                 color = Color.Gray,
                                 fontSize = 12.sp
                             )
@@ -523,33 +521,6 @@ fun BroadcastListScreen(
                         Switch(
                             checked = showKnsAvatarsEnabled,
                             onCheckedChange = { broadcastViewModel.setShowKnsAvatarsEnabled(it) },
-                            colors = SwitchDefaults.colors(checkedThumbColor = KaspaTeal, checkedTrackColor = KaspaTeal.copy(alpha = 0.5f))
-                        )
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("Automatic Avatar Search", color = Color.White, fontWeight = FontWeight.SemiBold)
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                "Automatically looks up a sender's KNS avatar as soon as their message appears. Off by default — see warning if you enable it.",
-                                color = Color.Gray,
-                                fontSize = 12.sp
-                            )
-                        }
-                        Switch(
-                            checked = autoAvatarSearchEnabled,
-                            onCheckedChange = { enabling ->
-                                if (enabling) {
-                                    showAutoAvatarWarningDialog = true
-                                } else {
-                                    broadcastViewModel.setAutoAvatarSearchEnabled(false)
-                                }
-                            },
                             colors = SwitchDefaults.colors(checkedThumbColor = KaspaTeal, checkedTrackColor = KaspaTeal.copy(alpha = 0.5f))
                         )
                     }
@@ -569,36 +540,6 @@ fun BroadcastListScreen(
             confirmButton = {
                 TextButton(onClick = { showBroadcastSettingsDialog = false }) {
                     Text("Done", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                }
-            }
-        )
-    }
-
-    if (showAutoAvatarWarningDialog) {
-        AlertDialog(
-            onDismissRequest = { showAutoAvatarWarningDialog = false },
-            containerColor = Color(0xFF1C1C1E),
-            title = { Text("Enable Automatic Avatar Search?", color = Color.White, fontWeight = FontWeight.Bold) },
-            text = {
-                Text(
-                    "A sender's avatar picture can be set to any web address they choose, and this app would fetch it the moment their message appears on your screen — before you tap anything. " +
-                        "That means anyone who posts in a room you view can learn that you viewed it, roughly when, and your IP address, just from you opening the channel.\n\n" +
-                        "Only enable this if you're comfortable with senders in a room potentially detecting when you're viewing it.",
-                    color = Color.LightGray,
-                    fontSize = 13.sp
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    broadcastViewModel.setAutoAvatarSearchEnabled(true)
-                    showAutoAvatarWarningDialog = false
-                }) {
-                    Text("Enable Anyway", color = Color.Red, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAutoAvatarWarningDialog = false }) {
-                    Text("Cancel", color = KaspaTeal)
                 }
             }
         )

@@ -117,8 +117,7 @@ class DiagnosticsExportService @Inject constructor(
             "googleBackupEnabled" to settingsRepository.googleBackupEnabled.first().toString(),
             "backupRetention" to settingsRepository.backupRetention.first().name,
             "broadcastPopularEnabled" to settingsRepository.broadcastPopularEnabled.first().toString(),
-            "broadcastShowKnsAvatars" to settingsRepository.broadcastShowKnsAvatars.first().toString(),
-            "broadcastAutoAvatarSearch" to settingsRepository.broadcastAutoAvatarSearch.first().toString()
+            "broadcastShowKnsAvatars" to settingsRepository.broadcastShowKnsAvatars.first().toString()
         )
 
         return DiagnosticsArchive(
