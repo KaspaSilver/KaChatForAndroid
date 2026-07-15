@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.shape.CircleShape
@@ -25,9 +26,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -41,6 +46,7 @@ import com.kachat.app.ui.screens.*
 import com.kachat.app.ui.theme.KaspaTeal
 import com.kachat.app.viewmodels.WalletViewModel
 import com.kachat.app.viewmodels.ChatViewModel
+import kotlin.math.roundToInt
 
 /**
  * Top-level navigation destinations.
@@ -53,7 +59,7 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
     object Swap      : Screen("swap",      "Swap",      Icons.Default.SwapHoriz)
 }
 
-// All top-level tabs
+// All top-level tabs, in the app's default order.
 val bottomNavItems = listOf(
     Screen.Settings,
     Screen.Portfolio,
@@ -61,6 +67,20 @@ val bottomNavItems = listOf(
     Screen.Swap,
     Screen.Profile
 )
+
+/**
+ * Maps persisted route strings (from AppSettingsRepository.tabOrder) back to [Screen] objects,
+ * in that order. Any route no longer recognized (e.g. a tab removed in a future update) is
+ * dropped, and any [Screen] missing from the persisted list (e.g. a tab added since the user
+ * last reordered) is appended at the end — so neither a stale persisted value nor an app update
+ * can leave a tab permanently missing or crash on an unknown route.
+ */
+private fun resolveTabOrder(routes: List<String>): List<Screen> {
+    val byRoute = bottomNavItems.associateBy { it.route }
+    val resolved = routes.mapNotNull { byRoute[it] }
+    val missing = bottomNavItems.filter { it !in resolved }
+    return resolved + missing
+}
 
 /**
  * Root composable: bottom nav + NavHost.
@@ -113,6 +133,21 @@ fun MainShell(
         bottomNavItems.any { it.route == dest.route } || dest.route == "broadcasts" || dest.route == "broadcast_channel/{channelName}"
     } == true
 
+    // Press-and-hold a tab, then drag to reorder — the persisted order (WalletViewModel.tabOrder)
+    // is only written on drag end; localTabOrder is the live, possibly-mid-drag copy the Row
+    // actually renders from, reconciled back to the persisted order whenever it changes and no
+    // drag is in progress (so a fresh install / another device's order still applies normally).
+    val persistedTabOrder by walletViewModel.tabOrder.collectAsState()
+    var draggedScreen by remember { mutableStateOf<Screen?>(null) }
+    var dragOffsetX by remember { mutableStateOf(0f) }
+    var tabItemWidthPx by remember { mutableStateOf(0f) }
+    var localTabOrder by remember { mutableStateOf(resolveTabOrder(persistedTabOrder)) }
+    LaunchedEffect(persistedTabOrder) {
+        if (draggedScreen == null) {
+            localTabOrder = resolveTabOrder(persistedTabOrder)
+        }
+    }
+
     // Tapping a notification for a message/handshake/payment jumps straight to that
     // conversation, matching what a real chat app does — otherwise you'd land on the
     // chat list and have to go find it yourself.
@@ -159,59 +194,107 @@ fun MainShell(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceAround
                     ) {
-                        bottomNavItems.forEach { screen ->
-                            val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                        localTabOrder.forEach { screen ->
+                            // Keyed by route (not position) so a tab's drag gesture/animation
+                            // state stays attached to the same logical tab as the list reorders,
+                            // rather than to whichever position happens to render it.
+                            key(screen.route) {
+                                val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                                val isDragging = draggedScreen == screen
 
-                            Box(
-                                modifier = Modifier
-                                    .height(64.dp)
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(32.dp))
-                                    .clickable {
-                                        // Already there — do nothing. Without this guard, re-tapping the
-                                        // active tab still ran the popBackStack/navigate logic below, which
-                                        // for a tab with nothing "pushed" above it falls through to
-                                        // navigate() and lands back on the graph's start destination
-                                        // (Chats) instead of staying put.
-                                        if (selected) return@clickable
-
-                                        // Tapping back to the graph's start destination (Chats) from a
-                                        // "pushed" screen like Broadcasts via navigate()+popUpTo alone is
-                                        // silently a no-op in Navigation Compose — popBackStack to the
-                                        // route directly first (it's already on the back stack) actually
-                                        // pops it. Only fall back to navigate() when the tab isn't already
-                                        // present on the stack (first visit to a peer tab).
-                                        val poppedToExisting = navController.popBackStack(
-                                            route = screen.route,
-                                            inclusive = false,
-                                            saveState = true
-                                        )
-                                        if (!poppedToExisting) {
-                                            navController.navigate(screen.route) {
-                                                popUpTo(navController.graph.findStartDestination().id) {
-                                                    saveState = true
+                                Box(
+                                    modifier = Modifier
+                                        .height(64.dp)
+                                        .weight(1f)
+                                        .offset { IntOffset((if (isDragging) dragOffsetX else 0f).roundToInt(), 0) }
+                                        .zIndex(if (isDragging) 1f else 0f)
+                                        .onSizeChanged { tabItemWidthPx = it.width.toFloat() }
+                                        .clip(RoundedCornerShape(32.dp))
+                                        // Long-press then drag to reorder. Keyed on the route (stable
+                                        // across reorders) so this gesture detector isn't restarted
+                                        // mid-drag when localTabOrder itself changes — every state read
+                                        // inside the callbacks below is a live Compose State read, so
+                                        // there's no stale-closure risk from not re-keying on the list.
+                                        .pointerInput(screen.route) {
+                                            detectDragGesturesAfterLongPress(
+                                                onDragStart = {
+                                                    draggedScreen = screen
+                                                    dragOffsetX = 0f
+                                                },
+                                                onDrag = { change, dragAmount ->
+                                                    change.consume()
+                                                    dragOffsetX += dragAmount.x
+                                                    if (tabItemWidthPx <= 0f) return@detectDragGesturesAfterLongPress
+                                                    val current = localTabOrder.indexOf(screen)
+                                                    val slotShift = (dragOffsetX / tabItemWidthPx).roundToInt()
+                                                    if (slotShift == 0) return@detectDragGesturesAfterLongPress
+                                                    val target = (current + slotShift).coerceIn(0, localTabOrder.lastIndex)
+                                                    if (target != current) {
+                                                        localTabOrder = localTabOrder.toMutableList().apply {
+                                                            add(target, removeAt(current))
+                                                        }
+                                                        // Keeps the item moving continuously under the
+                                                        // finger instead of jumping after each slot swap.
+                                                        dragOffsetX -= slotShift * tabItemWidthPx
+                                                    }
+                                                },
+                                                onDragEnd = {
+                                                    draggedScreen = null
+                                                    dragOffsetX = 0f
+                                                    walletViewModel.setTabOrder(localTabOrder.map { it.route })
+                                                },
+                                                onDragCancel = {
+                                                    draggedScreen = null
+                                                    dragOffsetX = 0f
                                                 }
-                                                launchSingleTop = true
-                                                restoreState = true
-                                            }
+                                            )
                                         }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(
-                                        imageVector = screen.icon,
-                                        contentDescription = screen.label,
-                                        tint = if (selected) KaspaTeal else Color.White,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = screen.label,
-                                        color = if (selected) KaspaTeal else Color.White,
-                                        fontSize = 10.sp,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                                    )
+                                        .clickable {
+                                            // Already there — do nothing. Without this guard, re-tapping the
+                                            // active tab still ran the popBackStack/navigate logic below, which
+                                            // for a tab with nothing "pushed" above it falls through to
+                                            // navigate() and lands back on the graph's start destination
+                                            // (Chats) instead of staying put.
+                                            if (selected) return@clickable
+
+                                            // Tapping back to the graph's start destination (Chats) from a
+                                            // "pushed" screen like Broadcasts via navigate()+popUpTo alone is
+                                            // silently a no-op in Navigation Compose — popBackStack to the
+                                            // route directly first (it's already on the back stack) actually
+                                            // pops it. Only fall back to navigate() when the tab isn't already
+                                            // present on the stack (first visit to a peer tab).
+                                            val poppedToExisting = navController.popBackStack(
+                                                route = screen.route,
+                                                inclusive = false,
+                                                saveState = true
+                                            )
+                                            if (!poppedToExisting) {
+                                                navController.navigate(screen.route) {
+                                                    popUpTo(navController.graph.findStartDestination().id) {
+                                                        saveState = true
+                                                    }
+                                                    launchSingleTop = true
+                                                    restoreState = true
+                                                }
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            imageVector = screen.icon,
+                                            contentDescription = screen.label,
+                                            tint = if (selected) KaspaTeal else Color.White,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = screen.label,
+                                            color = if (selected) KaspaTeal else Color.White,
+                                            fontSize = 10.sp,
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    }
                                 }
                             }
                         }

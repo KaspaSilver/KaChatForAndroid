@@ -660,6 +660,14 @@ class WalletViewModel @Inject constructor(
     val pendingKnsCommit: StateFlow<PendingKnsCommit?> = settings.pendingKnsCommit
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
 
+    /** Route strings, in the user's chosen bottom-tab order — see AppSettingsRepository.tabOrder. */
+    val tabOrder: StateFlow<List<String>> = settings.tabOrder
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), AppSettingsRepository.DEFAULT_TAB_ORDER)
+
+    fun setTabOrder(routes: List<String>) {
+        viewModelScope.launch { settings.setTabOrder(routes) }
+    }
+
     private var previewJob: Job? = null
 
     /** Debounced live availability + fee-tier lookup as the user types a label — cancels any in-flight check for the previous label. */
