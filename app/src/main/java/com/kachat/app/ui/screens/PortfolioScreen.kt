@@ -574,15 +574,8 @@ private fun TransactionDialog(
             Column(modifier = Modifier.padding(20.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text(if (existing != null) "Edit Transaction" else "Add Transaction", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                    Row {
-                        if (onDelete != null) {
-                            IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Default.Delete, "Delete transaction", tint = Color(0xFFFF3B30))
-                            }
-                        }
-                        IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, "Close", tint = Color.Gray)
-                        }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Close, "Close", tint = Color.Gray)
                     }
                 }
                 Spacer(Modifier.height(16.dp))
@@ -705,6 +698,17 @@ private fun TransactionDialog(
                         color = if (isValid) Color.Black else Color.Gray,
                         fontWeight = FontWeight.Bold
                     )
+                }
+
+                if (onDelete != null) {
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = onDelete,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2E)),
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
+                    ) {
+                        Text("Delete Transaction", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
