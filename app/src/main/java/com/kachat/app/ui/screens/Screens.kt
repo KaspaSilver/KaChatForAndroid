@@ -1384,7 +1384,6 @@ fun ProfileScreen(
     var showAcceptPaymentQr by remember { mutableStateOf(false) }
     var showWithdrawDialog by remember { mutableStateOf(false) }
 
-    val ownedDomainAssets by viewModel.ownedDomainAssets.collectAsState()
     val knsInscribeState by viewModel.knsInscribeState.collectAsState()
     val pendingKnsCommit by viewModel.pendingKnsCommit.collectAsState()
 
@@ -1573,23 +1572,6 @@ fun ProfileScreen(
                         }
                     }
                 }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1C1C1E))
-                    .clickable { navController.navigate("kns_domains") }
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "KNS Domains (${ownedDomainAssets.size})",
-                    color = Color.White,
-                    modifier = Modifier.weight(1f)
-                )
-                Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
             }
 
             CollapsibleAddressSection(title = "Identity Address", balance = balance) {
@@ -1950,7 +1932,13 @@ fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                     .height(56.dp)
                     .widthIn(min = 120.dp)
             ) {
-                Text("Inscribe New Domain", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "Inscribe New Domain",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 20.dp)
+                )
             }
         }
     ) { padding ->
