@@ -1499,25 +1499,76 @@ fun ProfileScreen(
                             Spacer(Modifier.weight(1f))
                             Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
                         }
-                        val website = knsProfile?.website?.takeIf { it.isNotBlank() }
-                        if (website != null) {
+                        val knsProfileSnapshot = knsProfile
+                        val hasMoreInfo = knsProfileSnapshot != null && listOf(
+                            knsProfileSnapshot.bio, knsProfileSnapshot.x, knsProfileSnapshot.website, knsProfileSnapshot.telegram,
+                            knsProfileSnapshot.discord, knsProfileSnapshot.contactEmail, knsProfileSnapshot.github
+                        ).any { !it.isNullOrBlank() }
+                        if (hasMoreInfo) {
                             HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
-                            val context = LocalContext.current
+                        }
+                        var moreInfoExpanded by remember { mutableStateOf(false) }
+                        if (hasMoreInfo) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
-                                        val url = if (website.startsWith("http")) website else "https://$website"
-                                        try {
-                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                                        } catch (e: Exception) { /* no browser available */ }
-                                    }
+                                    .clickable { moreInfoExpanded = !moreInfoExpanded }
                                     .padding(16.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.Language, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(website, color = KaspaTeal, fontWeight = FontWeight.Bold)
+                                Text("More Info", color = KaspaTeal, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                Icon(
+                                    if (moreInfoExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = if (moreInfoExpanded) "Collapse" else "Expand",
+                                    tint = KaspaTeal
+                                )
+                            }
+                        }
+                        if (moreInfoExpanded) {
+                            HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                            val context = LocalContext.current
+                            val clipboardManager = LocalClipboardManager.current
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                knsProfile?.bio?.takeIf { it.isNotBlank() }?.let { bio ->
+                                    Text(
+                                        text = bio,
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.clickable { clipboardManager.setText(AnnotatedString(bio)) }
+                                    )
+                                    Spacer(Modifier.height(12.dp))
+                                    HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                                    Spacer(Modifier.height(12.dp))
+                                }
+
+                                val socialLinks = listOfNotNull(
+                                    knsProfile?.x?.takeIf { it.isNotBlank() }?.let { "X" to it },
+                                    knsProfile?.website?.takeIf { it.isNotBlank() }?.let { "Website" to it },
+                                    knsProfile?.telegram?.takeIf { it.isNotBlank() }?.let { "Telegram" to it },
+                                    knsProfile?.discord?.takeIf { it.isNotBlank() }?.let { "Discord" to it },
+                                    knsProfile?.contactEmail?.takeIf { it.isNotBlank() }?.let { "Email" to it },
+                                    knsProfile?.github?.takeIf { it.isNotBlank() }?.let { "GitHub" to it }
+                                )
+                                socialLinks.forEachIndexed { index, (label, value) ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                val url = if (value.startsWith("http")) value else "https://$value"
+                                                try {
+                                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                                } catch (e: Exception) { /* no browser available */ }
+                                            }
+                                            .padding(vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(label, color = Color.Gray, style = MaterialTheme.typography.bodyMedium)
+                                        Text(value, color = KaspaTeal, style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                    if (index < socialLinks.lastIndex) {
+                                        HorizontalDivider(color = Color.Black.copy(alpha = 0.2f))
+                                    }
+                                }
                             }
                         }
                     }
