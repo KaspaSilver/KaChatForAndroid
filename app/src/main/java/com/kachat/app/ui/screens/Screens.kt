@@ -1587,7 +1587,7 @@ fun ProfileScreen(
                     }
                     ProfileCircleAction(
                         icon = Icons.Default.QrCode,
-                        label = "Fund Chatting Address",
+                        label = "Fund Or Share Chatting Address",
                         modifier = Modifier.weight(1f)
                     ) {
                         address?.let { clipboardManager.setText(AnnotatedString(it)) }
