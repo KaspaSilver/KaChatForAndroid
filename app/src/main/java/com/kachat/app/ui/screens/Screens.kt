@@ -1721,6 +1721,7 @@ fun ProfileScreen(
             QrCodeOverlay(
                 value = spendingAddress ?: "",
                 onDismiss = { showAcceptPaymentQr = false },
+                message = "Only accept Kaspa you intend to use as money.",
                 borderColor = Color(0xFF4CD964),
                 borderWidth = 4.dp
             )
