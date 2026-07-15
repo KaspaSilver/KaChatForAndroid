@@ -1934,6 +1934,7 @@ fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
             )
         },
+        floatingActionButtonPosition = FabPosition.Center,
         floatingActionButton = {
             FloatingActionButton(
                 onClick = {
@@ -1944,9 +1945,12 @@ fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                 },
                 containerColor = KaspaTeal,
                 contentColor = Color.Black,
-                shape = CircleShape
+                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier
+                    .height(56.dp)
+                    .widthIn(min = 120.dp)
             ) {
-                Icon(Icons.Default.AddCircleOutline, "Inscribe new domain")
+                Text("Inscribe New Domain", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
         }
     ) { padding ->
