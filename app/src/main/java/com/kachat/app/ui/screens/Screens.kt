@@ -42,6 +42,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -772,6 +773,10 @@ private fun UnnotifiedMessageBanner() {
     }
 }
 
+/** See the truncation check inside [MessageBubble]'s plain-text branch for why this exists. */
+private const val MESSAGE_TEXT_TRUNCATION_THRESHOLD = 2_000
+private const val MESSAGE_TEXT_PREVIEW_LENGTH = 500
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MessageBubble(
@@ -978,47 +983,90 @@ fun MessageBubble(
                 )
             } else {
                 val bodyText = displayBody ?: ""
-                val uriHandler = LocalUriHandler.current
-                var textLayoutResult by remember(bodyText) { mutableStateOf<TextLayoutResult?>(null) }
-                // Sent bubbles are teal (matching broadcast rooms' sent-message color) with black
-                // text/links for contrast — a teal link on a teal background would be unreadable.
-                val linkColor = if (isSent) Color.Black else KaspaTeal
-                val annotatedBody = remember(bodyText, isSent) {
-                    buildAnnotatedString {
-                        append(bodyText)
-                        for (match in TextLinkify.findUrls(bodyText)) {
-                            addStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline), match.range.first, match.range.last + 1)
-                            addStringAnnotation("URL", match.uri, match.range.first, match.range.last + 1)
+
+                // Above this, render a truncated tap-to-expand preview instead of laying out the
+                // full text inline - matches iMessage's behavior for very long messages, and
+                // specifically guards against a huge wall of text (e.g. raw base64 that ended up
+                // as plain message content instead of being recognized as a file/image envelope)
+                // making the whole chat scroll janky. Checked before running TextLinkify.findUrls
+                // below, since scanning a huge string for links is itself wasted work here.
+                if (bodyText.length > MESSAGE_TEXT_TRUNCATION_THRESHOLD) {
+                    var showFullText by remember { mutableStateOf(false) }
+                    Surface(
+                        color = if (isSent) KaspaTeal else Color(0xFF1C1C1E),
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier
+                            .widthIn(max = 280.dp)
+                            .combinedClickable(
+                                onClick = { showFullText = true },
+                                onLongClick = { showMenu = true },
+                                onDoubleClick = onReply
+                            )
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                            Text(
+                                text = bodyText.take(MESSAGE_TEXT_PREVIEW_LENGTH) + "…",
+                                color = if (isSent) Color.Black else Color.White
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "Show More",
+                                color = if (isSent) Color.Black.copy(alpha = 0.75f) else KaspaTeal,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
+                            )
                         }
                     }
-                }
-                Surface(
-                    color = if (isSent) KaspaTeal else Color(0xFF1C1C1E),
-                    shape = RoundedCornerShape(20.dp),
-                    // Without a cap, a long message claims the outer Row's full width before the
-                    // avatar sibling ever gets measured, pushing the avatar off-screen entirely —
-                    // matches the same 280.dp cap broadcast rooms' equivalent bubble already uses.
-                    modifier = Modifier.widthIn(max = 280.dp)
-                ) {
-                    Text(
-                        text = annotatedBody,
-                        modifier = Modifier
-                            .padding(horizontal = 16.dp, vertical = 10.dp)
-                            .pointerInput(annotatedBody) {
-                                detectTapGestures(
-                                    onLongPress = { showMenu = true },
-                                    onDoubleTap = { onReply() },
-                                    onTap = { offset ->
-                                        val layout = textLayoutResult ?: return@detectTapGestures
-                                        val charOffset = layout.getOffsetForPosition(offset)
-                                        annotatedBody.getStringAnnotations("URL", charOffset, charOffset)
-                                            .firstOrNull()?.let { uriHandler.openUri(it.item) }
-                                    }
-                                )
-                            },
-                        onTextLayout = { textLayoutResult = it },
-                        color = if (isSent) Color.Black else Color.White
-                    )
+                    if (showFullText) {
+                        FullMessageTextDialog(
+                            text = bodyText,
+                            onDismiss = { showFullText = false },
+                            onCopy = { clipboardManager.setText(AnnotatedString(bodyText)) }
+                        )
+                    }
+                } else {
+                    val uriHandler = LocalUriHandler.current
+                    var textLayoutResult by remember(bodyText) { mutableStateOf<TextLayoutResult?>(null) }
+                    // Sent bubbles are teal (matching broadcast rooms' sent-message color) with black
+                    // text/links for contrast — a teal link on a teal background would be unreadable.
+                    val linkColor = if (isSent) Color.Black else KaspaTeal
+                    val annotatedBody = remember(bodyText, isSent) {
+                        buildAnnotatedString {
+                            append(bodyText)
+                            for (match in TextLinkify.findUrls(bodyText)) {
+                                addStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline), match.range.first, match.range.last + 1)
+                                addStringAnnotation("URL", match.uri, match.range.first, match.range.last + 1)
+                            }
+                        }
+                    }
+                    Surface(
+                        color = if (isSent) KaspaTeal else Color(0xFF1C1C1E),
+                        shape = RoundedCornerShape(20.dp),
+                        // Without a cap, a long message claims the outer Row's full width before the
+                        // avatar sibling ever gets measured, pushing the avatar off-screen entirely —
+                        // matches the same 280.dp cap broadcast rooms' equivalent bubble already uses.
+                        modifier = Modifier.widthIn(max = 280.dp)
+                    ) {
+                        Text(
+                            text = annotatedBody,
+                            modifier = Modifier
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                                .pointerInput(annotatedBody) {
+                                    detectTapGestures(
+                                        onLongPress = { showMenu = true },
+                                        onDoubleTap = { onReply() },
+                                        onTap = { offset ->
+                                            val layout = textLayoutResult ?: return@detectTapGestures
+                                            val charOffset = layout.getOffsetForPosition(offset)
+                                            annotatedBody.getStringAnnotations("URL", charOffset, charOffset)
+                                                .firstOrNull()?.let { uriHandler.openUri(it.item) }
+                                        }
+                                    )
+                                },
+                            onTextLayout = { textLayoutResult = it },
+                            color = if (isSent) Color.Black else Color.White
+                        )
+                    }
                 }
             }
 
@@ -1101,6 +1149,45 @@ fun MessageBubble(
             Spacer(Modifier.width(8.dp))
             ContactAvatar(imageUrl = myAvatarUrl, fallbackText = myAvatarFallback, size = 32.dp)
         }
+        }
+    }
+}
+
+/**
+ * Full text of a message too long to render inline (see [MESSAGE_TEXT_TRUNCATION_THRESHOLD]) - a
+ * full-screen scrollable, selectable text view, matching iMessage's "tap to see more" behavior.
+ */
+@Composable
+private fun FullMessageTextDialog(text: String, onDismiss: () -> Unit, onCopy: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("Done", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+                Text("Message", color = Color.White, fontWeight = FontWeight.Bold)
+                IconButton(onClick = onCopy) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = KaspaTeal)
+                }
+            }
+            HorizontalDivider(color = Color.DarkGray.copy(alpha = 0.5f))
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp)
+            ) {
+                SelectionContainer {
+                    Text(text, color = Color.White, style = MaterialTheme.typography.bodyLarge)
+                }
+            }
         }
     }
 }
