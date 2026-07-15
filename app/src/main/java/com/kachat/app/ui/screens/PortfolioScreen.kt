@@ -26,7 +26,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -373,7 +372,6 @@ private fun PriceChartCard(
 ) {
     var canvasWidthPx by remember { mutableStateOf(0) }
     var selectedIndex by remember { mutableStateOf<Int?>(null) }
-    var showRangeMenu by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -382,29 +380,23 @@ private fun PriceChartCard(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box {
-            Row(
-                modifier = Modifier.clickable { showRangeMenu = true },
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Price (${priceRangeLabel(selectedRangeDays)})",
-                    color = Color.Gray,
-                    fontSize = 12.sp
-                )
-                Icon(Icons.Default.ArrowDropDown, null, tint = Color.Gray, modifier = Modifier.size(16.dp))
-            }
-            DropdownMenu(expanded = showRangeMenu, onDismissRequest = { showRangeMenu = false }) {
-                listOf(1 to "1 Day", 7 to "1 Week", 30 to "30 Days").forEach { (days, label) ->
-                    DropdownMenuItem(
-                        text = { Text(label) },
-                        onClick = {
-                            showRangeMenu = false
-                            onRangeSelected(days)
-                        }
-                    )
+        Row(
+            modifier = Modifier.clickable {
+                // Cycles 1 -> 7 -> 30 -> 1 day...
+                val nextDays = when (selectedRangeDays) {
+                    1 -> 7
+                    7 -> 30
+                    else -> 1
                 }
-            }
+                onRangeSelected(nextDays)
+            },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Price (${priceRangeLabel(selectedRangeDays)})",
+                color = Color.Gray,
+                fontSize = 12.sp
+            )
         }
         Spacer(Modifier.width(12.dp))
         val minPrice = priceHistory.minOf { it.second }
