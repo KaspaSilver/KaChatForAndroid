@@ -21,18 +21,23 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.material.icons.filled.MonetizationOn
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.TrendingDown
 import androidx.compose.material.icons.filled.TrendingUp
@@ -72,6 +77,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
@@ -81,6 +87,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.NavController
 import com.kachat.app.models.PortfolioTransactionEntity
 import com.kachat.app.ui.theme.KaspaTeal
 import com.kachat.app.viewmodels.PortfolioSummary
@@ -123,21 +130,109 @@ private fun priceRangeLabel(days: Int): String = when (days) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PortfolioScreen(
-    onBack: () -> Unit,
+    navController: NavController,
     viewModel: PortfolioViewModel = hiltViewModel()
 ) {
-    val transactions by viewModel.transactions.collectAsState()
     val currentPriceUsd by viewModel.currentPriceUsd.collectAsState()
     val priceHistory by viewModel.priceHistory.collectAsState()
     val priceRangeDays by viewModel.priceRangeDays.collectAsState()
     val valueHistory by viewModel.valueHistory.collectAsState()
     val summary by viewModel.summary.collectAsState()
-    val context = LocalContext.current
-    var showAddDialog by remember { mutableStateOf(false) }
-    var editingTransaction by remember { mutableStateOf<PortfolioTransactionEntity?>(null) }
     // (timestamp, price) while scrubbing the price sparkline above, null otherwise — lifted up
     // here (rather than kept local to PriceChartCard) since the summary card below needs it too.
     var scrubbedPrice by remember { mutableStateOf<Pair<Long, Double>?>(null) }
+
+    Scaffold(
+        containerColor = Color.Black,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("Portfolio", color = Color.White, fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { viewModel.refreshPrice() }) {
+                        Icon(Icons.Default.Refresh, "Refresh price", tint = KaspaTeal)
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            PortfolioSummaryCard(summary = summary, currentPriceUsd = currentPriceUsd, scrubbedPrice = scrubbedPrice)
+            if (priceHistory.size >= 2) {
+                PriceChartCard(
+                    priceHistory = priceHistory,
+                    onScrub = { scrubbedPrice = it },
+                    selectedRangeDays = priceRangeDays,
+                    onRangeSelected = { viewModel.setPriceRangeDays(it) }
+                )
+            }
+            if (valueHistory.size >= 2) {
+                PortfolioValueChartCard(valueHistory = valueHistory)
+            }
+            PortfolioNavRow(
+                icon = Icons.Default.Receipt,
+                label = "Transactions",
+                onClick = { navController.navigate("portfolio_transactions") }
+            )
+            PortfolioNavRow(
+                icon = Icons.Default.QrCodeScanner,
+                label = "Cold Storage Devices",
+                onClick = { navController.navigate("cold_storage") }
+            )
+        }
+    }
+}
+
+/** Dark rounded-card row with a chevron — matches the "Cold Storage Devices" row style used elsewhere (Profile, Edit KNS Profile's Domains box). */
+@Composable
+private fun PortfolioNavRow(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color(0xFF1C1C1E))
+            .clickable(onClick = onClick)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(label, color = Color.White, modifier = Modifier.weight(1f))
+        Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+    }
+}
+
+/**
+ * The transaction ledger, broken out from the main Portfolio screen (which now just links here)
+ * so that screen can stay focused on price/value at a glance — this owns the list, CSV import/
+ * export, and the add/edit/delete dialog. Shares PortfolioScreen's own PortfolioViewModel
+ * instance (see KaChatApp.kt's "portfolio_transactions" route) rather than a fresh one, so a
+ * transaction added/edited/deleted here is immediately reflected in the summary card and charts
+ * back on Portfolio without a redundant re-fetch.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PortfolioTransactionsScreen(
+    onBack: () -> Unit,
+    viewModel: PortfolioViewModel = hiltViewModel()
+) {
+    val transactions by viewModel.transactions.collectAsState()
+    val currentPriceUsd by viewModel.currentPriceUsd.collectAsState()
+    val context = LocalContext.current
+    var showAddDialog by remember { mutableStateOf(false) }
+    var editingTransaction by remember { mutableStateOf<PortfolioTransactionEntity?>(null) }
     var showCsvMenu by remember { mutableStateOf(false) }
 
     val importCsvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -156,16 +251,13 @@ fun PortfolioScreen(
         containerColor = Color.Black,
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("Portfolio", color = Color.White, fontWeight = FontWeight.Bold) },
+                title = { Text("Transactions", color = Color.White, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.refreshPrice() }) {
-                        Icon(Icons.Default.Refresh, "Refresh price", tint = KaspaTeal)
-                    }
                     Box {
                         IconButton(onClick = { showCsvMenu = true }) {
                             Icon(Icons.Default.ImportExport, "Import or export CSV", tint = KaspaTeal)
@@ -201,10 +293,6 @@ fun PortfolioScreen(
             )
         },
         floatingActionButton = {
-            // Scaffold's own content region already sits above the app-wide floating tab bar —
-            // KaChatApp.kt reserves that space via innerPadding before this screen is even
-            // composed — so the FAB's default bottom-end placement naturally lands just above it,
-            // no manual offset math needed.
             FloatingActionButton(
                 onClick = { showAddDialog = true },
                 containerColor = KaspaTeal,
@@ -220,33 +308,6 @@ fun PortfolioScreen(
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            item {
-                PortfolioSummaryCard(summary = summary, currentPriceUsd = currentPriceUsd, scrubbedPrice = scrubbedPrice)
-            }
-            if (priceHistory.size >= 2) {
-                item {
-                    PriceChartCard(
-                        priceHistory = priceHistory,
-                        onScrub = { scrubbedPrice = it },
-                        selectedRangeDays = priceRangeDays,
-                        onRangeSelected = { viewModel.setPriceRangeDays(it) }
-                    )
-                }
-            }
-            if (valueHistory.size >= 2) {
-                item {
-                    PortfolioValueChartCard(valueHistory = valueHistory)
-                }
-            }
-            item {
-                Text(
-                    "Transactions",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
             if (transactions.isEmpty()) {
                 item {
                     Text(

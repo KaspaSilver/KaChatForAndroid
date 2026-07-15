@@ -354,7 +354,7 @@ fun MainShell(
                 popExitTransition = { ExitTransition.None }
             ) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
-                    PortfolioScreen(onBack = { navController.popBackStack() })
+                    PortfolioScreen(navController = navController)
                 }
             }
             composable(
@@ -381,6 +381,20 @@ fun MainShell(
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     SwapScreen()
                 }
+            }
+
+            composable("portfolio_transactions") { backStackEntry ->
+                // Shares the Portfolio tab's own PortfolioViewModel instance rather than a fresh
+                // one, so adding/editing/deleting a transaction here is immediately reflected in
+                // the summary card and charts back on Portfolio — see PortfolioTransactionsScreen's
+                // doc comment.
+                val parentEntry = remember(backStackEntry) {
+                    navController.getBackStackEntry(Screen.Portfolio.route)
+                }
+                PortfolioTransactionsScreen(
+                    onBack = { navController.popBackStack() },
+                    viewModel = hiltViewModel(parentEntry)
+                )
             }
 
             composable("seed_phrase") {
