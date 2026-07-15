@@ -176,7 +176,6 @@ fun BroadcastListScreen(
                                 .fillMaxWidth()
                                 .clickable {
                                     if (!alreadyJoined) broadcastViewModel.joinChannel(name)
-                                    navController.navigate("broadcast_channel/$name")
                                 }
                         ) {
                             Row(
