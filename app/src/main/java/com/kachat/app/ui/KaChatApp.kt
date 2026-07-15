@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,6 +50,7 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
     object Chats     : Screen("chats",     "Chats",     Icons.Default.Forum)
     object Portfolio : Screen("portfolio", "Portfolio", Icons.Default.PieChart)
     object Profile   : Screen("profile",   "Profile",   Icons.Default.AccountCircle)
+    object Swap      : Screen("swap",      "Swap",      Icons.Default.SwapHoriz)
 }
 
 // All top-level tabs
@@ -56,7 +58,8 @@ val bottomNavItems = listOf(
     Screen.Settings,
     Screen.Chats,
     Screen.Portfolio,
-    Screen.Profile
+    Screen.Profile,
+    Screen.Swap
 )
 
 /**
@@ -283,6 +286,17 @@ fun MainShell(
                         viewModel = walletViewModel,
                         navController = navController
                     )
+                }
+            }
+            composable(
+                Screen.Swap.route,
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None }
+            ) {
+                Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
+                    SwapScreen()
                 }
             }
 
