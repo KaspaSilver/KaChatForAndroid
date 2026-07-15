@@ -1465,6 +1465,19 @@ fun ProfileScreen(
                     Column(
                         modifier = Modifier.clickable { navController.navigate("edit_kns_profile") }
                     ) {
+                        val bannerUrl = knsProfile?.bannerUrl?.takeIf { it.isNotBlank() }
+                        if (bannerUrl != null) {
+                            SubcomposeAsyncImage(
+                                model = bannerUrl,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(110.dp)
+                                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                                    .background(Color(0xFF1C1C1E))
+                            )
+                        }
                         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             ContactAvatar(
                                 imageUrl = knsProfile?.avatarUrl,
