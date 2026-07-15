@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.kachat.app.models.PortfolioTransactionEntity
 import com.kachat.app.repository.PortfolioRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -62,19 +63,39 @@ class PortfolioViewModel @Inject constructor(
         refreshPrice()
     }
 
+    private var priceHistoryJob: Job? = null
+
     fun refreshPrice() {
         viewModelScope.launch {
             _currentPriceUsd.value = repository.getCurrentPriceUsd()
-            _priceHistory.value = repository.getPriceHistory(_priceRangeDays.value)
         }
+        fetchPriceHistory(_priceRangeDays.value)
     }
 
     /** Switches the price chart's window (1/7/30 days) and refetches history for it. */
     fun setPriceRangeDays(days: Int) {
         if (_priceRangeDays.value == days) return
         _priceRangeDays.value = days
-        viewModelScope.launch {
-            _priceHistory.value = repository.getPriceHistory(days)
+        fetchPriceHistory(days)
+    }
+
+    /**
+     * Cancels any still-in-flight fetch before starting a new one — rapidly tapping the range
+     * cycle (1d/7d/30d) otherwise fires overlapping requests at CoinGecko's public API, which
+     * rate-limits (429) in that scenario. And on failure, this deliberately leaves [_priceHistory]
+     * alone rather than overwriting it with the empty list [PortfolioRepository.getPriceHistory]
+     * returns on any error: previously a single rate-limited/failed refetch replaced perfectly
+     * good chart data with an empty list, and since the chart card is only rendered when
+     * `priceHistory.size >= 2`, that made the whole card silently vanish instead of just failing
+     * to switch ranges — confirmed via on-device repro (rapid taps on the range cycle).
+     */
+    private fun fetchPriceHistory(days: Int) {
+        priceHistoryJob?.cancel()
+        priceHistoryJob = viewModelScope.launch {
+            val result = repository.getPriceHistory(days)
+            if (result.isNotEmpty()) {
+                _priceHistory.value = result
+            }
         }
     }
 
