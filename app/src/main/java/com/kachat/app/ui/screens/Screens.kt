@@ -1375,7 +1375,6 @@ fun ProfileScreen(
 
     val spendingAddress by viewModel.spendingAddress.collectAsState()
     val spendingBalance by viewModel.spendingBalance.collectAsState()
-    var showIdentityQr by remember { mutableStateOf(false) }
     var showSpendingQr by remember { mutableStateOf(false) }
     var showFundIdentityQr by remember { mutableStateOf(false) }
     // Deliberately separate from showSpendingQr — "Accept Kaspa As Payment" shows the same
@@ -1575,32 +1574,7 @@ fun ProfileScreen(
             }
 
             CollapsibleAddressSection(title = "Identity Address", balance = balance) {
-                val clipboardManager = LocalClipboardManager.current
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                address?.let { clipboardManager.setText(AnnotatedString(it)) }
-                            },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Copy Address", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showIdentityQr = true },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Show QR Code", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                    }
-                    Spacer(Modifier.height(12.dp))
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1735,13 +1709,6 @@ fun ProfileScreen(
             Spacer(modifier = Modifier.height(100.dp))
         }
 
-        if (showIdentityQr) {
-            QrCodeOverlay(
-                value = address ?: "",
-                onDismiss = { showIdentityQr = false },
-                message = "Just send 5-10 KAS at a time, that's plenty to cover chat fees for a while (about 500 messages per KAS)"
-            )
-        }
         if (showSpendingQr) {
             QrCodeOverlay(value = spendingAddress ?: "", onDismiss = { showSpendingQr = false })
         }
