@@ -781,9 +781,9 @@ private fun UnnotifiedMessageBanner() {
     }
 }
 
-/** See the truncation check inside [MessageBubble]'s plain-text branch for why this exists. */
-private const val MESSAGE_TEXT_TRUNCATION_THRESHOLD = 2_000
-private const val MESSAGE_TEXT_PREVIEW_LENGTH = 500
+/** See the truncation check inside [MessageBubble]'s plain-text branch for why this exists. Also used by BroadcastScreens.kt's room bubble. */
+const val MESSAGE_TEXT_TRUNCATION_THRESHOLD = 2_000
+const val MESSAGE_TEXT_PREVIEW_LENGTH = 500
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1164,9 +1164,10 @@ fun MessageBubble(
 /**
  * Full text of a message too long to render inline (see [MESSAGE_TEXT_TRUNCATION_THRESHOLD]) - a
  * full-screen scrollable, selectable text view, matching iMessage's "tap to see more" behavior.
+ * Shared with BroadcastScreens.kt's room bubble, not just private-chat messages.
  */
 @Composable
-private fun FullMessageTextDialog(text: String, onDismiss: () -> Unit, onCopy: () -> Unit) {
+fun FullMessageTextDialog(text: String, onDismiss: () -> Unit, onCopy: () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             Row(
