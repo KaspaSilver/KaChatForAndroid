@@ -648,23 +648,25 @@ private fun TransactionDialog(
                 }
                 Spacer(Modifier.height(12.dp))
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = quantityText,
-                        onValueChange = { quantityText = it },
-                        label = { Text("Quantity") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = priceText,
-                        onValueChange = { priceText = it },
-                        label = { Text("Price Per Coin") },
-                        leadingIcon = { Text("$", color = Color.Gray) },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+                // Full width, stacked rather than side-by-side — a half-width field cut off KAS
+                // prices with several decimal digits (e.g. "0.02874099"), which didn't fit next
+                // to Quantity in a shared row and just clipped at the field's edge.
+                OutlinedTextField(
+                    value = quantityText,
+                    onValueChange = { quantityText = it },
+                    label = { Text("Quantity") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = priceText,
+                    onValueChange = { priceText = it },
+                    label = { Text("Price Per Coin") },
+                    leadingIcon = { Text("$", color = Color.Gray) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Spacer(Modifier.height(12.dp))
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
