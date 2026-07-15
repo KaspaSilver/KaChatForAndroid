@@ -59,10 +59,6 @@ class PortfolioViewModel @Inject constructor(
         computeValueHistory(txs, prices)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    init {
-        refreshPrice()
-    }
-
     private var priceHistoryJob: Job? = null
 
     // Per-range (days -> history) cache. Re-selecting an already-fetched range applies instantly
@@ -70,7 +66,17 @@ class PortfolioViewModel @Inject constructor(
     // CoinGecko's public-API rate limit (429) than re-fetching on every single tap of the range
     // cycle. Cleared on refreshPrice() (an explicit "get me current data" action) since a genuine
     // refresh should bypass stale cached history, not just the current range's live price.
+    //
+    // Declared before the init block below, which calls refreshPrice() -> this map, on purpose:
+    // Kotlin runs property initializers and init blocks in textual declaration order, so this had
+    // been declared AFTER that init block once, and refreshPrice() crashed with a
+    // NullPointerException on priceHistoryCache.clear() every single time the ViewModel was first
+    // constructed (i.e. on every visit to the Portfolio tab) — confirmed via device crash logcat.
     private val priceHistoryCache = mutableMapOf<Int, List<Pair<Long, Double>>>()
+
+    init {
+        refreshPrice()
+    }
 
     fun refreshPrice() {
         viewModelScope.launch {
