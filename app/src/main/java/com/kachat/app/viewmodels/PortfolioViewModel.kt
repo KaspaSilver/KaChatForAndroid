@@ -45,6 +45,10 @@ class PortfolioViewModel @Inject constructor(
     private val _priceHistory = MutableStateFlow<List<Pair<Long, Double>>>(emptyList())
     val priceHistory: StateFlow<List<Pair<Long, Double>>> = _priceHistory.asStateFlow()
 
+    /** Backs the tappable "Price (Xd)" range switcher — 1, 7, or 30 days. */
+    private val _priceRangeDays = MutableStateFlow(30)
+    val priceRangeDays: StateFlow<Int> = _priceRangeDays.asStateFlow()
+
     val summary: StateFlow<PortfolioSummary> = combine(transactions, currentPriceUsd) { txs, price ->
         computeSummary(txs, price ?: 0.0)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), computeSummary(emptyList(), 0.0))
@@ -61,7 +65,16 @@ class PortfolioViewModel @Inject constructor(
     fun refreshPrice() {
         viewModelScope.launch {
             _currentPriceUsd.value = repository.getCurrentPriceUsd()
-            _priceHistory.value = repository.getPriceHistory()
+            _priceHistory.value = repository.getPriceHistory(_priceRangeDays.value)
+        }
+    }
+
+    /** Switches the price chart's window (1/7/30 days) and refetches history for it. */
+    fun setPriceRangeDays(days: Int) {
+        if (_priceRangeDays.value == days) return
+        _priceRangeDays.value = days
+        viewModelScope.launch {
+            _priceHistory.value = repository.getPriceHistory(days)
         }
     }
 
