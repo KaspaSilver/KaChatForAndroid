@@ -1528,50 +1528,6 @@ fun ProfileScreen(
                 Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
             }
 
-            run {
-                val clipboardManager = LocalClipboardManager.current
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFF1C1C1E))
-                        .clickable {
-                            spendingAddress?.let { clipboardManager.setText(AnnotatedString(it)) }
-                            showAcceptPaymentQr = true
-                        }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        "Accept Kaspa As Payment",
-                        color = Color.White,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFF1C1C1E))
-                        .clickable {
-                            address?.let { clipboardManager.setText(AnnotatedString(it)) }
-                            showFundIdentityQr = true
-                        }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        "Fund Identity Address For Chatting",
-                        color = Color.White,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
             CollapsibleAddressSection(title = "Identity Address", balance = balance) {
                 val clipboardManager = LocalClipboardManager.current
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
@@ -1673,6 +1629,50 @@ fun ProfileScreen(
                     modifier = Modifier.weight(1f)
                 )
                 Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+            }
+
+            run {
+                val clipboardManager = LocalClipboardManager.current
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0xFF1C1C1E))
+                        .clickable {
+                            spendingAddress?.let { clipboardManager.setText(AnnotatedString(it)) }
+                            showAcceptPaymentQr = true
+                        }
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "Accept Kaspa As Payment",
+                        color = Color.White,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0xFF1C1C1E))
+                        .clickable {
+                            address?.let { clipboardManager.setText(AnnotatedString(it)) }
+                            showFundIdentityQr = true
+                        }
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "Fund Identity Address For Chatting",
+                        color = Color.White,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
 
             SettingsSection(title = "Info") {
