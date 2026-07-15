@@ -1571,6 +1571,31 @@ fun ProfileScreen(
                 }
             }
 
+            run {
+                val clipboardManager = LocalClipboardManager.current
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterHorizontally)
+                ) {
+                    ProfileCircleAction(
+                        icon = Icons.Default.QrCode,
+                        label = "Accept Kaspa As Payment",
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        spendingAddress?.let { clipboardManager.setText(AnnotatedString(it)) }
+                        showAcceptPaymentQr = true
+                    }
+                    ProfileCircleAction(
+                        icon = Icons.Default.QrCode,
+                        label = "Fund Identity Address For Chatting",
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        address?.let { clipboardManager.setText(AnnotatedString(it)) }
+                        showFundIdentityQr = true
+                    }
+                }
+            }
+
             CollapsibleAddressSection(title = "Identity Address", balance = balance) {
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                     Row(
@@ -1622,50 +1647,6 @@ fun ProfileScreen(
                     modifier = Modifier.weight(1f)
                 )
                 Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
-            }
-
-            run {
-                val clipboardManager = LocalClipboardManager.current
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFF1C1C1E))
-                        .clickable {
-                            spendingAddress?.let { clipboardManager.setText(AnnotatedString(it)) }
-                            showAcceptPaymentQr = true
-                        }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        "Accept Kaspa As Payment",
-                        color = Color.White,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFF1C1C1E))
-                        .clickable {
-                            address?.let { clipboardManager.setText(AnnotatedString(it)) }
-                            showFundIdentityQr = true
-                        }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        "Fund Identity Address For Chatting",
-                        color = Color.White,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
             }
 
             SettingsSection(title = "Info") {
@@ -3745,6 +3726,40 @@ fun CollapsibleSettingsSection(
                 content()
             }
         }
+    }
+}
+
+/** A circular icon button with its label centered underneath — used in pairs on [ProfileScreen] (Accept Kaspa As Payment / Fund Identity Address For Chatting). */
+@Composable
+private fun ProfileCircleAction(
+    icon: ImageVector,
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(64.dp)
+                .clip(CircleShape)
+                .background(KaspaTeal)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, null, tint = Color.Black, modifier = Modifier.size(28.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            label,
+            color = Color.White,
+            fontSize = 12.sp,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
