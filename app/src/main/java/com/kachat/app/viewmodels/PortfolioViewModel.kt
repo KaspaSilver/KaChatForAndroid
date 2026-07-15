@@ -65,10 +65,18 @@ class PortfolioViewModel @Inject constructor(
 
     private var priceHistoryJob: Job? = null
 
+    // Per-range (days -> history) cache. Re-selecting an already-fetched range applies instantly
+    // with no network call — both nicer UX and, more importantly, far less likely to hit
+    // CoinGecko's public-API rate limit (429) than re-fetching on every single tap of the range
+    // cycle. Cleared on refreshPrice() (an explicit "get me current data" action) since a genuine
+    // refresh should bypass stale cached history, not just the current range's live price.
+    private val priceHistoryCache = mutableMapOf<Int, List<Pair<Long, Double>>>()
+
     fun refreshPrice() {
         viewModelScope.launch {
             _currentPriceUsd.value = repository.getCurrentPriceUsd()
         }
+        priceHistoryCache.clear()
         fetchPriceHistory(_priceRangeDays.value)
     }
 
@@ -80,20 +88,29 @@ class PortfolioViewModel @Inject constructor(
     }
 
     /**
-     * Cancels any still-in-flight fetch before starting a new one — rapidly tapping the range
-     * cycle (1d/7d/30d) otherwise fires overlapping requests at CoinGecko's public API, which
-     * rate-limits (429) in that scenario. And on failure, this deliberately leaves [_priceHistory]
-     * alone rather than overwriting it with the empty list [PortfolioRepository.getPriceHistory]
-     * returns on any error: previously a single rate-limited/failed refetch replaced perfectly
-     * good chart data with an empty list, and since the chart card is only rendered when
-     * `priceHistory.size >= 2`, that made the whole card silently vanish instead of just failing
-     * to switch ranges — confirmed via on-device repro (rapid taps on the range cycle).
+     * Serves [days] from [priceHistoryCache] if already fetched this session; otherwise fetches
+     * it, cancelling any still-in-flight fetch first (rapidly tapping the range cycle otherwise
+     * fires overlapping requests — see [priceHistoryCache]'s doc comment for why that's a real
+     * problem, not just wasteful).
+     *
+     * On failure, [_priceHistory] is deliberately left alone rather than overwritten with the
+     * empty list [PortfolioRepository.getPriceHistory] returns on any error, and nothing is
+     * cached — a failed/rate-limited fetch was previously either wiping out the whole chart card
+     * (it only renders when `priceHistory.size >= 2`) or, after that first fix, getting stuck
+     * silently showing a stale range forever with no way to recover since nothing was ever cached
+     * to notice the mismatch — both confirmed via on-device repro. Now a failed fetch is simply
+     * retried the next time this range is selected, since it's still uncached.
      */
     private fun fetchPriceHistory(days: Int) {
+        priceHistoryCache[days]?.let { cached ->
+            _priceHistory.value = cached
+            return
+        }
         priceHistoryJob?.cancel()
         priceHistoryJob = viewModelScope.launch {
             val result = repository.getPriceHistory(days)
             if (result.isNotEmpty()) {
+                priceHistoryCache[days] = result
                 _priceHistory.value = result
             }
         }
