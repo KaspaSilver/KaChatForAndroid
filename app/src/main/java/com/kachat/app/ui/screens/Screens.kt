@@ -1375,11 +1375,9 @@ fun ProfileScreen(
 
     val spendingAddress by viewModel.spendingAddress.collectAsState()
     val spendingBalance by viewModel.spendingBalance.collectAsState()
-    var showSpendingQr by remember { mutableStateOf(false) }
     var showFundIdentityQr by remember { mutableStateOf(false) }
-    // Deliberately separate from showSpendingQr — "Accept Kaspa As Payment" shows the same
-    // address as the Spending Address section's own "Show QR Code" row, but with its own bigger
-    // green border, so it can't be styled without also affecting that unrelated row.
+    // Its own state (not shared with any other QR overlay) so its bigger green border can't
+    // accidentally affect an unrelated overlay reusing the same flag.
     var showAcceptPaymentQr by remember { mutableStateOf(false) }
     var showWithdrawDialog by remember { mutableStateOf(false) }
 
@@ -1593,32 +1591,7 @@ fun ProfileScreen(
             // rotates to a freshly derived address after every send (see WalletManager's
             // spending-address doc comment), so this always shows whichever one is current.
             CollapsibleAddressSection(title = "Spending Address", balance = spendingBalance) {
-                val clipboardManager = LocalClipboardManager.current
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                spendingAddress?.let { clipboardManager.setText(AnnotatedString(it)) }
-                            },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Copy Address", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showSpendingQr = true },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.QrCode, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Show QR Code", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                    }
-                    Spacer(Modifier.height(12.dp))
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1709,9 +1682,6 @@ fun ProfileScreen(
             Spacer(modifier = Modifier.height(100.dp))
         }
 
-        if (showSpendingQr) {
-            QrCodeOverlay(value = spendingAddress ?: "", onDismiss = { showSpendingQr = false })
-        }
         if (showFundIdentityQr) {
             QrCodeOverlay(
                 value = address ?: "",
