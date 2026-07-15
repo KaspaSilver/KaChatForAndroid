@@ -56,10 +56,10 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
 // All top-level tabs
 val bottomNavItems = listOf(
     Screen.Settings,
-    Screen.Chats,
     Screen.Portfolio,
-    Screen.Profile,
-    Screen.Swap
+    Screen.Chats,
+    Screen.Swap,
+    Screen.Profile
 )
 
 /**
