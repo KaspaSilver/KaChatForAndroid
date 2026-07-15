@@ -443,7 +443,8 @@ fun MainShell(
             composable("edit_kns_profile") {
                 EditKnsProfileScreen(
                     viewModel = walletViewModel,
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    onNavigateToDomains = { navController.navigate("kns_domains") }
                 )
             }
 

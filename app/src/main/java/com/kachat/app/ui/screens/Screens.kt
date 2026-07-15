@@ -2704,7 +2704,7 @@ private fun InscribeProgressRow(text: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
+fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit, onNavigateToDomains: () -> Unit = {}) {
     val knsProfile by viewModel.knsProfile.collectAsState()
     val activeProfileDomainName by viewModel.activeProfileDomainName.collectAsState()
     val profileAssetId by viewModel.profileDomainAssetId.collectAsState()
@@ -2801,11 +2801,20 @@ fun EditKnsProfileScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
         ) {
             Spacer(Modifier.height(8.dp))
 
-            SettingsSection(title = "Domain") {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(activeProfileDomainName ?: "—", color = Color.White, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(4.dp))
-                    Text(profileAssetId ?: "", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            SettingsSection(title = "Domains") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onNavigateToDomains() }
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(activeProfileDomainName ?: "—", color = Color.White, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(4.dp))
+                        Text(profileAssetId ?: "", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Icon(Icons.Default.ChevronRight, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
                 }
             }
 
