@@ -165,9 +165,12 @@ fun PortfolioScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp)
+                .padding(12.dp)
+                // Still scrollable as a safety net (smaller phones, larger system font scale),
+                // but every element below is sized to comfortably fit a typical phone screen
+                // without needing it.
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             PortfolioSummaryCard(summary = summary, currentPriceUsd = currentPriceUsd, scrubbedPrice = scrubbedPrice)
             if (priceHistory.size >= 2) {
@@ -204,7 +207,7 @@ private fun PortfolioNavRow(icon: ImageVector, label: String, onClick: () -> Uni
             .clip(RoundedCornerShape(16.dp))
             .background(Color(0xFF1C1C1E))
             .clickable(onClick = onClick)
-            .padding(16.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(icon, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
@@ -366,7 +369,7 @@ private fun PortfolioSummaryCard(summary: PortfolioSummary, currentPriceUsd: Dou
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(Color(0xFF1C1C1E))
-            .padding(20.dp)
+            .padding(14.dp)
     ) {
         Text(
             if (scrubbedPrice != null) formatDateTime(scrubbedPrice.first) else "KAS Price",
@@ -383,7 +386,7 @@ private fun PortfolioSummaryCard(summary: PortfolioSummary, currentPriceUsd: Dou
             fontWeight = FontWeight.Bold,
             fontSize = 22.sp
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(10.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column {
                 Text("Holdings", color = Color.Gray, fontSize = 12.sp)
@@ -394,9 +397,9 @@ private fun PortfolioSummaryCard(summary: PortfolioSummary, currentPriceUsd: Dou
                 Text(formatUsd(summary.currentValue), color = Color.White, fontWeight = FontWeight.Bold)
             }
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(10.dp))
         androidx.compose.material3.HorizontalDivider(color = Color.Black.copy(alpha = 0.3f))
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(10.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column {
                 Text("Total Invested", color = Color.Gray, fontSize = 12.sp)
@@ -526,7 +529,7 @@ private fun PortfolioValueChartCard(valueHistory: List<Pair<Long, Double>>) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(Color(0xFF1C1C1E))
-            .padding(16.dp)
+            .padding(14.dp)
     ) {
         val (headerLabel, headerTimestamp, headerValue) = if (selectedIndex != null) {
             val (ts, value) = valueHistory[selectedIndex]
@@ -536,11 +539,11 @@ private fun PortfolioValueChartCard(valueHistory: List<Pair<Long, Double>>) {
         }
         Text(headerLabel, color = Color.Gray, fontSize = 12.sp)
         Text(formatUsd(headerValue), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(160.dp)
+                .height(90.dp)
                 .onSizeChanged { canvasSize = it }
                 .pointerInput(valueHistory) {
                     detectDragGestures(
