@@ -964,6 +964,45 @@ fun BroadcastChannelScreen(
                                         onLongPress = { showMenu = true },
                                         onDoubleClick = { broadcastViewModel.startReplyTo(message) }
                                     )
+                                } else if (displayContent.length > MESSAGE_TEXT_TRUNCATION_THRESHOLD) {
+                                    // See MESSAGE_TEXT_TRUNCATION_THRESHOLD's doc comment in Screens.kt -
+                                    // broadcast rooms are public/unencrypted, so a huge wall of text (e.g.
+                                    // stray base64) landing here is if anything more likely than in a
+                                    // private chat.
+                                    var showFullText by remember { mutableStateOf(false) }
+                                    Column(
+                                        modifier = Modifier
+                                            .background(
+                                                if (isMine) KaspaTeal else Color(0xFF1C1C1E),
+                                                RoundedCornerShape(16.dp)
+                                            )
+                                            .combinedClickable(
+                                                onClick = { showFullText = true },
+                                                onLongClick = { showMenu = true },
+                                                onDoubleClick = { broadcastViewModel.startReplyTo(message) }
+                                            )
+                                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                                            .widthIn(max = 280.dp)
+                                    ) {
+                                        Text(
+                                            displayContent.take(MESSAGE_TEXT_PREVIEW_LENGTH) + "…",
+                                            color = if (isMine) Color.Black else Color.White
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            "Show More",
+                                            color = if (isMine) Color.Black.copy(alpha = 0.75f) else KaspaTeal,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                    if (showFullText) {
+                                        FullMessageTextDialog(
+                                            text = displayContent,
+                                            onDismiss = { showFullText = false },
+                                            onCopy = { clipboardManager.setText(AnnotatedString(displayContent)) }
+                                        )
+                                    }
                                 } else {
                                     Column(
                                         modifier = Modifier
