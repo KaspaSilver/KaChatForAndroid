@@ -1,11 +1,14 @@
 package com.kachat.app.services.grpc
 
+import android.util.Log
 import io.grpc.ManagedChannel
 import io.grpc.ManagedChannelBuilder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -42,12 +45,25 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class KaspadConnection internal constructor(
     private val scope: CoroutineScope,
-    private val channel: ManagedChannel
+    private val channel: ManagedChannel,
+    private val address: String = "unknown"
 ) {
     constructor(address: String, scope: CoroutineScope) : this(
         scope,
-        ManagedChannelBuilder.forTarget(address).usePlaintext().build()
+        ManagedChannelBuilder.forTarget(address).usePlaintext().build(),
+        address
     )
+
+    /** True once [connect] has (re)launched the stream-collecting coroutine and it hasn't since
+     * died - see the doc comment on the `catch` block in [connect] for what clears this. */
+    @Volatile
+    var isConnected: Boolean = false
+        private set
+
+    /** Set by [close] before cancelling the stream job, so the job's own cancellation doesn't
+     * get mistaken for an unexpected drop and trigger [scheduleAutoReconnect]. */
+    @Volatile
+    private var closed = false
 
     private val stub = RPCGrpcKt.RPCCoroutineStub(channel)
 
@@ -65,6 +81,8 @@ class KaspadConnection internal constructor(
     private var streamJob: Job? = null
 
     fun connect() {
+        if (isConnected) return
+        isConnected = true
         streamJob = scope.launch {
             try {
                 stub.messageStream(outbound.receiveAsFlow()).collect { response ->
@@ -76,9 +94,32 @@ class KaspadConnection internal constructor(
                     }
                     // Any other unsolicited response is still ignored.
                 }
+            } catch (e: CancellationException) {
+                // A deliberate close() cancels this job itself - `closed`/`isConnected` are
+                // already set there, so this must not be treated as an unexpected drop.
+                throw e
             } catch (e: Exception) {
+                isConnected = false
                 pending.values.forEach { it.completeExceptionally(e) }
                 pending.clear()
+                Log.w("KaspadConnection", "Stream died unexpectedly on $address: ${e.javaClass.simpleName}: ${e.message}")
+                scheduleAutoReconnect()
+            }
+        }
+    }
+
+    /**
+     * Self-heal from an unexpected stream death (e.g. the OS killing sockets on sleep/wake, or a
+     * brief network hiccup) instead of passively leaving this connection dead until the next
+     * scheduled probe cycle (up to 30s later, see NodePoolManager.startProbing) happens to notice
+     * and replace it. Small random jitter in case many connections die in the same instant, so
+     * reconnects don't all slam the network at once.
+     */
+    private fun scheduleAutoReconnect() {
+        scope.launch {
+            delay((100L..1000L).random())
+            if (!isConnected && !closed) {
+                connect()
             }
         }
     }
@@ -220,6 +261,8 @@ class KaspadConnection internal constructor(
     }
 
     fun close() {
+        closed = true
+        isConnected = false
         streamJob?.cancel()
         pending.values.forEach { it.cancel() }
         pending.clear()
