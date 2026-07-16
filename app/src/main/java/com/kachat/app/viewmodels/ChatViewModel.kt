@@ -61,13 +61,6 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { settings.setChatPhotoQualityPreset(preset) }
     }
 
-    val requirePhotoApprovalForNewContacts: StateFlow<Boolean> = settings.requirePhotoApprovalForNewContacts
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
-
-    fun updateRequirePhotoApprovalForNewContacts(enabled: Boolean) {
-        viewModelScope.launch { settings.setRequirePhotoApprovalForNewContacts(enabled) }
-    }
-
     val revealedPhotoTxIds: StateFlow<Set<String>> = settings.revealedPhotoTxIds
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptySet())
 

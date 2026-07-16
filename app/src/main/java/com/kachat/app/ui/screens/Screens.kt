@@ -133,7 +133,6 @@ fun ChatThreadScreen(
     val conversations by chatViewModel.conversations.collectAsState()
     val conversation = conversations.find { it.contact.id == contactId }
     val messages by chatViewModel.getMessages(contactId).collectAsState(initial = emptyList())
-    val requirePhotoApprovalForNewContacts by chatViewModel.requirePhotoApprovalForNewContacts.collectAsState()
     val revealedPhotoTxIds by chatViewModel.revealedPhotoTxIds.collectAsState()
 
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
@@ -711,8 +710,7 @@ fun ChatThreadScreen(
                             revealOffsetPx = revealOffsetPx,
                             maxRevealOffsetPx = maxRevealOffsetPx,
                             photosBlocked = !com.kachat.app.repository.ChatRepository.shouldAutoDisplayPhotos(
-                                conversation?.contact,
-                                requirePhotoApprovalForNewContacts
+                                conversation?.contact
                             ),
                             isPhotoRevealed = msg.id in revealedPhotoTxIds,
                             onRevealPhoto = { chatViewModel.revealPhoto(msg.id) }
@@ -3221,7 +3219,6 @@ fun SettingsScreen(
 ) {
     val balance by walletViewModel.fullBalance.collectAsState()
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
-    val requirePhotoApprovalForNewContacts by chatViewModel.requirePhotoApprovalForNewContacts.collectAsState()
     val notificationsEnabled by settingsViewModel.notificationsEnabled.collectAsState()
     val chatPhotoQualityPreset by chatViewModel.chatPhotoQualityPreset.collectAsState()
     val syncSystemContactsEnabled by chatViewModel.syncSystemContactsEnabled.collectAsState()
@@ -3276,10 +3273,6 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
             SettingsSection(title = "Chats") {
-                SettingsSwitchItem("Require approval for photos from new contacts", requirePhotoApprovalForNewContacts) {
-                    chatViewModel.updateRequirePhotoApprovalForNewContacts(it)
-                }
-                SettingsDivider()
                 SettingsNavigationItem(
                     "Photo Quality",
                     Icons.Default.Photo,
@@ -5435,9 +5428,8 @@ fun ChatInfoScreen(
                 }
 
                 SettingsSection(title = "Photos") {
-                    val requirePhotoApproval by chatViewModel.requirePhotoApprovalForNewContacts.collectAsState()
                     val photoOverride = com.kachat.app.models.PhotoAutoDisplayMode.fromName(conversation?.contact?.photoAutoDisplayOverride)
-                    val automaticResolvesToShow = !requirePhotoApproval || conversation?.contact?.conversationStatus == "active"
+                    val automaticResolvesToShow = conversation?.contact?.conversationStatus == "active"
 
                     Column(modifier = Modifier.padding(16.dp)) {
                         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {

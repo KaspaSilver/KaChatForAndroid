@@ -590,12 +590,11 @@ class ChatRepository @Inject constructor(
          * contact can't send a photo message at all without a completed handshake, this reuses
          * that field instead of duplicating it.
          */
-        fun shouldAutoDisplayPhotos(contact: ContactEntity?, requirePhotoApprovalForNewContacts: Boolean): Boolean {
+        fun shouldAutoDisplayPhotos(contact: ContactEntity?): Boolean {
             return when (PhotoAutoDisplayMode.fromName(contact?.photoAutoDisplayOverride)) {
                 PhotoAutoDisplayMode.ALWAYS_SHOW -> true
                 PhotoAutoDisplayMode.ALWAYS_HIDE -> false
-                PhotoAutoDisplayMode.AUTOMATIC ->
-                    !requirePhotoApprovalForNewContacts || contact?.conversationStatus == "active"
+                PhotoAutoDisplayMode.AUTOMATIC -> contact?.conversationStatus == "active"
             }
         }
 
