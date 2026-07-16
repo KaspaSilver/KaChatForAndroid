@@ -38,9 +38,18 @@ object MessageReply {
      * Parses [text] as a reply if it looks like one, else returns null — a plain text message
      * never accidentally renders as a reply just because it happens to start with `{`, since this
      * also requires the explicit "reply" type marker.
+     *
+     * This runs on every message bubble's composition, for every visible/newly-appearing row,
+     * uncached — a hot path when scrolling. A reply envelope is always small (a short reply-to
+     * preview plus the reply text itself), but a photo/file message's envelope is ALSO valid JSON
+     * starting with `{` (see ImageMessage/VoiceMessage) — without this size guard, every image
+     * message's multi-KB-to-multi-MB base64 payload got a real Gson parse attempt here, just to
+     * fail the type == "reply" check (or NPE and get caught) afterward. Scrolling fast through a
+     * photo-heavy chat's history — revealing many such messages at once — made that add up to a
+     * real freeze on the main thread (Compose's own layout/recomposition work competing with it).
      */
     fun parseOrNull(text: String?): MessageReplyContent? {
-        if (text.isNullOrBlank() || text.trimStart().firstOrNull() != '{') return null
+        if (text.isNullOrBlank() || text.length > 100_000 || text.trimStart().firstOrNull() != '{') return null
         return try {
             val parsed = gson.fromJson(text, MessageReplyContent::class.java) ?: return null
             if (parsed.type == "reply") parsed else null
