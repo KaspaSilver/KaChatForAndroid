@@ -34,6 +34,9 @@ class KaChatApplication : Application(), Configuration.Provider {
     lateinit var broadcastScanningService: BroadcastScanningService
 
     @Inject
+    lateinit var nodePoolManager: com.kachat.app.services.NodePoolManager
+
+    @Inject
     lateinit var hiltWorkerFactory: HiltWorkerFactory
 
     override val workManagerConfiguration: Configuration
@@ -76,6 +79,11 @@ class KaChatApplication : Application(), Configuration.Provider {
 
             override fun onStart(owner: LifecycleOwner) {
                 stopService(Intent(this@KaChatApplication, SyncForegroundService::class.java))
+                // A batch of gRPC connections can die silently while backgrounded/asleep (the OS
+                // tears down sockets, and each KaspadConnection's own self-reconnect can be
+                // suspended along with the rest of the app) - reconnect any that are dead right
+                // now instead of waiting for the next 5-30s probe cycle to notice and replace them.
+                nodePoolManager.reconnectStaleConnections()
             }
         })
     }

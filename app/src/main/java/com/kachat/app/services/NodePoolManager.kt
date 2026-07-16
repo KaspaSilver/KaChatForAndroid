@@ -1,5 +1,6 @@
 package com.kachat.app.services
 
+import android.util.Log
 import com.kachat.app.services.grpc.KaspadConnection
 import com.kachat.app.services.grpc.NodeRecord
 import com.kachat.app.services.grpc.NodeRegistry
@@ -169,6 +170,7 @@ class NodePoolManager @Inject constructor() {
                     } catch (e: Exception) {
                         // This seed's DNS lookup failed (resolver down, host unreachable, etc.) —
                         // the cooldown above means all of them get retried again shortly.
+                        Log.w("NodePoolManager", "DNS lookup failed for $hostname: ${e.javaClass.simpleName}: ${e.message}")
                         emptyList()
                     }
                 }
@@ -268,6 +270,7 @@ class NodePoolManager @Inject constructor() {
                     }
                 } catch (e: Exception) {
                     // Ignore — next cycle will retry with whatever's active then.
+                    Log.w("NodePoolManager", "Peer-gossip discovery via $discoverFrom failed: ${e.javaClass.simpleName}: ${e.message}")
                 }
             }
         }
@@ -348,6 +351,20 @@ class NodePoolManager @Inject constructor() {
         connections.values.forEach { it.close() }
         connections.clear()
         refreshNow()
+    }
+
+    /**
+     * Reconnects any currently-tracked connection that's dead right now — cheap, non-disruptive
+     * alternative to [reconnect]/[clearPool] (which tear down every connection unconditionally),
+     * meant to be called whenever the app returns to the foreground (see
+     * `KaChatApplication`'s `ProcessLifecycleOwner` observer). A connection can die silently while
+     * backgrounded/asleep, and each [KaspadConnection] already self-heals from that on its own
+     * (see its `scheduleAutoReconnect`), but backgrounding can suspend the coroutine that would
+     * notice the drop, so this gives already-tracked-but-dead connections an immediate nudge
+     * instead of waiting for the next 5-30s probe cycle to notice and replace them.
+     */
+    fun reconnectStaleConnections() {
+        connections.values.filter { !it.isConnected }.forEach { it.connect() }
     }
 
     /** Adds and immediately probes a user-supplied "host:port" endpoint — "Add Custom Endpoint". */
