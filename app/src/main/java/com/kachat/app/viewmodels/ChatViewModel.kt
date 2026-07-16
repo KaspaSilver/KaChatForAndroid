@@ -54,16 +54,6 @@ class ChatViewModel @Inject constructor(
         notificationHelper.setActiveContact(contactId)
     }
 
-    val hideAutoCreatedPaymentChats: StateFlow<Boolean> = settings.hideAutoCreatedPaymentChats
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false)
-
-    val showContactBalance: StateFlow<Boolean> = settings.showContactBalance
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
-
-    fun updateShowContactBalance(enabled: Boolean) {
-        viewModelScope.launch { settings.setShowContactBalance(enabled) }
-    }
-
     val chatPhotoQualityPreset: StateFlow<com.kachat.app.models.ChatPhotoQualityPreset> = settings.chatPhotoQualityPreset
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), com.kachat.app.models.ChatPhotoQualityPreset.default)
 
@@ -403,17 +393,15 @@ class ChatViewModel @Inject constructor(
         _wipeAccountState.value = DangerZoneOpState()
     }
 
+    // Auto-created payment chats are always shown — no toggle to hide them.
     val conversations: StateFlow<List<Conversation>> = combine(
         chatRepository.getContacts(),
         chatRepository.getLatestMessages(),
-        chatRepository.getPaymentOnlyContactIds(),
-        hideAutoCreatedPaymentChats,
         chatRepository.getUnreadCounts()
-    ) { contacts, latestMessages, paymentOnlyIds, hidePaymentChats, unreadCounts ->
+    ) { contacts, latestMessages, unreadCounts ->
         val latestByContact = latestMessages.associateBy { it.contactId }
         val unreadByContact = unreadCounts.associateBy({ it.contactId }, { it.count })
         contacts
-            .filter { !(hidePaymentChats && paymentOnlyIds.contains(it.id)) }
             .map { contact ->
                 Conversation(contact, latestByContact[contact.id], unreadByContact[contact.id] ?: 0)
             }.sortedByDescending { it.lastMessage?.blockTimestamp ?: 0L }
@@ -439,10 +427,6 @@ class ChatViewModel @Inject constructor(
     /** Permanently deletes the chat (contact + all local messages) — see ChatRepository.deleteChat. */
     fun deleteChat(contactId: String) {
         viewModelScope.launch { chatRepository.deleteChat(contactId) }
-    }
-
-    fun updateHideAutoCreatedPaymentChats(enabled: Boolean) {
-        viewModelScope.launch { settings.setHideAutoCreatedPaymentChats(enabled) }
     }
 
     /** Sends a real reciprocal handshake and activates the conversation. */
@@ -480,9 +464,6 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private val _contactBalances = MutableStateFlow<Map<String, String>>(emptyMap())
-    val contactBalances: StateFlow<Map<String, String>> = _contactBalances.asStateFlow()
-
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
@@ -499,9 +480,6 @@ class ChatViewModel @Inject constructor(
             }
         }
     }
-
-    val estimateFeesEnabled: StateFlow<Boolean> = settings.estimateFees
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
 
     // Messages/photos/voice notes are identity-address self-stashes; "Pay in Kaspa" sources
     // from the spending address instead (see WalletManager's spending-address doc comment) —
@@ -562,8 +540,8 @@ class ChatViewModel @Inject constructor(
     private val utxosForFeeEstimate: Flow<Pair<List<com.kachat.app.services.UtxoEntry>, List<com.kachat.app.services.UtxoEntry>>> =
         combine(_currentUtxos, _spendingUtxos) { identity, spending -> identity to spending }
 
-    val estimatedFeeSompi: StateFlow<Long?> = combine(paymentAmount, previewPayloadSize, utxosForFeeEstimate, estimateFeesEnabled, _networkFeeRate) { amount, textPayloadSize, utxosPair, enabled, rate ->
-        if (!enabled || (amount.isEmpty() && textPayloadSize == 0)) return@combine null
+    val estimatedFeeSompi: StateFlow<Long?> = combine(paymentAmount, previewPayloadSize, utxosForFeeEstimate, _networkFeeRate) { amount, textPayloadSize, utxosPair, rate ->
+        if (amount.isEmpty() && textPayloadSize == 0) return@combine null
 
         val isPayment = amount.isNotEmpty()
         val utxos = if (isPayment) utxosPair.second else utxosPair.first
@@ -605,10 +583,6 @@ class ChatViewModel @Inject constructor(
 
     fun setPaymentAmount(amount: String) {
         _paymentAmount.value = amount
-    }
-
-    fun updateEstimateFees(enabled: Boolean) {
-        viewModelScope.launch { settings.setEstimateFees(enabled) }
     }
 
     fun refreshUtxos() {
@@ -1143,24 +1117,6 @@ class ChatViewModel @Inject constructor(
     
     fun getMessages(contactId: String): Flow<List<MessageEntity>> {
         return chatRepository.getMessages(contactId)
-    }
-
-    fun refreshContactBalance(address: String) {
-        if (!com.kachat.app.util.KaspaAddress.isValid(address)) return
-
-        viewModelScope.launch {
-            try {
-                chatRepository.syncMessages()
-
-                val api = networkService.kaspaRestApi.value ?: return@launch
-                val response = api.getBalance(address)
-                val kasAmount = response.balance.toDouble() / 100_000_000.0
-                val balanceStr = String.format(Locale.US, "%.8f", kasAmount)
-                _contactBalances.value = _contactBalances.value + (address to balanceStr)
-            } catch (e: Exception) {
-                // Ignore errors
-            }
-        }
     }
 
     companion object {

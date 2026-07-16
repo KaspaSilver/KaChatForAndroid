@@ -54,17 +54,6 @@ interface MessageDao {
     )
     suspend fun markLatestAsUnread(contactId: String, walletAddress: String)
 
-    /** Contacts (within this wallet) whose entire message history is payment-only — never a real handshake/comm message. */
-    @Query(
-        """
-        SELECT contactId FROM messages
-        WHERE walletAddress = :walletAddress
-        GROUP BY contactId
-        HAVING COUNT(*) = SUM(CASE WHEN type = 'pay' THEN 1 ELSE 0 END)
-        """
-    )
-    fun getPaymentOnlyContactIds(walletAddress: String): Flow<List<String>>
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(messages: List<MessageEntity>)
 

@@ -133,9 +133,6 @@ fun ChatThreadScreen(
     val conversations by chatViewModel.conversations.collectAsState()
     val conversation = conversations.find { it.contact.id == contactId }
     val messages by chatViewModel.getMessages(contactId).collectAsState(initial = emptyList())
-    val contactBalances by chatViewModel.contactBalances.collectAsState()
-    val contactBalance = contactBalances[contactId] ?: "0.00000000"
-    val showContactBalance by chatViewModel.showContactBalance.collectAsState()
     val requirePhotoApprovalForNewContacts by chatViewModel.requirePhotoApprovalForNewContacts.collectAsState()
     val revealedPhotoTxIds by chatViewModel.revealedPhotoTxIds.collectAsState()
 
@@ -146,7 +143,6 @@ fun ChatThreadScreen(
     val myAddress by walletViewModel.address.collectAsState()
     val paymentAmount by chatViewModel.paymentAmount.collectAsState()
     val estimatedFee by chatViewModel.estimatedFeeSompi.collectAsState()
-    val estimateFeesEnabled by chatViewModel.estimateFeesEnabled.collectAsState()
     val messageText by chatViewModel.messageText.collectAsState()
     val voiceRecordingState by chatViewModel.voiceRecordingState.collectAsState()
     val pendingPhotoUri by chatViewModel.pendingPhotoUri.collectAsState()
@@ -196,7 +192,6 @@ fun ChatThreadScreen(
     }
 
     LaunchedEffect(contactId) {
-        chatViewModel.refreshContactBalance(contactId)
         chatViewModel.markAsRead(contactId)
     }
 
@@ -231,13 +226,6 @@ fun ChatThreadScreen(
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp
                         )
-                        if (showContactBalance) {
-                            Text(
-                                text = "$contactBalance KAS",
-                                color = Color.Gray,
-                                fontSize = 12.sp
-                            )
-                        }
                     }
                 },
                 navigationIcon = {
@@ -281,7 +269,7 @@ fun ChatThreadScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (estimateFeesEnabled && estimatedFee != null) {
+                            if (estimatedFee != null) {
                                 Surface(
                                     color = Color(0xFF1C1C1E),
                                     shape = RoundedCornerShape(12.dp)
@@ -384,7 +372,7 @@ fun ChatThreadScreen(
                     }
                 } else if (pendingPhotoUri != null) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        if (estimateFeesEnabled && estimatedFee != null) {
+                        if (estimatedFee != null) {
                             Surface(
                                 color = Color(0xFF1C1C1E),
                                 shape = RoundedCornerShape(12.dp),
@@ -452,7 +440,7 @@ fun ChatThreadScreen(
                     }
                 } else if (voiceRecordingState.status == ChatViewModel.VoiceRecordingStatus.RECORDING) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        if (estimateFeesEnabled && estimatedFee != null) {
+                        if (estimatedFee != null) {
                             Surface(
                                 color = Color(0xFF1C1C1E),
                                 shape = RoundedCornerShape(12.dp),
@@ -536,7 +524,7 @@ fun ChatThreadScreen(
                                 }
                             }
                         }
-                        if (estimateFeesEnabled && estimatedFee != null && messageText.isNotEmpty()) {
+                        if (estimatedFee != null && messageText.isNotEmpty()) {
                             Surface(
                                 color = Color(0xFF1C1C1E),
                                 shape = RoundedCornerShape(12.dp),
@@ -3233,9 +3221,6 @@ fun SettingsScreen(
 ) {
     val balance by walletViewModel.fullBalance.collectAsState()
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
-    val estimateFees by chatViewModel.estimateFeesEnabled.collectAsState()
-    val hideAutoCreatedPaymentChats by chatViewModel.hideAutoCreatedPaymentChats.collectAsState()
-    val showContactBalance by chatViewModel.showContactBalance.collectAsState()
     val requirePhotoApprovalForNewContacts by chatViewModel.requirePhotoApprovalForNewContacts.collectAsState()
     val notificationsEnabled by settingsViewModel.notificationsEnabled.collectAsState()
     val chatPhotoQualityPreset by chatViewModel.chatPhotoQualityPreset.collectAsState()
@@ -3291,18 +3276,6 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
             SettingsSection(title = "Chats") {
-                SettingsSwitchItem("Estimate fees while composing", estimateFees) {
-                    chatViewModel.updateEstimateFees(it)
-                }
-                SettingsDivider()
-                SettingsSwitchItem("Hide auto-created payment chats", hideAutoCreatedPaymentChats) {
-                    chatViewModel.updateHideAutoCreatedPaymentChats(it)
-                }
-                SettingsDivider()
-                SettingsSwitchItem("Show contact balance", showContactBalance) {
-                    chatViewModel.updateShowContactBalance(it)
-                }
-                SettingsDivider()
                 SettingsSwitchItem("Require approval for photos from new contacts", requirePhotoApprovalForNewContacts) {
                     chatViewModel.updateRequirePhotoApprovalForNewContacts(it)
                 }
@@ -5333,9 +5306,6 @@ fun ChatInfoScreen(
 ) {
     val conversation = chatViewModel.conversations.collectAsState().value.find { it.contact.id == contactId }
     val messages by chatViewModel.getMessages(contactId).collectAsState(initial = emptyList())
-    val contactBalances by chatViewModel.contactBalances.collectAsState()
-    val contactBalance = contactBalances[contactId] ?: "0.00000000"
-    val showContactBalance by chatViewModel.showContactBalance.collectAsState()
     val knsProfile = chatViewModel.knsProfiles.collectAsState().value[contactId]
     val systemContactId = conversation?.contact?.systemContactId
     val systemContactName = conversation?.contact?.systemContactName
@@ -5349,11 +5319,6 @@ fun ChatInfoScreen(
 
     LaunchedEffect(contactId) {
         chatViewModel.refreshKnsProfile(contactId)
-        // Not fetched anywhere else when arriving here directly (e.g. from a broadcast avatar's
-        // "View Profile", which never visits the 1:1 chat thread that would otherwise trigger
-        // this) — without it the Balance section below silently shows the "0.00000000" fallback
-        // instead of a real balance.
-        chatViewModel.refreshContactBalance(contactId)
     }
 
     val scrollState = rememberScrollState()
@@ -5598,21 +5563,6 @@ fun ChatInfoScreen(
                         }
                     }
                 }
-            }
-
-            if (showContactBalance) {
-            SettingsSection(title = "Balance") {
-                Row(
-                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("$contactBalance KAS", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                    IconButton(onClick = { clipboardManager.setText(AnnotatedString(contactBalance)) }) {
-                        Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
-                    }
-                }
-            }
             }
 
             val knsFields = knsProfile?.profile

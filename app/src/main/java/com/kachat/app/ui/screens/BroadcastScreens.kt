@@ -561,7 +561,6 @@ fun BroadcastChannelScreen(
     val voiceRecordingState by broadcastViewModel.voiceRecordingState.collectAsState()
     val messageText by broadcastViewModel.messageText.collectAsState()
     val estimatedFee by broadcastViewModel.estimatedFeeSompi.collectAsState()
-    val estimateFeesEnabled by broadcastViewModel.estimateFeesEnabled.collectAsState()
     val senderProfiles by broadcastViewModel.senderProfiles.collectAsState()
     val senderKnsNames by broadcastViewModel.senderKnsNames.collectAsState()
     val contactAliases by broadcastViewModel.contactAliases.collectAsState()
@@ -681,7 +680,7 @@ fun BroadcastChannelScreen(
                     }
                 }
                 if (voiceRecordingState.status == BroadcastViewModel.VoiceRecordingStatus.RECORDING) {
-                    if (estimateFeesEnabled && estimatedFee != null) {
+                    if (estimatedFee != null) {
                         Surface(
                             color = Color(0xFF1C1C1E),
                             shape = RoundedCornerShape(12.dp),
@@ -722,7 +721,7 @@ fun BroadcastChannelScreen(
                         }
                     }
                 } else {
-                    if (estimateFeesEnabled && estimatedFee != null && messageText.isNotEmpty()) {
+                    if (estimatedFee != null && messageText.isNotEmpty()) {
                         Surface(
                             color = Color(0xFF1C1C1E),
                             shape = RoundedCornerShape(12.dp),

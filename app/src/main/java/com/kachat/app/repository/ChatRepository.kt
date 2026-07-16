@@ -104,11 +104,6 @@ class ChatRepository @Inject constructor(
         return database.messageDao().getAllMessagesForWallet(walletManager.getAddress())
     }
 
-    /** Contacts that only exist because of an auto-detected payment — never a real handshake/message. */
-    fun getPaymentOnlyContactIds(): Flow<List<String>> {
-        return scopedToActiveAccount({ address -> database.messageDao().getPaymentOnlyContactIds(address) }, emptyList())
-    }
-
     fun getUnreadCounts(): Flow<List<UnreadCount>> {
         return scopedToActiveAccount({ address -> database.messageDao().getUnreadCounts(address) }, emptyList())
     }

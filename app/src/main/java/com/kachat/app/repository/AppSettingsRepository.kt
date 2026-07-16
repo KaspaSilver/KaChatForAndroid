@@ -42,9 +42,6 @@ class AppSettingsRepository @Inject constructor(
         val KEY_HAS_WALLET       = booleanPreferencesKey("has_wallet")
         val KEY_ACTIVE_ADDRESS   = stringPreferencesKey("active_address")
         
-        val KEY_ESTIMATE_FEES    = booleanPreferencesKey("estimate_fees")
-        val KEY_HIDE_AUTO_PAYMENT_CHATS = booleanPreferencesKey("hide_auto_payment_chats")
-        val KEY_SHOW_CONTACT_BALANCE = booleanPreferencesKey("show_contact_balance")
         // How hard chat photos get compressed before sending — mirrors iOS's
         // `chatPhotoQualityPreset` setting. Only affects photos sent, not received.
         val KEY_CHAT_PHOTO_QUALITY_PRESET = stringPreferencesKey("chat_photo_quality_preset")
@@ -120,18 +117,6 @@ class AppSettingsRepository @Inject constructor(
 
     val activeAddress: Flow<String?> = dataStore.data.map {
         it[KEY_ACTIVE_ADDRESS]
-    }
-
-    val estimateFees: Flow<Boolean> = dataStore.data.map {
-        it[KEY_ESTIMATE_FEES] ?: true
-    }
-
-    val hideAutoCreatedPaymentChats: Flow<Boolean> = dataStore.data.map {
-        it[KEY_HIDE_AUTO_PAYMENT_CHATS] ?: false
-    }
-
-    val showContactBalance: Flow<Boolean> = dataStore.data.map {
-        it[KEY_SHOW_CONTACT_BALANCE] ?: true
     }
 
     val chatPhotoQualityPreset: Flow<com.kachat.app.models.ChatPhotoQualityPreset> = dataStore.data.map {
@@ -230,9 +215,6 @@ class AppSettingsRepository @Inject constructor(
     suspend fun setKaspaRestUrl(value: String) = dataStore.edit { it[KEY_KASPA_REST_URL] = value }
     suspend fun setHasWallet(value: Boolean) = dataStore.edit { it[KEY_HAS_WALLET] = value }
     suspend fun setActiveAddress(value: String) = dataStore.edit { it[KEY_ACTIVE_ADDRESS] = value }
-    suspend fun setEstimateFees(value: Boolean) = dataStore.edit { it[KEY_ESTIMATE_FEES] = value }
-    suspend fun setHideAutoCreatedPaymentChats(value: Boolean) = dataStore.edit { it[KEY_HIDE_AUTO_PAYMENT_CHATS] = value }
-    suspend fun setShowContactBalance(value: Boolean) = dataStore.edit { it[KEY_SHOW_CONTACT_BALANCE] = value }
     suspend fun setChatPhotoQualityPreset(value: com.kachat.app.models.ChatPhotoQualityPreset) = dataStore.edit { it[KEY_CHAT_PHOTO_QUALITY_PRESET] = value.name }
     suspend fun setRequirePhotoApprovalForNewContacts(value: Boolean) = dataStore.edit { it[KEY_REQUIRE_PHOTO_APPROVAL] = value }
     suspend fun revealPhoto(txId: String) = dataStore.edit {

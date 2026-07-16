@@ -131,9 +131,6 @@ class BroadcastViewModel @Inject constructor(
     val messageText: StateFlow<String> = _messageText.asStateFlow()
     fun setMessageText(text: String) { _messageText.value = text }
 
-    val estimateFeesEnabled: StateFlow<Boolean> = settings.estimateFees
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
-
     private val _currentUtxos = MutableStateFlow<List<UtxoEntry>>(emptyList())
     private val _networkFeeRate = MutableStateFlow(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble())
 
@@ -169,8 +166,8 @@ class BroadcastViewModel @Inject constructor(
      * estimateContextualMessageFee, which also prices off one output); the actual send path
      * computes this precisely against the real scriptPublicKey length.
      */
-    val estimatedFeeSompi: StateFlow<Long?> = combine(previewPayloadSize, _currentUtxos, estimateFeesEnabled, _networkFeeRate) { payloadSize, utxos, enabled, rate ->
-        if (!enabled || payloadSize == 0) return@combine null
+    val estimatedFeeSompi: StateFlow<Long?> = combine(previewPayloadSize, _currentUtxos, _networkFeeRate) { payloadSize, utxos, rate ->
+        if (payloadSize == 0) return@combine null
 
         var total = 0L
         var count = 0

@@ -110,7 +110,6 @@ class DiagnosticsExportService @Inject constructor(
             "knsApiUrl" to settingsRepository.knsApiUrl.first(),
             "kaspaRestUrl" to settingsRepository.kaspaRestUrl.first(),
             "activeAddress" to (settingsRepository.activeAddress.first() ?: walletManager.getAddress()),
-            "estimateFees" to settingsRepository.estimateFees.first().toString(),
             "notificationsEnabled" to settingsRepository.notificationsEnabled.first().toString(),
             "syncSystemContactsEnabled" to settingsRepository.syncSystemContactsEnabled.first().toString(),
             "autoCreateSystemContactsEnabled" to settingsRepository.autoCreateSystemContactsEnabled.first().toString(),
