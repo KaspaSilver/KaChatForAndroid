@@ -1555,14 +1555,14 @@ fun ProfileScreen(
                     .statusBarsPadding()
                     .padding(horizontal = 16.dp)
             ) {
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 TopStatusBar(
                     balance = balance,
                     onStatusClick = { navController.navigate("connection_status") },
                     dotColorHex = dotColorHex,
                     showAddButton = false
                 )
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
             }
         }
     ) { padding ->
@@ -1571,8 +1571,11 @@ fun ProfileScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp)
+                // Still scrollable as a safety net (smaller phones, larger system font scale),
+                // but every element below is sized to comfortably fit a typical phone screen
+                // without needing it.
                 .verticalScroll(scrollState),
-            verticalArrangement = Arrangement.spacedBy(24.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (pendingKnsCommit != null) {
                 SettingsSection(title = "Unfinished Inscription") {
@@ -1617,18 +1620,18 @@ fun ProfileScreen(
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(110.dp)
+                                    .height(64.dp)
                                     .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                                     .background(Color(0xFF1C1C1E))
                             )
                         }
-                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             ContactAvatar(
                                 imageUrl = knsProfile?.avatarUrl,
                                 fallbackText = activeProfileDomainName,
-                                size = 48.dp
+                                size = 40.dp
                             )
-                            Spacer(Modifier.width(16.dp))
+                            Spacer(Modifier.width(12.dp))
                             Column {
                                 Text(activeProfileDomainName, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
                                 val bio = knsProfile?.bio?.takeIf { it.isNotBlank() }
@@ -1636,7 +1639,7 @@ fun ProfileScreen(
                                     bio ?: if (hasAnyProfileData) "On-chain profile data available." else "No on-chain profile data yet.",
                                     color = Color.Gray,
                                     style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 3,
+                                    maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
@@ -3873,19 +3876,19 @@ private fun ProfileCircleAction(
     ) {
         Box(
             modifier = Modifier
-                .size(64.dp)
+                .size(48.dp)
                 .clip(CircleShape)
                 .background(KaspaTeal)
                 .clickable(onClick = onClick),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, null, tint = Color.Black, modifier = Modifier.size(28.dp))
+            Icon(icon, null, tint = Color.Black, modifier = Modifier.size(22.dp))
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(4.dp))
         Text(
             label,
             color = Color.White,
-            fontSize = 12.sp,
+            fontSize = 11.sp,
             textAlign = TextAlign.Center,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
