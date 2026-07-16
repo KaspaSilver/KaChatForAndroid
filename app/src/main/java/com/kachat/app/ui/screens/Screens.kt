@@ -1423,7 +1423,12 @@ fun ImageBubble(
         return
     }
 
-    if (bitmap == null) {
+    // A plain local val snapshot — `bitmap` itself is a delegated property (`by produceState`),
+    // so Kotlin can't smart-cast it to non-null below just from the `== null` check on this line;
+    // each read of a delegated property calls its getValue() again, and the compiler can't prove
+    // it won't return a different (possibly null) value between the check and later reads.
+    val resolvedBitmap = bitmap
+    if (resolvedBitmap == null) {
         Surface(
             color = if (isSent) Color(0xFF2C2C2E) else Color(0xFF1C1C1E),
             shape = RoundedCornerShape(20.dp),
@@ -1447,7 +1452,7 @@ fun ImageBubble(
             .combinedClickable(onClick = { showFullScreen = true }, onLongClick = onLongPress, onDoubleClick = onDoubleClick)
     ) {
         Image(
-            bitmap = bitmap.asImageBitmap(),
+            bitmap = resolvedBitmap.asImageBitmap(),
             contentDescription = "Photo message",
             modifier = Modifier.clip(RoundedCornerShape(16.dp)),
             contentScale = ContentScale.FillWidth
@@ -1464,7 +1469,7 @@ fun ImageBubble(
                 contentAlignment = Alignment.Center
             ) {
                 Image(
-                    bitmap = bitmap.asImageBitmap(),
+                    bitmap = resolvedBitmap.asImageBitmap(),
                     contentDescription = "Photo message, full screen",
                     modifier = Modifier.fillMaxWidth(),
                     contentScale = ContentScale.Fit
