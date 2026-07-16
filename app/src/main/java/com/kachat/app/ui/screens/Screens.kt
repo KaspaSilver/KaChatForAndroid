@@ -107,7 +107,11 @@ import com.kachat.app.viewmodels.ConnectionViewModel
 import com.kachat.app.viewmodels.NodeInfo
 import com.kachat.app.viewmodels.SettingsViewModel
 import com.kachat.app.viewmodels.WalletViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -1280,6 +1284,24 @@ fun AudioBubble(voiceContent: VoiceMessageContent, isSent: Boolean, onLongPress:
 }
 
 /**
+ * Small in-memory cache of already-decoded chat-photo bitmaps, keyed by the message's raw base64
+ * content string - avoids re-decoding on every recomposition/scroll-back-into-view for a photo
+ * that's already been shown once. Sized like iOS's equivalent `thumbnailCache` (24MB).
+ */
+private val incomingPhotoBitmapCache = object : android.util.LruCache<String, android.graphics.Bitmap>(24 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: android.graphics.Bitmap) = value.byteCount
+}
+
+/**
+ * Bounds how many photo decodes run at once. Without this, opening a chat with many photos -
+ * especially scrolling straight to the bottom of a long history, as happens when a notification
+ * tap opens straight into a photo-heavy chat - decoded every visible bubble's bitmap at once. Each
+ * decode is cheap individually, but a burst of them can still contend with the main thread's own
+ * layout/scroll work for CPU time on a busy launch. Matches iOS's `ImageDecodeLimiter`.
+ */
+private val incomingPhotoDecodeLimiter = Semaphore(3)
+
+/**
  * Decodes an incoming photo's raw bytes, trying [ImageDecoder] as a fallback if [BitmapFactory]
  * returns null. Android and (as of the AVIF-removal fix) iOS only ever send plain JPEG chat photos
  * now (see `ImagePrep.prepareForChatMessage`'s doc comment), but the real Kasia web client is a
@@ -1368,14 +1390,47 @@ fun ImageBubble(
     }
 
     var showFullScreen by remember { mutableStateOf(false) }
-    val bitmap = remember(imageContent.content) {
-        try {
-            val bytes = android.util.Base64.decode(ImageMessage.base64Payload(imageContent), android.util.Base64.DEFAULT)
-            decodeIncomingPhotoBitmap(bytes, imageContent.mimeType)
-        } catch (e: Exception) {
-            android.util.Log.e("ImageBubble", "Could not decode photo message", e)
-            null
+    val cachedBitmap = remember(imageContent.content) { incomingPhotoBitmapCache.get(imageContent.content) }
+    var isDecoding by remember(imageContent.content) { mutableStateOf(cachedBitmap == null) }
+    // Decoded off the main thread and rate-limited (see incomingPhotoDecodeLimiter's doc comment)
+    // - this used to be a plain `remember(imageContent.content) { ... }`, which runs its block
+    // synchronously during composition on the main thread. Opening a chat with many photos at
+    // once (e.g. scrolling straight to the bottom via a notification tap) decoded every visible
+    // bubble's bitmap inline, one after another, blocking Compose's own layout/draw pass for as
+    // long as all of them took combined - a guaranteed freeze, not just a contention risk.
+    val bitmap by produceState<android.graphics.Bitmap?>(initialValue = cachedBitmap, key1 = imageContent.content) {
+        if (value != null) {
+            isDecoding = false
+            return@produceState
         }
+        value = incomingPhotoDecodeLimiter.withPermit {
+            withContext(Dispatchers.Default) {
+                incomingPhotoBitmapCache.get(imageContent.content)?.let { return@withContext it }
+                try {
+                    val bytes = android.util.Base64.decode(ImageMessage.base64Payload(imageContent), android.util.Base64.DEFAULT)
+                    decodeIncomingPhotoBitmap(bytes, imageContent.mimeType)?.also {
+                        incomingPhotoBitmapCache.put(imageContent.content, it)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("ImageBubble", "Could not decode photo message", e)
+                    null
+                }
+            }
+        }
+        isDecoding = false
+    }
+
+    if (isDecoding) {
+        Surface(
+            color = if (isSent) Color(0xFF2C2C2E) else Color(0xFF1C1C1E),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.size(width = 220.dp, height = 160.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = KaspaTeal, modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
+            }
+        }
+        return
     }
 
     if (bitmap == null) {
