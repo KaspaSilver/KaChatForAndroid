@@ -27,6 +27,9 @@
     <!-- Vibration for notification feedback -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Biometric/device-credential prompt guarding the seed phrase and account unlock -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
     <!-- Keeps the message/handshake/payment poll loop alive in the background —
          Android freezes a plain background process's threads within seconds otherwise,
          which silently stopped notifications from firing once the app was backgrounded. -->

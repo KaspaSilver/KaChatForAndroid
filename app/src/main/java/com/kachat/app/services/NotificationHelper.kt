@@ -10,6 +10,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.kachat.app.MainActivity
 import com.kachat.app.R
+import com.kachat.app.models.ContactNotificationMode
 import com.kachat.app.repository.AppSettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,9 +65,10 @@ class NotificationHelper @Inject constructor(
         activeChannelName.value = channelName
     }
 
-    suspend fun show(contactId: String, title: String, text: String) {
+    suspend fun show(contactId: String, title: String, text: String, notificationOverride: ContactNotificationMode? = null) {
         if (activeContactId.value == contactId) return // already looking at this conversation
         if (!settings.notificationsEnabled.first()) return
+        if (notificationOverride == ContactNotificationMode.OFF) return
 
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -82,7 +84,13 @@ class NotificationHelper @Inject constructor(
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val soundEnabled = settings.notificationSoundEnabled.first()
+        // Off/No Sound/Sound override wins over the global sound setting; vibration always
+        // follows the global setting regardless — the override is specifically about sound.
+        val soundEnabled = when (notificationOverride) {
+            ContactNotificationMode.SOUND -> true
+            ContactNotificationMode.NO_SOUND -> false
+            else -> settings.notificationSoundEnabled.first()
+        }
         val vibrationEnabled = settings.notificationVibrationEnabled.first()
         val channelId = channelFor(soundEnabled, vibrationEnabled)
         val notification = NotificationCompat.Builder(context, channelId)

@@ -75,6 +75,7 @@ import com.google.zxing.ResultMetadataType
 import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import com.kachat.app.ui.theme.KaspaTeal
+import com.kachat.app.ui.theme.LocalAppColors
 import com.kachat.app.util.QrFrameChunker
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -126,15 +127,15 @@ fun MultiFrameQrScannerOverlay(
     var done by remember { mutableStateOf(false) }
 
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-        Text("Scan Signed Transaction", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        Text("Scan Signed Transaction", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         Spacer(Modifier.height(12.dp))
 
         Box(
             modifier = Modifier
                 .size(280.dp)
                 .clip(RoundedCornerShape(14.dp))
-                .background(Color.Black)
-                .border(1.dp, Color(0xFF2C2C2E), RoundedCornerShape(14.dp)),
+                .background(LocalAppColors.current.background)
+                .border(1.dp, LocalAppColors.current.surfaceVariant, RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center
         ) {
             if (hasCameraPermission) {
@@ -166,7 +167,7 @@ fun MultiFrameQrScannerOverlay(
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(16.dp)) {
                     Text(
                         "Camera permission is needed to scan a QR code",
-                        color = Color.Gray,
+                        color = LocalAppColors.current.textSecondary,
                         textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -188,19 +189,19 @@ fun MultiFrameQrScannerOverlay(
                         modifier = Modifier
                             .size(8.dp)
                             .clip(CircleShape)
-                            .background(if (i in receivedIndices) KaspaTeal else Color(0xFF2C2C2E))
+                            .background(if (i in receivedIndices) KaspaTeal else LocalAppColors.current.surfaceVariant)
                     )
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Text("$received / $total frames", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            Text("$received / $total frames", color = LocalAppColors.current.textSecondary, style = MaterialTheme.typography.bodySmall)
         } else {
-            Text("Waiting for camera...", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            Text("Waiting for camera...", color = LocalAppColors.current.textSecondary, style = MaterialTheme.typography.bodySmall)
         }
 
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = onCancel) {
-            Text("Cancel", color = Color.Gray)
+            Text("Cancel", color = LocalAppColors.current.textSecondary)
         }
     }
 }
@@ -222,7 +223,7 @@ private fun ScannerScaffold(onDismiss: () -> Unit, content: @Composable BoxScope
         if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    Box(modifier = Modifier.fillMaxSize().background(LocalAppColors.current.background)) {
         if (hasCameraPermission) {
             content()
 
@@ -240,7 +241,7 @@ private fun ScannerScaffold(onDismiss: () -> Unit, content: @Composable BoxScope
             ) {
                 Text(
                     "Camera permission is needed to scan a QR code",
-                    color = Color.White,
+                    color = LocalAppColors.current.textPrimary,
                     textAlign = TextAlign.Center
                 )
                 Spacer(Modifier.height(16.dp))
@@ -257,10 +258,13 @@ private fun ScannerScaffold(onDismiss: () -> Unit, content: @Composable BoxScope
                 .zIndex(1f)
                 .statusBarsPadding()
                 .padding(16.dp)
-                .size(40.dp)
-                .background(Color(0x66000000), CircleShape)
+                .size(48.dp)
+                // Always a white icon on a solid dark circle — this sits on a live camera
+                // preview, not the app's own background, so it must stay visible regardless
+                // of light/dark theme rather than following LocalAppColors.
+                .background(Color(0xCC000000), CircleShape)
         ) {
-            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White, modifier = Modifier.size(28.dp))
         }
     }
 }

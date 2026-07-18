@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -44,6 +45,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.kachat.app.ui.screens.*
 import com.kachat.app.ui.theme.KaspaTeal
+import com.kachat.app.ui.theme.LocalAppColors
 import com.kachat.app.viewmodels.WalletViewModel
 import com.kachat.app.viewmodels.ChatViewModel
 import kotlin.math.roundToInt
@@ -52,14 +54,21 @@ import kotlin.math.roundToInt
  * Top-level navigation destinations.
  */
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
-    object Settings  : Screen("settings",  "Settings",  Icons.Default.Settings)
-    object Chats     : Screen("chats",     "Chats",     Icons.Default.Forum)
-    object Portfolio : Screen("portfolio", "Portfolio", Icons.Default.PieChart)
-    object Profile   : Screen("profile",   "Profile",   Icons.Default.AccountCircle)
-    object Swap      : Screen("swap",      "Swap",      Icons.Default.SwapHoriz)
+    object Settings    : Screen("settings",     "Settings",     Icons.Default.Settings)
+    object Chats       : Screen("chats",        "Chats",        Icons.Default.Forum)
+    object Portfolio   : Screen("portfolio",    "Portfolio",    Icons.Default.PieChart)
+    object Profile     : Screen("profile",      "Profile",      Icons.Default.AccountCircle)
+    object Swap        : Screen("swap",         "Swap",         Icons.Default.SwapHoriz)
+    // Opt-in sixth tab (Settings > Customization > Menu) — off the bottom nav by default, reached
+    // via Portfolio's "Cold Storage Devices" row instead. See AppSettingsRepository.coldStorageTabEnabled.
+    object ColdStorage : Screen("cold_storage", "Cold Storage", Icons.Default.Lock)
 }
 
-// All top-level tabs, in the app's default order.
+/** Route strings for tabs that can never be hidden — see [resolveTabOrder]. */
+val ALWAYS_VISIBLE_TAB_ROUTES = setOf(Screen.Settings.route, Screen.Chats.route, Screen.Profile.route)
+
+// All top-level tabs, in the app's default order. Cold Storage is deliberately excluded — it's
+// opt-in only, added dynamically in resolveTabOrder when enabled.
 val bottomNavItems = listOf(
     Screen.Settings,
     Screen.Portfolio,
@@ -73,13 +82,19 @@ val bottomNavItems = listOf(
  * in that order. Any route no longer recognized (e.g. a tab removed in a future update) is
  * dropped, and any [Screen] missing from the persisted list (e.g. a tab added since the user
  * last reordered) is appended at the end — so neither a stale persisted value nor an app update
- * can leave a tab permanently missing or crash on an unknown route.
+ * can leave a tab permanently missing or crash on an unknown route. [hiddenTabs] then filters out
+ * anything the user unchecked in Settings > Customization > Menu (never applied to
+ * [ALWAYS_VISIBLE_TAB_ROUTES]), and [coldStorageEnabled] adds the opt-in sixth tab before any of
+ * that ordering/filtering happens, so it slots in wherever the persisted order says (or at the
+ * end, the first time it's turned on).
  */
-private fun resolveTabOrder(routes: List<String>): List<Screen> {
-    val byRoute = bottomNavItems.associateBy { it.route }
+private fun resolveTabOrder(routes: List<String>, hiddenTabs: Set<String>, coldStorageEnabled: Boolean): List<Screen> {
+    val availableItems = if (coldStorageEnabled) bottomNavItems + Screen.ColdStorage else bottomNavItems
+    val byRoute = availableItems.associateBy { it.route }
     val resolved = routes.mapNotNull { byRoute[it] }
-    val missing = bottomNavItems.filter { it !in resolved }
-    return resolved + missing
+    val missing = availableItems.filter { it !in resolved }
+    val ordered = resolved + missing
+    return ordered.filter { it.route in ALWAYS_VISIBLE_TAB_ROUTES || it.route !in hiddenTabs }
 }
 
 /**
@@ -130,21 +145,27 @@ fun MainShell(
     // participating in a public room, one tap away from Chats/Settings/Profile, not a private
     // conversation you'd want to maximize screen space for.
     val onTabRoute = currentDestination?.hierarchy?.any { dest ->
-        bottomNavItems.any { it.route == dest.route } || dest.route == "broadcasts" || dest.route == "broadcast_channel/{channelName}"
+        bottomNavItems.any { it.route == dest.route } || dest.route == Screen.ColdStorage.route ||
+            dest.route == "broadcasts" || dest.route == "broadcast_channel/{channelName}"
     } == true
 
     // Press-and-hold a tab, then drag to reorder — the persisted order (WalletViewModel.tabOrder)
     // is only written on drag end; localTabOrder is the live, possibly-mid-drag copy the Row
     // actually renders from, reconciled back to the persisted order whenever it changes and no
     // drag is in progress (so a fresh install / another device's order still applies normally).
+    // Also reconciled on hiddenTabs/coldStorageTabEnabled changes, so toggling a tab in Settings >
+    // Customization > Menu updates the bar immediately without needing to leave/reopen it.
     val persistedTabOrder by walletViewModel.tabOrder.collectAsState()
+    val hiddenTabs by walletViewModel.hiddenTabs.collectAsState()
+    val coldStorageTabEnabled by walletViewModel.coldStorageTabEnabled.collectAsState()
+    val hideBottomBar by walletViewModel.hideBottomBar.collectAsState()
     var draggedScreen by remember { mutableStateOf<Screen?>(null) }
     var dragOffsetX by remember { mutableStateOf(0f) }
     var tabItemWidthPx by remember { mutableStateOf(0f) }
-    var localTabOrder by remember { mutableStateOf(resolveTabOrder(persistedTabOrder)) }
-    LaunchedEffect(persistedTabOrder) {
+    var localTabOrder by remember { mutableStateOf(resolveTabOrder(persistedTabOrder, hiddenTabs, coldStorageTabEnabled)) }
+    LaunchedEffect(persistedTabOrder, hiddenTabs, coldStorageTabEnabled) {
         if (draggedScreen == null) {
-            localTabOrder = resolveTabOrder(persistedTabOrder)
+            localTabOrder = resolveTabOrder(persistedTabOrder, hiddenTabs, coldStorageTabEnabled)
         }
     }
 
@@ -167,13 +188,13 @@ fun MainShell(
     }
 
     Scaffold(
-        containerColor = Color.Black,
+        containerColor = LocalAppColors.current.background,
         bottomBar = {
             // Only show the floating tab bar on the top-level tab destinations —
             // "pushed" detail screens (chat thread, settings sub-screens, etc.) fill
             // the whole screen with their own Scaffold and must not have this
             // overlaid on top of them (it was blocking the chat input entirely).
-            if (onTabRoute) {
+            if (onTabRoute && !hideBottomBar) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -189,7 +210,7 @@ fun MainShell(
                         modifier = Modifier
                             .height(80.dp)
                             .fillMaxWidth()
-                            .background(Color(0xFF1C1C1E), RoundedCornerShape(40.dp))
+                            .background(LocalAppColors.current.surface, RoundedCornerShape(40.dp))
                             .padding(horizontal = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceAround
@@ -250,12 +271,16 @@ fun MainShell(
                                             )
                                         }
                                         .clickable {
-                                            // Already there — do nothing. Without this guard, re-tapping the
-                                            // active tab still ran the popBackStack/navigate logic below, which
-                                            // for a tab with nothing "pushed" above it falls through to
-                                            // navigate() and lands back on the graph's start destination
-                                            // (Chats) instead of staying put.
-                                            if (selected) return@clickable
+                                            // Already there — let that screen know it was re-tapped (so it can
+                                            // dismiss its own transient UI, e.g. a full-screen QR overlay) rather
+                                            // than running the popBackStack/navigate logic below, which for a tab
+                                            // with nothing "pushed" above it falls through to navigate() and
+                                            // lands back on the graph's start destination (Chats) instead of
+                                            // staying put.
+                                            if (selected) {
+                                                walletViewModel.notifyTabReselected(screen.route)
+                                                return@clickable
+                                            }
 
                                             // Tapping back to the graph's start destination (Chats) from a
                                             // "pushed" screen like Broadcasts via navigate()+popUpTo alone is
@@ -284,14 +309,20 @@ fun MainShell(
                                         Icon(
                                             imageVector = screen.icon,
                                             contentDescription = screen.label,
-                                            tint = if (selected) KaspaTeal else Color.White,
+                                            tint = if (selected) KaspaTeal else LocalAppColors.current.textPrimary,
                                             modifier = Modifier.size(24.dp)
                                         )
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
                                             text = screen.label,
-                                            color = if (selected) KaspaTeal else Color.White,
-                                            fontSize = 10.sp,
+                                            color = if (selected) KaspaTeal else LocalAppColors.current.textPrimary,
+                                            // Longer labels ("Cold Storage") don't fit at 10sp once there are
+                                            // enough tabs that each weight(1f) slot narrows below their natural
+                                            // width — shrink just those instead of letting them clip/wrap and
+                                            // get cut off by the fixed-height Box.
+                                            fontSize = if (screen.label.length > 9) 8.sp else 10.sp,
+                                            maxLines = 1,
+                                            softWrap = false,
                                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                                         )
                                     }
@@ -379,21 +410,45 @@ fun MainShell(
                 popExitTransition = { ExitTransition.None }
             ) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
-                    SwapScreen()
+                    SwapScreen(navController = navController)
                 }
             }
 
-            composable("portfolio_transactions") { backStackEntry ->
+            composable(
+                "portfolio_transactions?prefillType={prefillType}&prefillAmountKas={prefillAmountKas}&prefillFiatValue={prefillFiatValue}&prefillTimestamp={prefillTimestamp}&prefillNotes={prefillNotes}&prefillSwapId={prefillSwapId}",
+                arguments = listOf(
+                    navArgument("prefillType") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("prefillAmountKas") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("prefillFiatValue") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("prefillTimestamp") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("prefillNotes") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("prefillSwapId") { type = NavType.StringType; nullable = true; defaultValue = null }
+                )
+            ) { backStackEntry ->
                 // Shares the Portfolio tab's own PortfolioViewModel instance rather than a fresh
                 // one, so adding/editing/deleting a transaction here is immediately reflected in
                 // the summary card and charts back on Portfolio — see PortfolioTransactionsScreen's
-                // doc comment.
+                // doc comment. That only works if the Portfolio tab's own back stack entry already
+                // exists (getBackStackEntry throws otherwise) — true when reached from Portfolio's
+                // own "View All" button, but NOT when reached from Swap's "Add to Portfolio" if the
+                // user never opened the Portfolio tab this session, so fall back to a fresh instance.
                 val parentEntry = remember(backStackEntry) {
-                    navController.getBackStackEntry(Screen.Portfolio.route)
+                    try {
+                        navController.getBackStackEntry(Screen.Portfolio.route)
+                    } catch (e: IllegalArgumentException) {
+                        null
+                    }
                 }
+                val args = backStackEntry.arguments
                 PortfolioTransactionsScreen(
                     onBack = { navController.popBackStack() },
-                    viewModel = hiltViewModel(parentEntry)
+                    viewModel = if (parentEntry != null) hiltViewModel(parentEntry) else hiltViewModel(),
+                    prefillType = args?.getString("prefillType"),
+                    prefillAmountKas = args?.getString("prefillAmountKas")?.toDoubleOrNull(),
+                    prefillFiatValue = args?.getString("prefillFiatValue")?.toDoubleOrNull(),
+                    prefillTimestampMillis = args?.getString("prefillTimestamp")?.toLongOrNull(),
+                    prefillNotes = args?.getString("prefillNotes")?.let { android.net.Uri.decode(it) },
+                    prefillSwapId = args?.getString("prefillSwapId")
                 )
             }
 
@@ -405,16 +460,32 @@ fun MainShell(
             }
 
             composable("cold_storage") {
-                ColdStorageListScreen(navController = navController)
+                // Now potentially a tab destination too (Settings > Customization > Menu), so
+                // the floating bottom nav bar can be showing here — reserve room beneath the
+                // screen's own FAB the same way every other tab screen does, or the "Scan" button
+                // sits underneath/behind the nav bar instead of above it.
+                Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
+                    ColdStorageListScreen(navController = navController, walletViewModel = walletViewModel)
+                }
             }
 
             composable(
                 "cold_storage_detail/{accountId}",
                 arguments = listOf(navArgument("accountId") { type = NavType.StringType })
             ) { backStackEntry ->
+                // Shares the "cold_storage" list screen's own ViewModel instance (always on the
+                // back stack — this screen is only ever reached by tapping a row there) rather
+                // than a fresh one scoped to this destination. A fresh instance's deleteAccount()
+                // updated its own _accounts flow only, leaving the list screen's copy stale until
+                // something else happened to recompose it — deleting an account looked like it
+                // hadn't taken effect until you left and came back.
+                val parentEntry = remember(backStackEntry) {
+                    navController.getBackStackEntry("cold_storage")
+                }
                 ColdStorageDetailScreen(
                     accountId = backStackEntry.arguments?.getString("accountId") ?: "",
-                    navController = navController
+                    navController = navController,
+                    viewModel = hiltViewModel(parentEntry)
                 )
             }
 
@@ -455,6 +526,58 @@ fun MainShell(
                     // (ColdStorageAddressDiscovery.getTransactionHistory) is keyed purely by
                     // address string, nothing cold-storage-specific about it, so it works
                     // identically for a regular spending address.
+                    onNavigateToTxHistory = { address -> navController.navigate("cold_storage_tx_history/$address") },
+                    onNavigateToHidden = { navController.navigate("manage_addresses_hidden") }
+                )
+            }
+
+            composable(
+                "manage_addresses_pick/{target}",
+                arguments = listOf(navArgument("target") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val target = backStackEntry.arguments?.getString("target") ?: "from"
+                ManageAddressesScreen(
+                    viewModel = walletViewModel,
+                    onBack = { navController.popBackStack() },
+                    onNavigateToHidden = { navController.navigate("manage_addresses_hidden_pick/$target") },
+                    onAddressPicked = { entry ->
+                        val swapEntry = navController.getBackStackEntry(Screen.Swap.route)
+                        if (target == "to") {
+                            swapEntry.savedStateHandle.set("picked_to_index", entry.index)
+                        } else {
+                            swapEntry.savedStateHandle.set("picked_from_index", entry.index)
+                            swapEntry.savedStateHandle.set("picked_from_balance", entry.balanceSompi)
+                        }
+                        navController.popBackStack(Screen.Swap.route, false)
+                    }
+                )
+            }
+
+            composable(
+                "manage_addresses_hidden_pick/{target}",
+                arguments = listOf(navArgument("target") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val target = backStackEntry.arguments?.getString("target") ?: "from"
+                ManageAddressesHiddenScreen(
+                    viewModel = walletViewModel,
+                    onBack = { navController.popBackStack() },
+                    onAddressPicked = { entry ->
+                        val swapEntry = navController.getBackStackEntry(Screen.Swap.route)
+                        if (target == "to") {
+                            swapEntry.savedStateHandle.set("picked_to_index", entry.index)
+                        } else {
+                            swapEntry.savedStateHandle.set("picked_from_index", entry.index)
+                            swapEntry.savedStateHandle.set("picked_from_balance", entry.balanceSompi)
+                        }
+                        navController.popBackStack(Screen.Swap.route, false)
+                    }
+                )
+            }
+
+            composable("manage_addresses_hidden") {
+                ManageAddressesHiddenScreen(
+                    viewModel = walletViewModel,
+                    onBack = { navController.popBackStack() },
                     onNavigateToTxHistory = { address -> navController.navigate("cold_storage_tx_history/$address") }
                 )
             }
@@ -474,8 +597,18 @@ fun MainShell(
                 )
             }
 
+            composable("settings_menu") {
+                MenuVisibilityScreen(navController = navController)
+            }
+
             composable("connection_settings") {
                 ConnectionSettingsScreen(
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable("kaspa_explorer_settings") {
+                KaspaExplorerSettingsScreen(
                     onBack = { navController.popBackStack() }
                 )
             }
@@ -572,7 +705,43 @@ fun MainShell(
                 ChatInfoScreen(
                     contactId = contactId,
                     onBack = { navController.popBackStack() },
-                    fromBroadcast = fromBroadcast
+                    fromBroadcast = fromBroadcast,
+                    onNavigateToPhotoSettings = { id -> navController.navigate("contact_photo_settings/$id") },
+                    onNavigateToNotificationSettings = { id -> navController.navigate("contact_notification_settings/$id") },
+                    onNavigateToDomainSettings = { id -> navController.navigate("contact_domain_settings/$id") }
+                )
+            }
+
+            composable(
+                "contact_photo_settings/{contactId}",
+                arguments = listOf(navArgument("contactId") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val contactId = backStackEntry.arguments?.getString("contactId") ?: return@composable
+                ContactPhotoSettingsScreen(
+                    contactId = contactId,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable(
+                "contact_notification_settings/{contactId}",
+                arguments = listOf(navArgument("contactId") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val contactId = backStackEntry.arguments?.getString("contactId") ?: return@composable
+                ContactNotificationSettingsScreen(
+                    contactId = contactId,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable(
+                "contact_domain_settings/{contactId}",
+                arguments = listOf(navArgument("contactId") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val contactId = backStackEntry.arguments?.getString("contactId") ?: return@composable
+                ContactDomainSettingsScreen(
+                    contactId = contactId,
+                    onBack = { navController.popBackStack() }
                 )
             }
         }

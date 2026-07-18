@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -34,6 +35,8 @@ import com.kachat.app.R
 import com.kachat.app.services.WalletManager
 import com.kachat.app.ui.theme.KaspaSubtext
 import com.kachat.app.ui.theme.KaspaTeal
+import com.kachat.app.ui.theme.LocalAppColors
+import com.kachat.app.util.authenticateWithDeviceCredential
 import com.kachat.app.viewmodels.WalletViewModel
 
 /**
@@ -92,7 +95,7 @@ fun OnboardingScreen(viewModel: WalletViewModel) {
 @Composable
 fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit, onNavigateToImport: () -> Unit) {
     Surface(
-        color = Color.Black,
+        color = LocalAppColors.current.background,
         modifier = Modifier.fillMaxSize()
     ) {
         Column(
@@ -119,7 +122,7 @@ fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit, on
                     fontWeight = FontWeight.Bold,
                     fontSize = 36.sp
                 ),
-                color = Color.White
+                color = LocalAppColors.current.textPrimary
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -135,6 +138,7 @@ fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit, on
 
             val hasWallet by viewModel.hasWallet.collectAsState()
             val accounts by viewModel.accounts.collectAsState()
+            val biometricAccountLoginEnabled by viewModel.biometricAccountLoginEnabled.collectAsState()
 
             if (hasWallet) {
                 Column(
@@ -145,7 +149,7 @@ fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit, on
                 ) {
                     Text(
                         text = "Saved Accounts",
-                        color = Color.White,
+                        color = LocalAppColors.current.textPrimary,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         modifier = Modifier.padding(bottom = 12.dp)
                     )
@@ -154,6 +158,7 @@ fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit, on
                     accounts.forEach { account ->
                         SavedAccountCard(
                             account = account,
+                            requireBiometricLogin = biometricAccountLoginEnabled,
                             onLogin = { viewModel.login(account.address) },
                             onRename = { newName -> viewModel.renameAccount(account.address, newName) },
                             onDelete = { viewModel.deleteWallet(account.address) }
@@ -198,20 +203,20 @@ fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit, on
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1C1C1E)),
+                colors = ButtonDefaults.buttonColors(containerColor = LocalAppColors.current.surface),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         imageVector = Icons.Default.FileDownload,
                         contentDescription = null,
-                        tint = Color.White
+                        tint = LocalAppColors.current.textPrimary
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
                         text = "Import Existing Account",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = Color.White
+                        color = LocalAppColors.current.textPrimary
                     )
                 }
             }
@@ -222,6 +227,7 @@ fun WelcomeScreen(viewModel: WalletViewModel, onNavigateToCreate: () -> Unit, on
 @Composable
 fun SavedAccountCard(
     account: WalletManager.Account,
+    requireBiometricLogin: Boolean = true,
     onLogin: () -> Unit,
     onRename: (String) -> Unit,
     onDelete: () -> Unit
@@ -230,13 +236,23 @@ fun SavedAccountCard(
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var nameInput by remember { mutableStateOf(account.name) }
+    val context = LocalContext.current
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF1C1C1E))
-            .clickable { onLogin() }
+            .background(LocalAppColors.current.surface)
+            .clickable {
+                if (requireBiometricLogin) {
+                    context.authenticateWithDeviceCredential(
+                        title = "Unlock ${account.name}",
+                        onSuccess = onLogin
+                    )
+                } else {
+                    onLogin()
+                }
+            }
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -259,12 +275,12 @@ fun SavedAccountCard(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = account.name,
-                color = Color.White,
+                color = LocalAppColors.current.textPrimary,
                 fontWeight = FontWeight.Bold
             )
             Text(
                 text = account.address,
-                color = Color.Gray,
+                color = LocalAppColors.current.textSecondary,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -305,18 +321,18 @@ fun SavedAccountCard(
     if (showRenameDialog) {
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
-            containerColor = Color(0xFF1C1C1E),
-            title = { Text("Rename Account", color = Color.White) },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Rename Account", color = LocalAppColors.current.textPrimary) },
             text = {
                 OutlinedTextField(
                     value = nameInput,
                     onValueChange = { nameInput = it },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
+                        focusedTextColor = LocalAppColors.current.textPrimary,
+                        unfocusedTextColor = LocalAppColors.current.textPrimary,
                         focusedBorderColor = KaspaTeal,
-                        unfocusedBorderColor = Color.Gray
+                        unfocusedBorderColor = LocalAppColors.current.textSecondary
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -334,7 +350,7 @@ fun SavedAccountCard(
             },
             dismissButton = {
                 TextButton(onClick = { showRenameDialog = false }) {
-                    Text("Cancel", color = Color.Gray)
+                    Text("Cancel", color = LocalAppColors.current.textSecondary)
                 }
             }
         )
@@ -343,12 +359,12 @@ fun SavedAccountCard(
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
-            containerColor = Color(0xFF1C1C1E),
-            title = { Text("Delete Account", color = Color.White) },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Delete Account", color = LocalAppColors.current.textPrimary) },
             text = {
                 Text(
                     "This removes \"${account.name}\" from this device. Without its saved seed phrase, any remaining balance is unrecoverable.",
-                    color = Color.Gray
+                    color = LocalAppColors.current.textSecondary
                 )
             },
             confirmButton = {
@@ -361,7 +377,7 @@ fun SavedAccountCard(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text("Cancel", color = Color.Gray)
+                    Text("Cancel", color = LocalAppColors.current.textSecondary)
                 }
             }
         )
@@ -375,7 +391,7 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
     var wordCount by remember { mutableIntStateOf(24) }
 
     Surface(
-        color = Color.Black,
+        color = LocalAppColors.current.background,
         modifier = Modifier.fillMaxSize()
     ) {
         Column(
@@ -395,12 +411,12 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                 onClick = onBack,
                 modifier = Modifier
                     .size(40.dp)
-                    .background(Color(0xFF1C1C1E), CircleShape)
+                    .background(LocalAppColors.current.surface, CircleShape)
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
-                    tint = Color.White,
+                    tint = LocalAppColors.current.textPrimary,
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -410,7 +426,7 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
             Text(
                 text = "Create Account",
                 style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold),
-                color = Color.White
+                color = LocalAppColors.current.textPrimary
             )
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -420,7 +436,7 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1C1C1E))
+                    .background(LocalAppColors.current.surface)
                     .padding(16.dp)
             ) {
                 Icon(
@@ -440,7 +456,7 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "You will be shown a seed phrase. This is the only way to recover your account. Make sure you only write this down. Never take a screenshot or store it on your device.",
-                        color = Color.Gray,
+                        color = LocalAppColors.current.textSecondary,
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -450,7 +466,7 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
 
             Text(
                 text = "Seed Phrase Length",
-                color = Color.White,
+                color = LocalAppColors.current.textPrimary,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.titleMedium
             )
@@ -466,10 +482,10 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                     onClick = { wordCount = 24 },
                     shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
                     colors = SegmentedButtonDefaults.colors(
-                        activeContainerColor = Color(0xFF2C2C2E),
-                        activeContentColor = Color.White,
-                        inactiveContainerColor = Color(0xFF1C1C1E),
-                        inactiveContentColor = Color.Gray
+                        activeContainerColor = LocalAppColors.current.surfaceVariant,
+                        activeContentColor = LocalAppColors.current.textPrimary,
+                        inactiveContainerColor = LocalAppColors.current.surface,
+                        inactiveContentColor = LocalAppColors.current.textSecondary
                     )
                 ) {
                     Text("24 words (recommended)", fontSize = 12.sp)
@@ -479,10 +495,10 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                     onClick = { wordCount = 12 },
                     shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                     colors = SegmentedButtonDefaults.colors(
-                        activeContainerColor = Color(0xFF2C2C2E),
-                        activeContentColor = Color.White,
-                        inactiveContainerColor = Color(0xFF1C1C1E),
-                        inactiveContentColor = Color.Gray
+                        activeContainerColor = LocalAppColors.current.surfaceVariant,
+                        activeContentColor = LocalAppColors.current.textPrimary,
+                        inactiveContainerColor = LocalAppColors.current.surface,
+                        inactiveContentColor = LocalAppColors.current.textSecondary
                     )
                 ) {
                     Text("12 words", fontSize = 12.sp)
@@ -493,7 +509,7 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
 
             Text(
                 text = "Account Name",
-                color = Color.White,
+                color = LocalAppColors.current.textPrimary,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.titleMedium
             )
@@ -508,10 +524,10 @@ fun CreateAccountScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp)),
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color(0xFF1C1C1E),
-                    unfocusedContainerColor = Color(0xFF1C1C1E),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
+                    focusedContainerColor = LocalAppColors.current.surface,
+                    unfocusedContainerColor = LocalAppColors.current.surface,
+                    focusedTextColor = LocalAppColors.current.textPrimary,
+                    unfocusedTextColor = LocalAppColors.current.textPrimary,
                     cursorColor = KaspaTeal,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent
@@ -577,7 +593,7 @@ fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImporte
         }
     }
 
-    Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
+    Surface(color = LocalAppColors.current.background, modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -592,12 +608,12 @@ fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImporte
                 onClick = onBack,
                 modifier = Modifier
                     .size(40.dp)
-                    .background(Color(0xFF1C1C1E), CircleShape)
+                    .background(LocalAppColors.current.surface, CircleShape)
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
-                    tint = Color.White,
+                    tint = LocalAppColors.current.textPrimary,
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -607,7 +623,7 @@ fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImporte
             Text(
                 text = "Import Account",
                 style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold),
-                color = Color.White
+                color = LocalAppColors.current.textPrimary
             )
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -619,7 +635,7 @@ fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImporte
             ) {
                 Text(
                     text = "Seed Phrase",
-                    color = Color.White,
+                    color = LocalAppColors.current.textPrimary,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium
                 )
@@ -641,13 +657,13 @@ fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImporte
                     .heightIn(min = 120.dp)
                     .clip(RoundedCornerShape(12.dp)),
                 textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace),
-                placeholder = { Text("Enter your 12 or 24 word seed phrase", color = Color.Gray) },
+                placeholder = { Text("Enter your 12 or 24 word seed phrase", color = LocalAppColors.current.textSecondary) },
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrect = false),
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color(0xFF1C1C1E),
-                    unfocusedContainerColor = Color(0xFF1C1C1E),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
+                    focusedContainerColor = LocalAppColors.current.surface,
+                    unfocusedContainerColor = LocalAppColors.current.surface,
+                    focusedTextColor = LocalAppColors.current.textPrimary,
+                    unfocusedTextColor = LocalAppColors.current.textPrimary,
                     cursorColor = KaspaTeal,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent
@@ -675,7 +691,7 @@ fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImporte
 
             Text(
                 text = "Account Name",
-                color = Color.White,
+                color = LocalAppColors.current.textPrimary,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.titleMedium
             )
@@ -689,10 +705,10 @@ fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImporte
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp)),
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color(0xFF1C1C1E),
-                    unfocusedContainerColor = Color(0xFF1C1C1E),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
+                    focusedContainerColor = LocalAppColors.current.surface,
+                    unfocusedContainerColor = LocalAppColors.current.surface,
+                    focusedTextColor = LocalAppColors.current.textPrimary,
+                    unfocusedTextColor = LocalAppColors.current.textPrimary,
                     cursorColor = KaspaTeal,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent
@@ -708,7 +724,7 @@ fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImporte
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal, disabledContainerColor = Color(0xFF1C1C1E)),
+                colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal, disabledContainerColor = LocalAppColors.current.surface),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 if (isImporting) {
@@ -730,9 +746,9 @@ fun ImportWalletScreen(viewModel: WalletViewModel, onBack: () -> Unit, onImporte
     if (importState.status == WalletViewModel.ImportWalletStatus.FAILED) {
         AlertDialog(
             onDismissRequest = { viewModel.resetImportWalletState() },
-            containerColor = Color(0xFF1C1C1E),
-            title = { Text("Error", color = Color.White) },
-            text = { Text(importState.errorMessage ?: "Something went wrong", color = Color.Gray) },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Error", color = LocalAppColors.current.textPrimary) },
+            text = { Text(importState.errorMessage ?: "Something went wrong", color = LocalAppColors.current.textSecondary) },
             confirmButton = {
                 TextButton(onClick = { viewModel.resetImportWalletState() }) {
                     Text("OK", color = KaspaTeal, fontWeight = FontWeight.Bold)
@@ -748,7 +764,7 @@ fun BackupMnemonicScreen(mnemonic: String, onComplete: () -> Unit) {
     val words = remember { mnemonic.split(" ") }
 
     Surface(
-        color = Color.Black,
+        color = LocalAppColors.current.background,
         modifier = Modifier.fillMaxSize()
     ) {
         Column(
@@ -764,7 +780,7 @@ fun BackupMnemonicScreen(mnemonic: String, onComplete: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Spacer(modifier = Modifier.width(40.dp))
-                Text("Seed Phrase", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                Text("Seed Phrase", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
                 TextButton(onClick = onComplete) {
                     Text("Done", color = KaspaTeal, fontWeight = FontWeight.Bold)
                 }
@@ -816,19 +832,19 @@ fun BackupMnemonicScreen(mnemonic: String, onComplete: () -> Unit) {
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF1C1C1E))
+                            .background(LocalAppColors.current.surface)
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             text = "${index + 1}",
-                            color = Color.Gray,
+                            color = LocalAppColors.current.textSecondary,
                             fontSize = 12.sp,
                             modifier = Modifier.width(20.dp)
                         )
                         Text(
                             text = word,
-                            color = Color.White,
+                            color = LocalAppColors.current.textPrimary,
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.bodyMedium
                         )

@@ -12,6 +12,7 @@ import com.kachat.app.models.HiddenBroadcastSenderEntity
 import com.kachat.app.models.MessageEntity
 import com.kachat.app.models.MessageSyncCursorEntity
 import com.kachat.app.models.PortfolioTransactionEntity
+import com.kachat.app.models.SwapTransactionEntity
 
 /**
  * Room database — local persistence layer.
@@ -30,8 +31,9 @@ import com.kachat.app.models.PortfolioTransactionEntity
         DeletedContactEntity::class,
         MessageSyncCursorEntity::class,
         PortfolioTransactionEntity::class,
+        SwapTransactionEntity::class,
     ],
-    version = 20,
+    version = 23,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {
@@ -39,6 +41,7 @@ abstract class KaChatDatabase : RoomDatabase() {
     abstract fun contactDao(): ContactDao
     abstract fun broadcastDao(): BroadcastDao
     abstract fun portfolioDao(): PortfolioDao
+    abstract fun swapDao(): SwapDao
 
     companion object {
         /**
@@ -150,6 +153,47 @@ abstract class KaChatDatabase : RoomDatabase() {
         val MIGRATION_19_20 = object : Migration(19, 20) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `deleted_contacts` ADD COLUMN `deletedAtTxIds` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * v20 -> v21: adds `contacts.notificationOverride` (nullable [com.kachat.app.models.ContactNotificationMode]
+         * name, null = follow Settings > Notifications) backing the per-contact "Incoming
+         * Notifications" picker in Chat Info — same shape of change as v18->v19's
+         * `photoAutoDisplayOverride`, so the same plain `ALTER TABLE ... ADD COLUMN` suffices.
+         */
+        val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `contacts` ADD COLUMN `notificationOverride` TEXT DEFAULT NULL")
+            }
+        }
+
+        /**
+         * v21 -> v22: adds `swap_transactions` — local history of ChangeNOW-powered swaps this
+         * device has started (see [SwapTransactionEntity]). Purely additive, same shape of change
+         * as v16->v17/v17->v18's new tables.
+         */
+        val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `swap_transactions` (" +
+                        "`id` TEXT NOT NULL, `fromTicker` TEXT NOT NULL, `fromNetwork` TEXT NOT NULL, " +
+                        "`toTicker` TEXT NOT NULL, `toNetwork` TEXT NOT NULL, `fromAmount` TEXT NOT NULL, " +
+                        "`toAmount` TEXT NOT NULL, `payinAddress` TEXT NOT NULL, `payoutAddress` TEXT NOT NULL, " +
+                        "`status` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, `kasSendTxId` TEXT, " +
+                        "PRIMARY KEY(`id`))"
+                )
+            }
+        }
+
+        /**
+         * v22 -> v23: adds `swap_transactions.addedToPortfolio` so the Swap History detail view's
+         * "Add to Portfolio" action can only fire once per swap (otherwise reopening a finished
+         * swap and tapping it again would double-count the KAS in the portfolio's holdings math).
+         */
+        val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `swap_transactions` ADD COLUMN `addedToPortfolio` INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

@@ -126,7 +126,7 @@ class BroadcastRepository @Inject constructor(
      * swapped for the real message (real txId, "sent"); on failure it flips to "failed" in place
      * with a Retry option, rather than disappearing silently.
      */
-    suspend fun sendBroadcast(channelName: String, content: String): String {
+    suspend fun sendBroadcast(channelName: String, content: String, feeRateOverride: Long? = null): String {
         val myAddress = walletManager.getAddress()
         val pendingId = "pending_${java.util.UUID.randomUUID()}"
         database.broadcastDao().insertMessage(
@@ -140,7 +140,7 @@ class BroadcastRepository @Inject constructor(
             )
         )
         try {
-            val txId = walletService.sendBroadcast(channelName, content).txId
+            val txId = walletService.sendBroadcast(channelName, content, feeRateOverride = feeRateOverride).txId
             database.broadcastDao().deleteMessage(pendingId)
             database.broadcastDao().insertMessage(
                 BroadcastMessageEntity(

@@ -61,6 +61,13 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { settings.setChatPhotoQualityPreset(preset) }
     }
 
+    val kaspaExplorer: StateFlow<com.kachat.app.models.KaspaExplorer> = settings.kaspaExplorer
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), com.kachat.app.models.KaspaExplorer.default)
+
+    fun updateKaspaExplorer(explorer: com.kachat.app.models.KaspaExplorer) {
+        viewModelScope.launch { settings.setKaspaExplorer(explorer) }
+    }
+
     val revealedPhotoTxIds: StateFlow<Set<String>> = settings.revealedPhotoTxIds
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptySet())
 
@@ -72,8 +79,16 @@ class ChatViewModel @Inject constructor(
     /** Per-contact override for the "Photos" picker in Chat Info — null clears back to Automatic. */
     fun updateContactPhotoOverride(contactId: String, override: com.kachat.app.models.PhotoAutoDisplayMode?) {
         viewModelScope.launch {
-            val existing = chatRepository.getContact(contactId) ?: return@launch
+            val existing = getOrCreateContact(contactId)
             chatRepository.addContact(existing.copy(photoAutoDisplayOverride = override?.name))
+        }
+    }
+
+    /** Per-contact override for the "Incoming Notifications" picker in Chat Info — null clears back to Default. */
+    fun updateContactNotificationOverride(contactId: String, override: com.kachat.app.models.ContactNotificationMode?) {
+        viewModelScope.launch {
+            val existing = getOrCreateContact(contactId)
+            chatRepository.addContact(existing.copy(notificationOverride = override?.name))
         }
     }
 
@@ -338,7 +353,7 @@ class ChatViewModel @Inject constructor(
             _wipeIncomingState.value = DangerZoneOpState(status = DangerZoneOpStatus.IN_PROGRESS)
             try {
                 chatRepository.wipeIncomingMessagesAndResync()
-                _wipeIncomingState.value = DangerZoneOpState(status = DangerZoneOpStatus.SUCCESS, message = "Incoming messages wiped — re-syncing from the blockchain.")
+                _wipeIncomingState.value = DangerZoneOpState(status = DangerZoneOpStatus.SUCCESS, message = "Incoming messages wiped. Re-syncing from the blockchain.")
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Wipe incoming messages failed", e)
                 _wipeIncomingState.value = DangerZoneOpState(status = DangerZoneOpStatus.FAILED, message = e.message ?: "Failed")
@@ -449,9 +464,25 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { chatRepository.deleteChat(contactId) }
     }
 
+    /**
+     * A broadcast sender viewed via "User Info" isn't necessarily a saved 1:1 contact yet — unlike
+     * [addContact] (the real "add/import" flow, with its primary-domain auto-fill side effect),
+     * this is just a bare local row so per-contact fields (name/photo/notification overrides,
+     * chosen KNS domain) have somewhere to persist to the first time one of them is edited.
+     */
+    private suspend fun getOrCreateContact(contactId: String): ContactEntity {
+        return chatRepository.getContact(contactId) ?: ContactEntity(
+            id = contactId,
+            walletAddress = walletManager.getAddress(),
+            alias = null,
+            knsName = null,
+            publicKeyHex = null
+        )
+    }
+
     fun updateContactName(contactId: String, newName: String) {
         viewModelScope.launch {
-            val existing = chatRepository.getContact(contactId) ?: return@launch
+            val existing = getOrCreateContact(contactId)
             val updated = existing.copy(alias = if (newName.isBlank()) null else newName)
             chatRepository.addContact(updated)
         }
@@ -491,6 +522,16 @@ class ChatViewModel @Inject constructor(
 
     private val _networkFeeRate = MutableStateFlow(com.kachat.app.util.KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble()) // sompi per mass-gram
     val networkFeeRate: StateFlow<Double> = _networkFeeRate.asStateFlow()
+
+    // User-adjustable override for a busy fee market — set via the composer's clickable fee pill.
+    // Applies to whatever's sent next (message/photo/voice/payment) and clears itself afterward so
+    // a stale manual bump doesn't silently carry over to an unrelated later send.
+    private val _feeRateOverride = MutableStateFlow<Long?>(null)
+    val feeRateOverride: StateFlow<Long?> = _feeRateOverride.asStateFlow()
+
+    fun setFeeRateOverride(rate: Long?) {
+        _feeRateOverride.value = rate
+    }
 
     enum class VoiceRecordingStatus { IDLE, RECORDING }
     data class VoiceRecordingState(val status: VoiceRecordingStatus = VoiceRecordingStatus.IDLE, val elapsedMs: Long = 0L)
@@ -533,7 +574,8 @@ class ChatViewModel @Inject constructor(
     private val utxosForFeeEstimate: Flow<Pair<List<com.kachat.app.services.UtxoEntry>, List<com.kachat.app.services.UtxoEntry>>> =
         combine(_currentUtxos, _spendingUtxos) { identity, spending -> identity to spending }
 
-    val estimatedFeeSompi: StateFlow<Long?> = combine(paymentAmount, previewPayloadSize, utxosForFeeEstimate, _networkFeeRate) { amount, textPayloadSize, utxosPair, rate ->
+    val estimatedFeeSompi: StateFlow<Long?> = combine(paymentAmount, previewPayloadSize, utxosForFeeEstimate, _networkFeeRate, _feeRateOverride) { amount, textPayloadSize, utxosPair, networkRate, overrideRate ->
+        val rate = overrideRate?.toDouble() ?: networkRate
         if (amount.isEmpty() && textPayloadSize == 0) return@combine null
 
         val isPayment = amount.isNotEmpty()
@@ -687,11 +729,15 @@ class ChatViewModel @Inject constructor(
     private val _knsProfiles = MutableStateFlow<Map<String, KnsProfileUiState>>(emptyMap())
     val knsProfiles: StateFlow<Map<String, KnsProfileUiState>> = _knsProfiles.asStateFlow()
 
-    /** Fetches this contact's owned KNS domains + the active one's profile (avatar/bio/socials). */
+    /**
+     * Fetches this address's owned KNS domains + the active one's profile (avatar/bio/socials).
+     * Works for any address, not just a saved 1:1 contact — a broadcast sender viewed via "User
+     * Info" may never have a [ContactEntity] row at all, and their KNS profile should still show.
+     */
     fun refreshKnsProfile(contactId: String) {
         viewModelScope.launch {
-            val contact = chatRepository.getContact(contactId) ?: return@launch
-            val ownedAssets = knsService.getOwnedDomains(contact.id)
+            val contact = chatRepository.getContact(contactId)
+            val ownedAssets = knsService.getOwnedDomains(contactId)
             val ownedNames = ownedAssets.mapNotNull { it.asset }
 
             if (ownedNames.isEmpty()) {
@@ -699,15 +745,15 @@ class ChatViewModel @Inject constructor(
                 return@launch
             }
 
-            val primary = knsService.reverseResolve(contact.id)
-            val activeName = KnsService.pickActiveDomain(ownedNames, contact.knsName, primary)
+            val primary = knsService.reverseResolve(contactId)
+            val activeName = KnsService.pickActiveDomain(ownedNames, contact?.knsName, primary)
             val activeAsset = ownedAssets.firstOrNull { it.asset == activeName }
             val profile = activeAsset?.assetId?.let { knsService.getProfile(it) }
 
             _knsProfiles.update { it + (contactId to KnsProfileUiState(ownedNames, activeName, profile)) }
 
-            // Keep the chat list's cached avatar current.
-            if (profile?.avatarUrl != contact.knsAvatarUrl) {
+            // Keep the chat list's cached avatar current — only meaningful for an actual saved contact.
+            if (contact != null && profile?.avatarUrl != contact.knsAvatarUrl) {
                 chatRepository.addContact(contact.copy(knsAvatarUrl = profile?.avatarUrl))
             }
         }
@@ -720,7 +766,7 @@ class ChatViewModel @Inject constructor(
      */
     fun selectKnsDomain(contactId: String, domain: String) {
         viewModelScope.launch {
-            val contact = chatRepository.getContact(contactId) ?: return@launch
+            val contact = getOrCreateContact(contactId)
             chatRepository.addContact(contact.copy(knsName = domain, alias = domain))
             refreshKnsProfile(contactId)
         }
@@ -870,6 +916,8 @@ class ChatViewModel @Inject constructor(
     fun sendMessage(contactId: String, text: String) {
         if (text.isEmpty()) return
         val reply = _replyingTo.value
+        val feeRate = _feeRateOverride.value
+        _feeRateOverride.value = null
         viewModelScope.launch {
             val pendingId = "pending_${java.util.UUID.randomUUID()}"
             try {
@@ -902,7 +950,7 @@ class ChatViewModel @Inject constructor(
                 )
 
                 // Encrypt + send handshake (if needed) + encrypted message
-                val result = walletService.sendKasiaMessage(contactId, payload)
+                val result = walletService.sendKasiaMessage(contactId, payload, feeRateOverride = feeRate)
 
                 chatRepository.deleteMessage(pendingId)
                 chatRepository.insertMessage(
@@ -1061,6 +1109,8 @@ class ChatViewModel @Inject constructor(
     fun sendPayment(contactId: String, amount: String) {
         val amountKas = amount.toDoubleOrNull() ?: return
         val sompi = (amountKas * 100_000_000).toLong()
+        val feeRate = _feeRateOverride.value
+        _feeRateOverride.value = null
         viewModelScope.launch {
             val pendingId = "pending_${java.util.UUID.randomUUID()}"
             try {
@@ -1080,7 +1130,7 @@ class ChatViewModel @Inject constructor(
                     )
                 )
 
-                val txId = walletService.payInKaspa(toAddress = contactId, amountSompi = sompi)
+                val txId = walletService.payInKaspa(toAddress = contactId, amountSompi = sompi, feeRateOverride = feeRate)
 
                 chatRepository.deleteMessage(pendingId)
                 chatRepository.insertMessage(

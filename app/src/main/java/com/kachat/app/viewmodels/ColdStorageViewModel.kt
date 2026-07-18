@@ -2,6 +2,7 @@ package com.kachat.app.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.kachat.app.repository.AppSettingsRepository
 import com.kachat.app.services.ColdStorageAddressDiscovery
 import com.kachat.app.services.ColdStorageManager
 import com.kachat.app.services.ColdStorageSendEngine
@@ -10,8 +11,10 @@ import com.kachat.app.util.KsptCodec
 import com.kachat.app.util.QrFrameChunker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -24,11 +27,16 @@ import javax.inject.Inject
 class ColdStorageViewModel @Inject constructor(
     private val coldStorageManager: ColdStorageManager,
     private val addressDiscovery: ColdStorageAddressDiscovery,
-    private val sendEngine: ColdStorageSendEngine
+    private val sendEngine: ColdStorageSendEngine,
+    private val settings: AppSettingsRepository
 ) : ViewModel() {
 
     private val _accounts = MutableStateFlow(coldStorageManager.getAccounts())
     val accounts: StateFlow<List<ColdStorageManager.ColdAccount>> = _accounts.asStateFlow()
+
+    /** Which block explorer website "Go to Explorer" opens — shared preference, set in Settings > Kaspa Explorer. */
+    val kaspaExplorer: StateFlow<com.kachat.app.models.KaspaExplorer> = settings.kaspaExplorer
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), com.kachat.app.models.KaspaExplorer.default)
 
     enum class ImportStatus { IDLE, VALIDATING, SUCCESS, INVALID_KPUB }
     data class ImportUiState(val status: ImportStatus = ImportStatus.IDLE, val errorMessage: String? = null)
@@ -92,8 +100,9 @@ class ColdStorageViewModel @Inject constructor(
      * via [generateMoreAddresses] sits past where a fresh unused-account scan would ever stop,
      * so it'd otherwise vanish again on the very next refresh.
      */
-    fun refreshAddresses(accountId: String) {
+    fun refreshAddresses(accountId: String, onResult: (Int) -> Unit = {}) {
         val account = coldStorageManager.getAccounts().find { it.id == accountId } ?: return
+        val previousCount = _addresses.value.size
         viewModelScope.launch {
             _isDiscovering.value = true
             try {
@@ -117,20 +126,56 @@ class ColdStorageViewModel @Inject constructor(
                 _addresses.value = byIndex.values.sortedByDescending { it.index }.map {
                     AddressRow(it.index, it.address, it.balanceSompi, it.hasHistory, labels[it.index], it.index in hiddenIndices)
                 }
+                onResult((_addresses.value.size - previousCount).coerceAtLeast(0))
             } catch (e: Exception) {
                 _addresses.value = emptyList()
+                onResult(0)
             } finally {
                 _isDiscovering.value = false
             }
         }
     }
 
-    /** Derives and shows one more address past whatever's currently listed — for pulling up a fresh unused address on demand, without waiting for it to gain history first. */
+    /**
+     * Derives and shows one more address past whatever's currently listed — for pulling up a
+     * fresh unused address on demand, without waiting for it to gain history first. Checks only
+     * this one new index rather than going through [refreshAddresses]'s full gap-limit rescan
+     * (which sequentially re-checks every already-known address too) — that made the new address
+     * take as long to appear as a full account re-scan, when only one address actually changed.
+     */
     fun generateMoreAddresses(accountId: String) {
+        val account = coldStorageManager.getAccounts().find { it.id == accountId } ?: return
         val nextIndex = (_addresses.value.maxOfOrNull { it.index } ?: -1) + 1
         coldStorageManager.ensureMaxDerivedIndexAtLeast(accountId, nextIndex)
         _accounts.value = coldStorageManager.getAccounts()
-        refreshAddresses(accountId)
+
+        viewModelScope.launch {
+            _isDiscovering.value = true
+            try {
+                val parsed = KaspaExtendedPublicKey.parse(account.kpub).getOrThrow()
+                val rootKey = KaspaExtendedPublicKey.toDeterministicKey(parsed)
+                val discovered = addressDiscovery.checkAddress(rootKey, chain = 0, index = nextIndex)
+                if (discovered != null) {
+                    val labels = coldStorageManager.getAddressLabels(accountId)
+                    val hiddenIndices = coldStorageManager.getHiddenIndices(accountId)
+                    val newRow = AddressRow(
+                        discovered.index,
+                        discovered.address,
+                        discovered.balanceSompi,
+                        discovered.hasHistory,
+                        labels[discovered.index],
+                        discovered.index in hiddenIndices
+                    )
+                    _addresses.value = (_addresses.value.filterNot { it.index == nextIndex } + newRow)
+                        .sortedByDescending { it.index }
+                }
+            } catch (e: Exception) {
+                // Leave the existing list as-is — the next full refreshAddresses (e.g. re-entering
+                // this screen) will pick up the new address if this one-off check failed.
+            } finally {
+                _isDiscovering.value = false
+            }
+        }
     }
 
     fun setAddressLabel(accountId: String, index: Int, label: String) {
@@ -140,8 +185,15 @@ class ColdStorageViewModel @Inject constructor(
         }
     }
 
-    /** Hiding is purely a display preference — the address, its balance, and its label are untouched, and it always shows back up under "Hidden Addresses" to be unhidden. */
+    /**
+     * Hiding is purely a display preference — the address and its label are untouched, and it
+     * always shows back up under "Hidden Addresses" to be unhidden. Unhiding is always allowed,
+     * but an address can't be hidden in the first place while it still holds a balance — that's
+     * a case you'd want to keep an eye on, not tuck away.
+     */
     fun setAddressHidden(accountId: String, index: Int, hidden: Boolean) {
+        val row = _addresses.value.find { it.index == index } ?: return
+        if (hidden && row.balanceSompi > 0) return
         coldStorageManager.setAddressHidden(accountId, index, hidden)
         _addresses.value = _addresses.value.map {
             if (it.index == index) it.copy(hidden = hidden) else it
@@ -192,13 +244,13 @@ class ColdStorageViewModel @Inject constructor(
     // the original tx to verify the signed response's outputs/inputs weren't tampered with.
     private var pendingUnsignedTx: ColdStorageSendEngine.UnsignedColdTx? = null
 
-    fun startColdSend(fromAddress: String, toAddress: String, amountSompi: Long) {
+    fun startColdSend(fromAddress: String, toAddress: String, amountSompi: Long, feeRateOverride: Long? = null) {
         val step = _sendState.value.step
         if (step != ColdSendStep.IDLE && step != ColdSendStep.SUCCESS && step != ColdSendStep.FAILED) return
 
         _sendState.value = ColdSendUiState(step = ColdSendStep.BUILDING)
         viewModelScope.launch {
-            sendEngine.buildUnsignedTransaction(fromAddress, toAddress, amountSompi).fold(
+            sendEngine.buildUnsignedTransaction(fromAddress, toAddress, amountSompi, feeRateOverride).fold(
                 onSuccess = { unsigned ->
                     pendingUnsignedTx = unsigned
                     val kspt = sendEngine.toKspt(unsigned)
@@ -242,5 +294,19 @@ class ColdStorageViewModel @Inject constructor(
     fun resetColdSendState() {
         pendingUnsignedTx = null
         _sendState.value = ColdSendUiState()
+    }
+
+    /**
+     * Refreshes immediately, then again after a short delay — a just-broadcast transaction's
+     * UTXO changes aren't always reflected in the very next balance query, so one refresh right
+     * after a send can still show the stale pre-send balance. The second pass catches it without
+     * making the user pull-to-refresh themselves.
+     */
+    fun refreshAddressesSoonAfterSend(accountId: String) {
+        refreshAddresses(accountId)
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(3000)
+            refreshAddresses(accountId)
+        }
     }
 }

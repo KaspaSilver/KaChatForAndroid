@@ -42,7 +42,12 @@ class ColdStorageSendEngine @Inject constructor(
      * stay unambiguous, every input in a single send is sourced from exactly one address (picked
      * by the user from the account's address list), never aggregated across several.
      */
-    suspend fun buildUnsignedTransaction(fromAddress: String, toAddress: String, amountSompi: Long): Result<UnsignedColdTx> = mutex.withLock {
+    suspend fun buildUnsignedTransaction(
+        fromAddress: String,
+        toAddress: String,
+        amountSompi: Long,
+        feeRateOverride: Long? = null
+    ): Result<UnsignedColdTx> = mutex.withLock {
         try {
             require(KaspaAddress.isValid(toAddress)) { "Invalid recipient address" }
             require(amountSompi > 0) { "Amount must be greater than zero" }
@@ -55,7 +60,7 @@ class ColdStorageSendEngine @Inject constructor(
                 return@withLock Result.failure(IllegalStateException("No spendable UTXOs at this address"))
             }
 
-            val feeRateSompiPerGram = try {
+            val feeRateSompiPerGram = feeRateOverride?.coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM) ?: try {
                 val estimate = api.getFeeEstimate()
                 val quoted = estimate.normalBuckets.firstOrNull()?.feerate ?: KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble()
                 ceil(quoted).toLong().coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
@@ -83,7 +88,7 @@ class ColdStorageSendEngine @Inject constructor(
                 return@withLock Result.failure(
                     IllegalStateException(
                         "This send would need ${selection.selectedUtxos.size} UTXOs, but KasSigner only supports " +
-                            "${KsptCodec.MAX_INPUTS} inputs per transaction — send a smaller amount or consolidate this address first"
+                            "${KsptCodec.MAX_INPUTS} inputs per transaction. Send a smaller amount or consolidate this address first."
                     )
                 )
             }
@@ -165,7 +170,7 @@ class ColdStorageSendEngine @Inject constructor(
             decoded.outputs.forEachIndexed { index, decodedOutput ->
                 val original = unsignedTx.rawTx.outputs[index]
                 require(decodedOutput.valueSompi == original.amount && decodedOutput.spkScriptHex == original.scriptPublicKey.scriptPublicKey) {
-                    "Signed transaction's outputs don't match what was sent for signing — refusing to broadcast"
+                    "Signed transaction's outputs don't match what was sent for signing, so it won't be broadcast"
                 }
             }
 

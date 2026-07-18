@@ -6,6 +6,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -49,10 +51,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -63,10 +70,12 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.kachat.app.R
 import com.kachat.app.models.BroadcastRetention
 import com.kachat.app.models.FeaturedBroadcastChannels
 import com.kachat.app.repository.ChatRepository
 import com.kachat.app.ui.theme.KaspaTeal
+import com.kachat.app.ui.theme.LocalAppColors
 import com.kachat.app.util.ChatTimeFormat
 import com.kachat.app.util.MessageReply
 import com.kachat.app.util.VoiceMessage
@@ -74,7 +83,7 @@ import com.kachat.app.viewmodels.BroadcastViewModel
 import com.kachat.app.viewmodels.WalletViewModel
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun BroadcastListScreen(
     navController: NavController,
@@ -91,7 +100,7 @@ fun BroadcastListScreen(
     var channelInput by remember { mutableStateOf("") }
     var channelToLeave by remember { mutableStateOf<String?>(null) }
     var retentionSettingsChannelName by remember { mutableStateOf<String?>(null) }
-    var selectedTab by remember { mutableIntStateOf(0) }
+    val pagerState = rememberPagerState(pageCount = { if (popularTabEnabled) 2 else 1 })
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
@@ -103,63 +112,62 @@ fun BroadcastListScreen(
 
     // Don't leave the user stuck on a tab that just got hidden.
     LaunchedEffect(popularTabEnabled) {
-        if (!popularTabEnabled) selectedTab = 0
+        if (!popularTabEnabled && pagerState.currentPage != 0) pagerState.scrollToPage(0)
     }
 
     Scaffold(
-        containerColor = Color.Black,
+        containerColor = LocalAppColors.current.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            CenterAlignedTopAppBar(
-                title = { Text("Broadcasts", color = Color.White, fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { showBroadcastSettingsDialog = true }) {
-                        Icon(Icons.Default.Settings, "Broadcast Settings", tint = KaspaTeal)
-                    }
-                    IconButton(onClick = {
-                        channelInput = ""
-                        broadcastViewModel.resetJoinChannelState()
-                        showJoinDialog = true
-                    }) {
-                        Icon(Icons.Default.Add, "Join Channel", tint = KaspaTeal)
-                    }
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
-            )
-        }
-    ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (popularTabEnabled) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf("Channels" to 0, "Popular" to 1).forEach { (label, index) ->
-                        val selected = selectedTab == index
-                        Surface(
-                            color = if (selected) KaspaTeal else Color(0xFF1C1C1E),
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.weight(1f).clickable { selectedTab = index }
-                        ) {
-                            Text(
-                                label,
-                                color = if (selected) Color.Black else Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)
-                            )
+            Column {
+                CenterAlignedTopAppBar(
+                    title = { Text("Broadcasts", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
                         }
+                    },
+                    actions = {
+                        IconButton(onClick = { showBroadcastSettingsDialog = true }) {
+                            Icon(Icons.Default.Settings, "Broadcast Settings", tint = KaspaTeal)
+                        }
+                        IconButton(onClick = {
+                            channelInput = ""
+                            broadcastViewModel.resetJoinChannelState()
+                            showJoinDialog = true
+                        }) {
+                            Icon(Icons.Default.Add, "Join Channel", tint = KaspaTeal)
+                        }
+                    },
+                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = LocalAppColors.current.background)
+                )
+                if (popularTabEnabled) {
+                    TabRow(
+                        selectedTabIndex = pagerState.currentPage,
+                        containerColor = LocalAppColors.current.background,
+                        contentColor = KaspaTeal
+                    ) {
+                        Tab(
+                            selected = pagerState.currentPage == 0,
+                            onClick = { coroutineScope.launch { pagerState.animateScrollToPage(0) } },
+                            text = { Text("Channels", fontWeight = FontWeight.Bold) }
+                        )
+                        Tab(
+                            selected = pagerState.currentPage == 1,
+                            onClick = { coroutineScope.launch { pagerState.animateScrollToPage(1) } },
+                            text = { Text("Popular", fontWeight = FontWeight.Bold) }
+                        )
                     }
                 }
             }
-
-            if (selectedTab == 1 && popularTabEnabled) {
+        }
+    ) { padding ->
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+            if (page == 1 && popularTabEnabled) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -168,7 +176,7 @@ fun BroadcastListScreen(
                     items(FeaturedBroadcastChannels.NAMES, key = { it }) { name ->
                         val alreadyJoined = channels.any { it.channelName == name }
                         Surface(
-                            color = Color(0xFF1C1C1E),
+                            color = LocalAppColors.current.surface,
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -181,7 +189,7 @@ fun BroadcastListScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("#$name", color = Color.White, fontWeight = FontWeight.Bold)
+                                    Text("#$name", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold)
                                 }
                                 Text(
                                     if (alreadyJoined) "Joined" else "Join",
@@ -201,14 +209,14 @@ fun BroadcastListScreen(
                 ) {
                     Text(
                         "No broadcast channels yet",
-                        color = Color.White,
+                        color = LocalAppColors.current.textPrimary,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleMedium
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Broadcasts are public, unencrypted channels — anyone who joins the same channel name sees the same messages.",
-                        color = Color.Gray,
+                        "Broadcasts are public, unencrypted channels. Anyone who joins the same channel name sees the same messages.",
+                        color = LocalAppColors.current.textSecondary,
                         fontSize = 13.sp,
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
@@ -221,7 +229,7 @@ fun BroadcastListScreen(
                 ) {
                     items(channels, key = { it.channelName }) { channel ->
                         Surface(
-                            color = Color(0xFF1C1C1E),
+                            color = LocalAppColors.current.surface,
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -232,7 +240,7 @@ fun BroadcastListScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("#${channel.channelName}", color = Color.White, fontWeight = FontWeight.Bold)
+                                    Text("#${channel.channelName}", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold)
                                 }
                                 IconButton(onClick = {
                                     val newValue = !channel.alwaysListen
@@ -276,16 +284,17 @@ fun BroadcastListScreen(
                                     Icon(
                                         imageVector = Icons.Default.Settings,
                                         contentDescription = "Message retention settings",
-                                        tint = Color.Gray
+                                        tint = LocalAppColors.current.textSecondary
                                     )
                                 }
                                 TextButton(onClick = { channelToLeave = channel.channelName }) {
-                                    Text("Leave", color = Color.Gray)
+                                    Text("Leave", color = LocalAppColors.current.textSecondary)
                                 }
                             }
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -293,13 +302,13 @@ fun BroadcastListScreen(
     if (showJoinDialog) {
         AlertDialog(
             onDismissRequest = { showJoinDialog = false },
-            containerColor = Color(0xFF1C1C1E),
-            title = { Text("Join or Create a Channel", color = Color.White) },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Join or Create a Channel", color = LocalAppColors.current.textPrimary) },
             text = {
                 Column {
                     Text(
-                        "Anyone who joins the same channel name can see and post messages there — there's no owner or invite.",
-                        color = Color.Gray,
+                        "Anyone who joins the same channel name can see and post messages there. There's no owner or invite.",
+                        color = LocalAppColors.current.textSecondary,
                         fontSize = 13.sp
                     )
                     Spacer(Modifier.height(12.dp))
@@ -309,10 +318,10 @@ fun BroadcastListScreen(
                         placeholder = { Text("channel-name", color = Color.DarkGray) },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
+                            focusedTextColor = LocalAppColors.current.textPrimary,
+                            unfocusedTextColor = LocalAppColors.current.textPrimary,
                             focusedBorderColor = KaspaTeal,
-                            unfocusedBorderColor = Color.Gray
+                            unfocusedBorderColor = LocalAppColors.current.textSecondary
                         ),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -333,7 +342,7 @@ fun BroadcastListScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showJoinDialog = false }) {
-                    Text("Cancel", color = Color.Gray)
+                    Text("Cancel", color = LocalAppColors.current.textSecondary)
                 }
             }
         )
@@ -342,12 +351,12 @@ fun BroadcastListScreen(
     channelToLeave?.let { channelName ->
         AlertDialog(
             onDismissRequest = { channelToLeave = null },
-            containerColor = Color(0xFF1C1C1E),
-            title = { Text("Leave #$channelName", color = Color.White) },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Leave #$channelName", color = LocalAppColors.current.textPrimary) },
             text = {
                 Text(
-                    "Leaving this broadcast permanently deletes every message cached for it on this device. This cannot be undone — rejoining later starts with no history.",
-                    color = Color.Gray
+                    "Leaving this broadcast permanently deletes every message cached for it on this device. This cannot be undone; rejoining later starts with no history.",
+                    color = LocalAppColors.current.textSecondary
                 )
             },
             confirmButton = {
@@ -360,7 +369,7 @@ fun BroadcastListScreen(
             },
             dismissButton = {
                 TextButton(onClick = { channelToLeave = null }) {
-                    Text("Cancel", color = Color.Gray)
+                    Text("Cancel", color = LocalAppColors.current.textSecondary)
                 }
             }
         )
@@ -383,13 +392,13 @@ fun BroadcastListScreen(
 
             AlertDialog(
                 onDismissRequest = { retentionSettingsChannelName = null },
-                containerColor = Color(0xFF1C1C1E),
-                title = { Text("Message Retention for #$channelName", color = Color.White) },
+                containerColor = LocalAppColors.current.surface,
+                title = { Text("Message Retention for #$channelName", color = LocalAppColors.current.textPrimary) },
                 text = {
                     Column {
                         Text(
                             "How long messages in this broadcast stay cached on this device, up to a maximum of 3 days.",
-                            color = Color.Gray,
+                            color = LocalAppColors.current.textSecondary,
                             fontSize = 13.sp
                         )
                         Spacer(Modifier.height(12.dp))
@@ -405,28 +414,28 @@ fun BroadcastListScreen(
                                 isError = !isValid,
                                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
                                 colors = OutlinedTextFieldDefaults.colors(
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White,
+                                    focusedTextColor = LocalAppColors.current.textPrimary,
+                                    unfocusedTextColor = LocalAppColors.current.textPrimary,
                                     focusedBorderColor = KaspaTeal,
-                                    unfocusedBorderColor = Color.Gray
+                                    unfocusedBorderColor = LocalAppColors.current.textSecondary
                                 ),
                                 modifier = Modifier.weight(1f)
                             )
                             Box {
                                 OutlinedButton(
                                     onClick = { unitMenuExpanded = true },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = LocalAppColors.current.textPrimary)
                                 ) {
                                     Text(selectedUnit.label)
                                 }
                                 DropdownMenu(
                                     expanded = unitMenuExpanded,
                                     onDismissRequest = { unitMenuExpanded = false },
-                                    modifier = Modifier.background(Color(0xFF2C2C2E))
+                                    modifier = Modifier.background(LocalAppColors.current.surfaceVariant)
                                 ) {
                                     BroadcastRetention.Unit.entries.forEach { unit ->
                                         DropdownMenuItem(
-                                            text = { Text(unit.label, color = Color.White) },
+                                            text = { Text(unit.label, color = LocalAppColors.current.textPrimary) },
                                             onClick = {
                                                 // Re-clamp the typed amount to the new unit's cap rather than clearing it,
                                                 // so switching e.g. seconds -> hours after typing 200 lands on the 72-hour max.
@@ -445,12 +454,12 @@ fun BroadcastListScreen(
                         Spacer(Modifier.height(4.dp))
                         Text(
                             "Max: ${selectedUnit.maxAmount} ${selectedUnit.label}",
-                            color = Color.Gray,
+                            color = LocalAppColors.current.textSecondary,
                             fontSize = 12.sp
                         )
                         Spacer(Modifier.height(12.dp))
                         Text(
-                            "Longer retention means more messages stay cached on your device — this can slow the app down over time, especially for busy rooms.",
+                            "Longer retention means more messages stay cached on your device, which can slow the app down over time, especially for busy rooms.",
                             color = Color(0xFFF39C12),
                             fontSize = 12.sp
                         )
@@ -469,7 +478,7 @@ fun BroadcastListScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { retentionSettingsChannelName = null }) {
-                        Text("Cancel", color = Color.Gray)
+                        Text("Cancel", color = LocalAppColors.current.textSecondary)
                     }
                 }
             )
@@ -479,8 +488,8 @@ fun BroadcastListScreen(
     if (showBroadcastSettingsDialog) {
         AlertDialog(
             onDismissRequest = { showBroadcastSettingsDialog = false },
-            containerColor = Color(0xFF1C1C1E),
-            title = { Text("Broadcast Settings", color = Color.White) },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Broadcast Settings", color = LocalAppColors.current.textPrimary) },
             text = {
                 Column {
                     Row(
@@ -489,11 +498,11 @@ fun BroadcastListScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("Popular Tab", color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Text("Popular Tab", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.height(2.dp))
                             Text(
                                 "Shows a tab of recommended broadcast rooms you can jump into.",
-                                color = Color.Gray,
+                                color = LocalAppColors.current.textSecondary,
                                 fontSize = 12.sp
                             )
                         }
@@ -510,11 +519,11 @@ fun BroadcastListScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("KNS Profile Pictures", color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Text("KNS Profile Pictures", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.height(2.dp))
                             Text(
                                 "Shows senders' KNS avatars in rooms and looks them up automatically as messages appear. Off shows plain initials for everyone and never fetches avatars.",
-                                color = Color.Gray,
+                                color = LocalAppColors.current.textSecondary,
                                 fontSize = 12.sp
                             )
                         }
@@ -566,6 +575,20 @@ fun BroadcastChannelScreen(
     val contactAliases by broadcastViewModel.contactAliases.collectAsState()
     val showKnsAvatarsEnabled by broadcastViewModel.showKnsAvatarsEnabled.collectAsState()
     val replyingTo by broadcastViewModel.replyingTo.collectAsState()
+    val kaspaExplorer by broadcastViewModel.kaspaExplorer.collectAsState()
+    val networkFeeRate by broadcastViewModel.networkFeeRate.collectAsState()
+    val feeRateOverride by broadcastViewModel.feeRateOverride.collectAsState()
+    var showFeeEditor by remember { mutableStateOf(false) }
+    var feeEditorInput by remember { mutableStateOf("") }
+    // Same trick as 1:1 chat's fee pill — recover the mass implied by whatever's currently being
+    // composed (text vs. voice) by dividing the live fee preview back out by the rate that
+    // produced it, instead of duplicating estimatedFeeSompi's own calculation here.
+    val effectiveRate = feeRateOverride?.toDouble() ?: networkFeeRate
+    val openFeeEditor: (Long) -> Unit = { currentFeeSompi ->
+        feeEditorInput = "%.8f".format(java.util.Locale.US, currentFeeSompi / 100_000_000.0)
+        showFeeEditor = true
+    }
+    val uriHandler = LocalUriHandler.current
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
@@ -624,20 +647,20 @@ fun BroadcastChannelScreen(
     }
 
     Scaffold(
-        containerColor = Color.Black,
+        containerColor = LocalAppColors.current.background,
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("#$channelName", color = Color.White, fontWeight = FontWeight.Bold) },
+                title = { Text("#$channelName", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
                     }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = LocalAppColors.current.background)
             )
         },
         bottomBar = {
-            Column(modifier = Modifier.background(Color.Black).navigationBarsPadding().imePadding().padding(8.dp)) {
+            Column(modifier = Modifier.background(LocalAppColors.current.background).navigationBarsPadding().imePadding().padding(8.dp)) {
                 if (sendState.status == BroadcastViewModel.SendBroadcastStatus.FAILED) {
                     Text(
                         sendState.message ?: "Failed to send",
@@ -651,7 +674,7 @@ fun BroadcastChannelScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(bottom = 8.dp)
-                            .background(Color(0xFF1C1C1E), RoundedCornerShape(12.dp))
+                            .background(LocalAppColors.current.surface, RoundedCornerShape(12.dp))
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -668,28 +691,33 @@ fun BroadcastChannelScreen(
                                 VoiceMessage.parseOrNull(reply.content)?.let { "🎤 Audio message" }
                                     ?: MessageReply.parseOrNull(reply.content)?.text
                                     ?: reply.content,
-                                color = Color.Gray,
+                                color = LocalAppColors.current.textSecondary,
                                 fontSize = 12.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
                         IconButton(onClick = { broadcastViewModel.cancelReply() }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Cancel reply", tint = Color.Gray)
+                            Icon(Icons.Default.Close, contentDescription = "Cancel reply", tint = LocalAppColors.current.textSecondary)
                         }
                     }
                 }
                 if (voiceRecordingState.status == BroadcastViewModel.VoiceRecordingStatus.RECORDING) {
                     if (estimatedFee != null) {
                         Surface(
-                            color = Color(0xFF1C1C1E),
+                            color = LocalAppColors.current.surface,
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)
+                            modifier = Modifier
+                                .align(Alignment.CenterHorizontally)
+                                .padding(bottom = 8.dp)
+                                .clickable { openFeeEditor(estimatedFee ?: 0L) }
                         ) {
                             Text(
                                 text = "fee: ${ChatRepository.formatKas(estimatedFee ?: 0L)} KAS",
-                                color = Color.Gray,
+                                color = KaspaTeal,
+                                fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
+                                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                             )
                         }
@@ -699,7 +727,7 @@ fun BroadcastChannelScreen(
                             .fillMaxWidth()
                             .heightIn(min = 40.dp)
                             .clip(RoundedCornerShape(20.dp))
-                            .background(Color(0xFF1C1C1E))
+                            .background(LocalAppColors.current.surface)
                             .padding(horizontal = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -710,7 +738,7 @@ fun BroadcastChannelScreen(
                         Icon(Icons.Default.Mic, contentDescription = null, tint = Color(0xFFFF3B30), modifier = Modifier.size(18.dp))
                         Text(
                             text = "Recording... ${formatRecordingElapsed(voiceRecordingState.elapsedMs)}",
-                            color = Color.White,
+                            color = LocalAppColors.current.textPrimary,
                             modifier = Modifier.weight(1f)
                         )
                         IconButton(
@@ -723,14 +751,19 @@ fun BroadcastChannelScreen(
                 } else {
                     if (estimatedFee != null && messageText.isNotEmpty()) {
                         Surface(
-                            color = Color(0xFF1C1C1E),
+                            color = LocalAppColors.current.surface,
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)
+                            modifier = Modifier
+                                .align(Alignment.CenterHorizontally)
+                                .padding(bottom = 8.dp)
+                                .clickable { openFeeEditor(estimatedFee ?: 0L) }
                         ) {
                             Text(
                                 text = "fee: ${ChatRepository.formatKas(estimatedFee ?: 0L)} KAS",
-                                color = Color.Gray,
+                                color = KaspaTeal,
+                                fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
+                                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                             )
                         }
@@ -746,10 +779,10 @@ fun BroadcastChannelScreen(
                             placeholder = { Text("Message #$channelName", color = Color.DarkGray) },
                             modifier = Modifier.weight(1f),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
+                                focusedTextColor = LocalAppColors.current.textPrimary,
+                                unfocusedTextColor = LocalAppColors.current.textPrimary,
                                 focusedBorderColor = KaspaTeal,
-                                unfocusedBorderColor = Color.Gray
+                                unfocusedBorderColor = LocalAppColors.current.textSecondary
                             )
                         )
                         val sending = sendState.status == BroadcastViewModel.SendBroadcastStatus.SENDING
@@ -792,8 +825,8 @@ fun BroadcastChannelScreen(
         if (messages.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    "No messages yet — be the first to post in #$channelName",
-                    color = Color.Gray,
+                    "No messages yet. Be the first to post in #$channelName",
+                    color = LocalAppColors.current.textSecondary,
                     modifier = Modifier.padding(24.dp)
                 )
             }
@@ -808,10 +841,10 @@ fun BroadcastChannelScreen(
                     val showDateDivider = index == 0 || !ChatTimeFormat.isSameDay(messages[index - 1].blockTimestamp, message.blockTimestamp)
                     if (showDateDivider) {
                         Box(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                            Surface(color = Color(0xFF1C1C1E), shape = RoundedCornerShape(12.dp)) {
+                            Surface(color = LocalAppColors.current.surface, shape = RoundedCornerShape(12.dp)) {
                                 Text(
                                     ChatTimeFormat.formatDateDivider(message.blockTimestamp),
-                                    color = Color.Gray,
+                                    color = LocalAppColors.current.textSecondary,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -824,6 +857,7 @@ fun BroadcastChannelScreen(
                     val displayContent = replyContent?.text ?: message.content
                     val voiceContent = remember(displayContent) { VoiceMessage.parseOrNull(displayContent) }
                     var showMenu by remember { mutableStateOf(false) }
+                    var menuAnchor by remember { mutableStateOf(Offset.Zero) }
                     val clipboardManager = LocalClipboardManager.current
 
                     LaunchedEffect(message.senderAddress) {
@@ -831,69 +865,56 @@ fun BroadcastChannelScreen(
                     }
 
                     var showAvatarMenu by remember { mutableStateOf(false) }
+                    var avatarMenuAnchor by remember { mutableStateOf(Offset.Zero) }
 
                     val avatar: @Composable () -> Unit = {
-                        Box {
+                        Box(
+                            modifier = Modifier.onGloballyPositioned { coords ->
+                                avatarMenuAnchor = coords.positionInWindow() + Offset(0f, coords.size.height.toFloat())
+                            }
+                        ) {
                             ContactAvatar(
                                 imageUrl = if (showKnsAvatarsEnabled) senderProfiles[message.senderAddress] else null,
                                 fallbackText = message.senderAddress.takeLast(8),
                                 size = 32.dp,
                                 modifier = Modifier.clickable { showAvatarMenu = true }
                             )
-                            DropdownMenu(
-                                expanded = showAvatarMenu,
-                                onDismissRequest = { showAvatarMenu = false },
-                                modifier = Modifier.background(Color(0xFF2C2C2E), RoundedCornerShape(20.dp))
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("View Profile", color = Color.White, fontWeight = FontWeight.SemiBold) },
-                                    leadingIcon = { Icon(Icons.Default.Person, null, tint = KaspaTeal) },
-                                    onClick = {
+                            if (showAvatarMenu) {
+                                CenteredOptionsMenu(onDismissRequest = { showAvatarMenu = false }, anchor = avatarMenuAnchor) {
+                                    PopupMenuRow(Icons.Default.Person, "View Profile") {
                                         broadcastViewModel.openSenderProfile(message.senderAddress) { address ->
                                             navController.navigate("chat_info/$address?fromBroadcast=true")
                                         }
                                         showAvatarMenu = false
                                     }
-                                )
-                                if (!isMine) {
-                                    DropdownMenuItem(
-                                        text = { Text("Open Chat", color = Color.White, fontWeight = FontWeight.SemiBold) },
-                                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.Chat, null, tint = KaspaTeal) },
-                                        onClick = {
+                                    if (!isMine) {
+                                        HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                                        PopupMenuRow(Icons.AutoMirrored.Filled.Chat, "Open Chat") {
                                             broadcastViewModel.openSenderProfile(message.senderAddress) { address ->
                                                 navController.navigate("chat/$address")
                                             }
                                             showAvatarMenu = false
                                         }
-                                    )
-                                }
-                                DropdownMenuItem(
-                                    text = { Text("Copy Address", color = Color.White, fontWeight = FontWeight.SemiBold) },
-                                    leadingIcon = { Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal) },
-                                    onClick = {
+                                    }
+                                    HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                                    PopupMenuRow(Icons.Default.ContentCopy, "Copy Address") {
                                         clipboardManager.setText(AnnotatedString(message.senderAddress))
                                         showAvatarMenu = false
                                     }
-                                )
-                                if (!isMine) {
-                                    DropdownMenuItem(
-                                        text = { Text("Pay in Kaspa", color = Color.White, fontWeight = FontWeight.SemiBold) },
-                                        leadingIcon = { Icon(Icons.Default.CurrencyExchange, null, tint = KaspaTeal) },
-                                        onClick = {
+                                    if (!isMine) {
+                                        HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                                        PopupMenuRow(painterResource(R.drawable.ic_kaspa_logo), "Pay in Kaspa", iconTint = Color.Unspecified) {
                                             broadcastViewModel.openSenderProfile(message.senderAddress) { address ->
                                                 navController.navigate("chat/$address?paymentMode=true")
                                             }
                                             showAvatarMenu = false
                                         }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Hide User", color = Color(0xFFFF3B30), fontWeight = FontWeight.SemiBold) },
-                                        leadingIcon = { Icon(Icons.Default.VisibilityOff, null, tint = Color(0xFFFF3B30)) },
-                                        onClick = {
+                                        HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                                        PopupMenuRow(Icons.Default.VisibilityOff, "Hide User", labelColor = Color(0xFFFF3B30), iconTint = Color(0xFFFF3B30)) {
                                             broadcastViewModel.hideSender(message.senderAddress)
                                             showAvatarMenu = false
                                         }
-                                    )
+                                    }
                                 }
                             }
                         }
@@ -902,7 +923,7 @@ fun BroadcastChannelScreen(
                     Box(modifier = Modifier.fillMaxWidth()) {
                         Text(
                             text = remember(message.blockTimestamp) { ChatTimeFormat.formatMessageTime(message.blockTimestamp) },
-                            color = Color.Gray,
+                            color = LocalAppColors.current.textSecondary,
                             fontSize = 11.sp,
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
@@ -920,7 +941,12 @@ fun BroadcastChannelScreen(
                             avatar()
                             Spacer(Modifier.width(8.dp))
                         }
-                        Column(horizontalAlignment = if (isMine) Alignment.End else Alignment.Start) {
+                        Column(
+                            horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
+                            modifier = Modifier.onGloballyPositioned { coords ->
+                                menuAnchor = coords.positionInWindow() + Offset(0f, coords.size.height.toFloat())
+                            }
+                        ) {
                             Text(
                                 contactAliases[message.senderAddress] ?: senderKnsNames[message.senderAddress] ?: message.senderAddress.takeLast(10),
                                 color = KaspaTeal,
@@ -934,7 +960,7 @@ fun BroadcastChannelScreen(
                             )
                             if (replyContent != null) {
                                 Surface(
-                                    color = Color(0xFF2C2C2E),
+                                    color = LocalAppColors.current.surfaceVariant,
                                     shape = RoundedCornerShape(10.dp),
                                     modifier = Modifier.padding(bottom = 4.dp).widthIn(max = 240.dp)
                                 ) {
@@ -947,7 +973,7 @@ fun BroadcastChannelScreen(
                                         )
                                         Text(
                                             replyContent.replyToPreview,
-                                            color = Color.Gray,
+                                            color = LocalAppColors.current.textSecondary,
                                             fontSize = 12.sp,
                                             maxLines = 2,
                                             overflow = TextOverflow.Ellipsis
@@ -972,25 +998,25 @@ fun BroadcastChannelScreen(
                                     Column(
                                         modifier = Modifier
                                             .background(
-                                                if (isMine) KaspaTeal else Color(0xFF1C1C1E),
-                                                RoundedCornerShape(16.dp)
+                                                if (isMine) KaspaTeal else LocalAppColors.current.surface,
+                                                RoundedCornerShape(20.dp)
                                             )
                                             .combinedClickable(
                                                 onClick = { showFullText = true },
                                                 onLongClick = { showMenu = true },
                                                 onDoubleClick = { broadcastViewModel.startReplyTo(message) }
                                             )
-                                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                                            .padding(horizontal = 16.dp, vertical = 10.dp)
                                             .widthIn(max = 280.dp)
                                     ) {
                                         Text(
                                             displayContent.take(MESSAGE_TEXT_PREVIEW_LENGTH) + "…",
-                                            color = if (isMine) Color.Black else Color.White
+                                            color = if (isMine) Color.Black else LocalAppColors.current.textPrimary
                                         )
                                         Spacer(Modifier.height(4.dp))
                                         Text(
                                             "Show More",
-                                            color = if (isMine) Color.Black.copy(alpha = 0.75f) else KaspaTeal,
+                                            color = if (isMine) LocalAppColors.current.divider else KaspaTeal,
                                             fontWeight = FontWeight.SemiBold,
                                             fontSize = 13.sp
                                         )
@@ -1006,54 +1032,42 @@ fun BroadcastChannelScreen(
                                     Column(
                                         modifier = Modifier
                                             .background(
-                                                if (isMine) KaspaTeal else Color(0xFF1C1C1E),
-                                                RoundedCornerShape(16.dp)
+                                                if (isMine) KaspaTeal else LocalAppColors.current.surface,
+                                                RoundedCornerShape(20.dp)
                                             )
                                             .combinedClickable(
                                                 onClick = {},
                                                 onLongClick = { showMenu = true },
                                                 onDoubleClick = { broadcastViewModel.startReplyTo(message) }
                                             )
-                                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                                            .padding(horizontal = 16.dp, vertical = 10.dp)
                                             .widthIn(max = 280.dp)
                                     ) {
                                         Text(
                                             displayContent,
-                                            color = if (isMine) Color.Black else Color.White
+                                            color = if (isMine) Color.Black else LocalAppColors.current.textPrimary
                                         )
                                     }
                                 }
 
-                                DropdownMenu(
-                                    expanded = showMenu,
-                                    onDismissRequest = { showMenu = false },
-                                    modifier = Modifier.background(Color(0xFF2C2C2E), RoundedCornerShape(20.dp))
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("Copy Message", color = Color.White, fontWeight = FontWeight.SemiBold) },
-                                        leadingIcon = { Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal) },
-                                        onClick = {
+                                if (showMenu) {
+                                    CenteredOptionsMenu(onDismissRequest = { showMenu = false }, anchor = menuAnchor) {
+                                        PopupMenuRow(Icons.Default.ContentCopy, "Copy Message") {
                                             clipboardManager.setText(AnnotatedString(displayContent))
                                             showMenu = false
                                         }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Copy Transaction ID", color = Color.White, fontWeight = FontWeight.SemiBold) },
-                                        leadingIcon = { Icon(Icons.Default.Tag, null, tint = KaspaTeal) },
-                                        onClick = {
-                                            clipboardManager.setText(AnnotatedString(message.id))
+                                        HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                                        PopupMenuRow(Icons.Default.Tag, "Go to Explorer") {
+                                            uriHandler.openUri(kaspaExplorer.txUrl(message.id))
                                             showMenu = false
                                         }
-                                    )
-                                    if (isMine && message.deliveryStatus == "failed") {
-                                        DropdownMenuItem(
-                                            text = { Text("Retry Send", color = Color.White, fontWeight = FontWeight.SemiBold) },
-                                            leadingIcon = { Icon(Icons.Default.Refresh, null, tint = KaspaTeal) },
-                                            onClick = {
+                                        if (isMine && message.deliveryStatus == "failed") {
+                                            HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                                            PopupMenuRow(Icons.Default.Refresh, "Retry Send") {
                                                 broadcastViewModel.retryBroadcast(message)
                                                 showMenu = false
                                             }
-                                        )
+                                        }
                                     }
                                 }
 
@@ -1081,7 +1095,7 @@ fun BroadcastChannelScreen(
                                             "pending" -> Icon(
                                                 imageVector = Icons.Default.Schedule,
                                                 contentDescription = "Sending",
-                                                tint = Color.Gray,
+                                                tint = LocalAppColors.current.textSecondary,
                                                 modifier = Modifier.size(12.dp)
                                             )
                                             else -> Icon(
@@ -1114,16 +1128,78 @@ fun BroadcastChannelScreen(
                     .align(Alignment.BottomEnd)
                     .padding(16.dp)
                     .size(44.dp)
-                    .background(Color(0xFF1C1C1E), CircleShape)
+                    .background(LocalAppColors.current.surface, CircleShape)
             ) {
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
                     contentDescription = "Scroll to latest",
-                    tint = Color.White
+                    tint = LocalAppColors.current.textPrimary
                 )
             }
         }
         }
+    }
+
+    if (showFeeEditor) {
+        AlertDialog(
+            onDismissRequest = { showFeeEditor = false },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Adjust Network Fee", color = LocalAppColors.current.textPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "If the network is busy, a higher fee can help your transaction confirm faster.",
+                        color = LocalAppColors.current.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = feeEditorInput,
+                        onValueChange = { feeEditorInput = it },
+                        label = { Text("Fee (KAS)") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = LocalAppColors.current.textPrimary,
+                            unfocusedTextColor = LocalAppColors.current.textPrimary,
+                            focusedBorderColor = KaspaTeal,
+                            unfocusedBorderColor = LocalAppColors.current.textSecondary,
+                            focusedLabelColor = KaspaTeal,
+                            unfocusedLabelColor = LocalAppColors.current.textSecondary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val kas = feeEditorInput.toDoubleOrNull()
+                    val currentFeeSompi = estimatedFee ?: 0L
+                    if (kas != null && kas > 0 && currentFeeSompi > 0 && effectiveRate > 0) {
+                        val impliedMass = currentFeeSompi / effectiveRate
+                        val desiredFeeSompi = Math.round(kas * 100_000_000.0)
+                        broadcastViewModel.setFeeRateOverride(kotlin.math.ceil(desiredFeeSompi / impliedMass).toLong())
+                    } else {
+                        broadcastViewModel.setFeeRateOverride(null)
+                    }
+                    showFeeEditor = false
+                }) {
+                    Text("Save", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { broadcastViewModel.setFeeRateOverride(null); showFeeEditor = false }) {
+                        Text("Use Default", color = LocalAppColors.current.textSecondary)
+                    }
+                    TextButton(onClick = { showFeeEditor = false }) {
+                        Text("Cancel", color = LocalAppColors.current.textSecondary)
+                    }
+                }
+            }
+        )
     }
 }
 
@@ -1147,16 +1223,16 @@ fun HiddenBroadcastUsersScreen(
     }
 
     Scaffold(
-        containerColor = Color.Black,
+        containerColor = LocalAppColors.current.background,
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("Hidden Broadcast Room Users", color = Color.White, fontWeight = FontWeight.Bold) },
+                title = { Text("Hidden Broadcast Room Users", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
                     }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Black)
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = LocalAppColors.current.background)
             )
         }
     ) { padding ->
@@ -1168,14 +1244,14 @@ fun HiddenBroadcastUsersScreen(
             ) {
                 Text(
                     "No hidden users",
-                    color = Color.White,
+                    color = LocalAppColors.current.textPrimary,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "Users you hide from a broadcast room (via their avatar menu) show up here, and never appear or get cached in any room.",
-                    color = Color.Gray,
+                    color = LocalAppColors.current.textSecondary,
                     fontSize = 13.sp,
                     modifier = Modifier.padding(horizontal = 8.dp)
                 )
@@ -1188,7 +1264,7 @@ fun HiddenBroadcastUsersScreen(
             ) {
                 items(hiddenSenderAddresses.toList(), key = { it }) { address ->
                     Surface(
-                        color = Color(0xFF1C1C1E),
+                        color = LocalAppColors.current.surface,
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -1199,7 +1275,7 @@ fun HiddenBroadcastUsersScreen(
                         ) {
                             Text(
                                 contactAliases[address] ?: senderKnsNames[address] ?: address.takeLast(10),
-                                color = Color.White,
+                                color = LocalAppColors.current.textPrimary,
                                 fontWeight = FontWeight.Bold
                             )
                             TextButton(onClick = { broadcastViewModel.unhideSender(address) }) {

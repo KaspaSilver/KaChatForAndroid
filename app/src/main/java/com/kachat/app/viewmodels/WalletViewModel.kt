@@ -37,6 +37,28 @@ class WalletViewModel @Inject constructor(
     private val _sendResult = MutableStateFlow<Result<String>?>(null)
     val sendResult: StateFlow<Result<String>?> = _sendResult.asStateFlow()
 
+    // Fires when the user taps a bottom tab that's already selected — lets that tab's screen
+    // dismiss its own transient UI (e.g. a full-screen QR overlay) instead of the tap being a
+    // dead no-op, since re-navigating to an already-selected destination doesn't recompose it.
+    // The counter makes every tap distinct even when re-tapping the same route repeatedly.
+    private val _tabReselectSignal = MutableStateFlow(0 to "")
+    val tabReselectSignal: StateFlow<Pair<Int, String>> = _tabReselectSignal.asStateFlow()
+
+    fun notifyTabReselected(route: String) {
+        _tabReselectSignal.value = (_tabReselectSignal.value.first + 1) to route
+    }
+
+    // A tab route's own screen can toggle an internal full-screen state (e.g. Cold Storage's QR
+    // scanner) without navigating to a new route — the floating bottom nav bar's visibility is
+    // otherwise purely route-based, so it would stay overlaid on top of a full-screen camera view.
+    // Screens raising this must always clear it again on dismiss (including back-press).
+    private val _hideBottomBar = MutableStateFlow(false)
+    val hideBottomBar: StateFlow<Boolean> = _hideBottomBar.asStateFlow()
+
+    fun setHideBottomBar(hide: Boolean) {
+        _hideBottomBar.value = hide
+    }
+
     private val _isSending = MutableStateFlow(false)
     val isSending: StateFlow<Boolean> = _isSending.asStateFlow()
 
@@ -106,6 +128,29 @@ class WalletViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Hiding is purely a display preference — the address and its label are untouched; it's just
+     * filtered out of the main Manage Addresses list. Unhiding is always allowed, but an address
+     * can't be hidden in the first place while it still holds a balance or is the primary
+     * ("Pay in Kaspa") spending address — both are cases you'd want to keep an eye on, not tuck away.
+     */
+    fun setManageAddressHidden(index: Int, hidden: Boolean) {
+        val entry = _manageAddresses.value.find { it.index == index } ?: return
+        if (hidden && (entry.balanceSompi > 0 || entry.isCurrent)) return
+        walletService.setSpendingAddressHidden(index, hidden)
+        _manageAddresses.value = _manageAddresses.value.map {
+            if (it.index == index) it.copy(hidden = hidden) else it
+        }
+    }
+
+    /** Sets or clears (blank/null) a nickname for one spending-chain address, shown in place of "Address #N". */
+    fun setManageAddressLabel(index: Int, label: String?) {
+        walletService.setSpendingAddressLabel(index, label)
+        _manageAddresses.value = _manageAddresses.value.map {
+            if (it.index == index) it.copy(label = label?.trim()?.takeIf { l -> l.isNotBlank() }) else it
+        }
+    }
+
     /** Derives one more spending-chain address and reloads the list to show it. */
     fun generateNewSpendingAddress() {
         viewModelScope.launch {
@@ -146,7 +191,7 @@ class WalletViewModel @Inject constructor(
      * address rather than sweeping or rotating). Reuses [sendResult]/[isSending] — only one of
      * these send dialogs can be open at a time, so sharing that state is fine.
      */
-    fun withdrawFromSpendingAddress(index: Int, toAddress: String, amountSompi: Long) {
+    fun withdrawFromSpendingAddress(index: Int, toAddress: String, amountSompi: Long, feeRateOverride: Long? = null) {
         viewModelScope.launch {
             _isSending.value = true
             val fromAddress = walletManager.deriveSpendingAddress(index)
@@ -155,7 +200,8 @@ class WalletViewModel @Inject constructor(
                 amountSompi = amountSompi,
                 fromAddress = fromAddress,
                 signingPrivateKey = walletManager.getSpendingPrivateKeyBytes(index),
-                changeAddress = fromAddress
+                changeAddress = fromAddress,
+                feeRateOverride = feeRateOverride
             )
             _sendResult.value = result
             _isSending.value = false
@@ -352,10 +398,10 @@ class WalletViewModel @Inject constructor(
     /**
      * Sends Kaspa to a given address.
      */
-    fun onSendClicked(address: String, amountSompi: Long) {
+    fun onSendClicked(address: String, amountSompi: Long, feeRateOverride: Long? = null) {
         viewModelScope.launch {
             _isSending.value = true
-            val result = walletEngine.sendKaspa(address, amountSompi)
+            val result = walletEngine.sendKaspa(address, amountSompi, feeRateOverride = feeRateOverride)
             _sendResult.value = result
             _isSending.value = false
             
@@ -664,8 +710,50 @@ class WalletViewModel @Inject constructor(
     val tabOrder: StateFlow<List<String>> = settings.tabOrder
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), AppSettingsRepository.DEFAULT_TAB_ORDER)
 
+    val kaspaExplorer: StateFlow<com.kachat.app.models.KaspaExplorer> = settings.kaspaExplorer
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), com.kachat.app.models.KaspaExplorer.default)
+
     fun setTabOrder(routes: List<String>) {
         viewModelScope.launch { settings.setTabOrder(routes) }
+    }
+
+    /** Bottom-tab routes the user has hidden from the nav bar via Settings > Customization > Menu. */
+    val hiddenTabs: StateFlow<Set<String>> = settings.hiddenTabs
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptySet())
+
+    fun setTabHidden(route: String, hidden: Boolean) {
+        viewModelScope.launch { settings.setTabHidden(route, hidden) }
+    }
+
+    /** Whether Cold Storage is its own bottom tab (true) or reached via Portfolio's "Cold Storage Devices" row (false, default). */
+    val coldStorageTabEnabled: StateFlow<Boolean> = settings.coldStorageTabEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false)
+
+    fun setColdStorageTabEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setColdStorageTabEnabled(enabled) }
+    }
+
+    val darkModeEnabled: StateFlow<Boolean> = settings.darkModeEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
+
+    fun setDarkModeEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setDarkModeEnabled(enabled) }
+    }
+
+    /** Settings > Security — whether viewing the seed phrase requires device authentication first. */
+    val biometricSeedPhraseEnabled: StateFlow<Boolean> = settings.biometricSeedPhraseEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
+
+    fun setBiometricSeedPhraseEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setBiometricSeedPhraseEnabled(enabled) }
+    }
+
+    /** Settings > Security — whether unlocking a saved account after logout requires device authentication first. */
+    val biometricAccountLoginEnabled: StateFlow<Boolean> = settings.biometricAccountLoginEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
+
+    fun setBiometricAccountLoginEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setBiometricAccountLoginEnabled(enabled) }
     }
 
     private var previewJob: Job? = null

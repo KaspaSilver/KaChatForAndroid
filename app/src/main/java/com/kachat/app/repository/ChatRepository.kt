@@ -3,6 +3,7 @@ package com.kachat.app.repository
 import android.util.Log
 import com.google.gson.Gson
 import com.kachat.app.models.ContactEntity
+import com.kachat.app.models.ContactNotificationMode
 import com.kachat.app.models.DeletedContactEntity
 import com.kachat.app.models.HandshakePayload
 import com.kachat.app.models.MessageEntity
@@ -365,7 +366,8 @@ class ChatRepository @Inject constructor(
         notificationHelper.show(
             contactId = handshake.sender,
             title = if (newStatus == "pending") "Request to communicate" else "Connected",
-            text = if (newStatus == "pending") "$displayName wants to connect" else "$displayName accepted your request"
+            text = if (newStatus == "pending") "$displayName wants to connect" else "$displayName accepted your request",
+            notificationOverride = ContactNotificationMode.fromName(existing?.notificationOverride)
         )
     }
 
@@ -456,7 +458,8 @@ class ChatRepository @Inject constructor(
         notificationHelper.show(
             contactId = contact.id,
             title = contact.alias ?: contact.id.takeLast(8),
-            text = notificationText
+            text = notificationText,
+            notificationOverride = ContactNotificationMode.fromName(contact.notificationOverride)
         )
     }
 
@@ -526,7 +529,8 @@ class ChatRepository @Inject constructor(
         val deleted = database.contactDao().getDeletedContact(sender, myAddress)
         if (isTombstoned(deleted, tx.transactionId, blockTime)) return
 
-        if (database.contactDao().getContact(sender, myAddress) == null) {
+        val existingContact = database.contactDao().getContact(sender, myAddress)
+        if (existingContact == null) {
             database.contactDao().insert(ContactEntity(id = sender, walletAddress = myAddress, alias = null, knsName = null, publicKeyHex = null))
         }
 
@@ -545,7 +549,12 @@ class ChatRepository @Inject constructor(
             )
         )
 
-        notificationHelper.show(contactId = sender, title = "Payment received", text = displayText)
+        notificationHelper.show(
+            contactId = sender,
+            title = "Payment received",
+            text = displayText,
+            notificationOverride = ContactNotificationMode.fromName(existingContact?.notificationOverride)
+        )
     }
 
     companion object {

@@ -72,7 +72,8 @@ data class ContactEntity(
     val systemContactId: String? = null,    // Phone contact's LOOKUP_KEY, once linked via "Link from Contacts" — takes priority over KNS auto-rename
     val systemContactName: String? = null,  // Name snapshot at link time, for the "Linked: X" row
     val systemContactLinkSource: String? = null, // "manual" | "autoCreated" — only "autoCreated" shadow contacts get deleted if Autocreate is turned off
-    val photoAutoDisplayOverride: String? = null // PhotoAutoDisplayMode.name, null = automatic (see ChatRepository.shouldAutoDisplayPhotos)
+    val photoAutoDisplayOverride: String? = null, // PhotoAutoDisplayMode.name, null = automatic (see ChatRepository.shouldAutoDisplayPhotos)
+    val notificationOverride: String? = null // ContactNotificationMode.name, null = follow Settings > Notifications (see NotificationHelper.show)
 )
 
 /**

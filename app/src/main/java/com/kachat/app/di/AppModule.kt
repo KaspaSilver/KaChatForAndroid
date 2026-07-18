@@ -17,6 +17,7 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import com.kachat.app.services.ChangeNowApi
 import com.kachat.app.services.CoinGeckoApi
 import com.kachat.app.services.KaspaRestApi
 import com.kachat.app.services.KasiaIndexerApi
@@ -62,7 +63,7 @@ object AppModule {
             KaChatDatabase::class.java,
             "kachat.db"
         )
-            .addMigrations(KaChatDatabase.MIGRATION_15_16, KaChatDatabase.MIGRATION_16_17, KaChatDatabase.MIGRATION_17_18, KaChatDatabase.MIGRATION_18_19, KaChatDatabase.MIGRATION_19_20)
+            .addMigrations(KaChatDatabase.MIGRATION_15_16, KaChatDatabase.MIGRATION_16_17, KaChatDatabase.MIGRATION_17_18, KaChatDatabase.MIGRATION_18_19, KaChatDatabase.MIGRATION_19_20, KaChatDatabase.MIGRATION_20_21, KaChatDatabase.MIGRATION_21_22, KaChatDatabase.MIGRATION_22_23)
             // Safety net only, for version jumps that don't have an explicit Migration above —
             // every future schema change should get a real Migration instead of relying on this,
             // since it silently wipes every user's local contacts/messages.
@@ -135,5 +136,27 @@ object AppModule {
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(CoinGeckoApi::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideChangeNowApi(okHttpClient: OkHttpClient): ChangeNowApi {
+        // The API key is per-request-header auth, not a query param, so it's added here at the
+        // client level (a derived client, so ChangeNOW calls still share the base timeouts/logging
+        // configured on the shared client) rather than threaded through every ChangeNowApi method.
+        val authedClient = okHttpClient.newBuilder()
+            .addInterceptor { chain ->
+                val request = chain.request().newBuilder()
+                    .addHeader("x-changenow-api-key", BuildConfig.CHANGENOW_API_KEY)
+                    .build()
+                chain.proceed(request)
+            }
+            .build()
+        return Retrofit.Builder()
+            .baseUrl("https://api.changenow.io/")
+            .client(authedClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(ChangeNowApi::class.java)
     }
 }

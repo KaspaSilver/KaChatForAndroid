@@ -45,6 +45,8 @@ class AppSettingsRepository @Inject constructor(
         // How hard chat photos get compressed before sending — mirrors iOS's
         // `chatPhotoQualityPreset` setting. Only affects photos sent, not received.
         val KEY_CHAT_PHOTO_QUALITY_PRESET = stringPreferencesKey("chat_photo_quality_preset")
+        // Which block explorer website "Go to Explorer" links open in.
+        val KEY_KASPA_EXPLORER = stringPreferencesKey("kaspa_explorer")
         // Flat, chain-wide set of txIds the user has manually revealed a hidden photo for —
         // mirrors iOS's `PhotoRevealStore`. Not per-wallet: txIds are unique on-chain already.
         val KEY_REVEALED_PHOTO_TX_IDS = stringSetPreferencesKey("revealed_photo_tx_ids")
@@ -85,6 +87,22 @@ class AppSettingsRepository @Inject constructor(
         val KEY_TAB_ORDER = stringPreferencesKey("tab_order")
         // Kept in sync with KaChatApp.kt's bottomNavItems default order.
         val DEFAULT_TAB_ORDER = listOf("settings", "portfolio", "chats", "swap", "profile")
+        // Which bottom-tab routes the user has hidden from the nav bar (Settings > Customization >
+        // Menu) — "settings"/"chats"/"profile" are never allowed in here, only "portfolio"/"swap"/
+        // "cold_storage". A route absent from this set is visible.
+        val KEY_HIDDEN_TABS = stringSetPreferencesKey("hidden_tabs")
+        // Off by default — Cold Storage lives inside Portfolio ("Cold Storage Devices" row) until
+        // the user opts into it as its own bottom tab from Settings > Customization > Menu.
+        val KEY_COLD_STORAGE_TAB_ENABLED = booleanPreferencesKey("cold_storage_tab_enabled")
+        // Settings > Customization > Dark Mode. True (dark) is the default so existing installs'
+        // appearance is unchanged — every screen was designed dark-only until this toggle existed.
+        val KEY_DARK_MODE_ENABLED = booleanPreferencesKey("dark_mode_enabled")
+        // Settings > Security. Both on by default — the seed phrase and account login were gated
+        // behind device authentication unconditionally before these toggles existed.
+        val KEY_BIOMETRIC_SEED_PHRASE_ENABLED = booleanPreferencesKey("biometric_seed_phrase_enabled")
+        val KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED = booleanPreferencesKey("biometric_account_login_enabled")
+        // One-time ChangeNOW terms/liability disclaimer shown the first time Swap is opened.
+        val KEY_SWAP_DISCLAIMER_AGREED = booleanPreferencesKey("swap_disclaimer_agreed")
     }
 
     // -------------------------------------------------------------------------
@@ -119,6 +137,10 @@ class AppSettingsRepository @Inject constructor(
         com.kachat.app.models.ChatPhotoQualityPreset.fromName(it[KEY_CHAT_PHOTO_QUALITY_PRESET])
     }
 
+    val kaspaExplorer: Flow<com.kachat.app.models.KaspaExplorer> = dataStore.data.map {
+        com.kachat.app.models.KaspaExplorer.fromName(it[KEY_KASPA_EXPLORER])
+    }
+
     val revealedPhotoTxIds: Flow<Set<String>> = dataStore.data.map {
         it[KEY_REVEALED_PHOTO_TX_IDS] ?: emptySet()
     }
@@ -135,6 +157,16 @@ class AppSettingsRepository @Inject constructor(
     val tabOrder: Flow<List<String>> = dataStore.data.map { prefs ->
         prefs[KEY_TAB_ORDER]?.split(",")?.filter { it.isNotBlank() } ?: DEFAULT_TAB_ORDER
     }
+
+    val hiddenTabs: Flow<Set<String>> = dataStore.data.map { it[KEY_HIDDEN_TABS] ?: emptySet() }
+
+    val coldStorageTabEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_COLD_STORAGE_TAB_ENABLED] ?: false }
+
+    val darkModeEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_DARK_MODE_ENABLED] ?: true }
+
+    val biometricSeedPhraseEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_BIOMETRIC_SEED_PHRASE_ENABLED] ?: true }
+    val biometricAccountLoginEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] ?: true }
+    val swapDisclaimerAgreed: Flow<Boolean> = dataStore.data.map { it[KEY_SWAP_DISCLAIMER_AGREED] ?: false }
 
     val notificationsEnabled: Flow<Boolean> = dataStore.data.map {
         it[KEY_NOTIFICATIONS_ENABLED] ?: true
@@ -208,12 +240,22 @@ class AppSettingsRepository @Inject constructor(
     suspend fun setHasWallet(value: Boolean) = dataStore.edit { it[KEY_HAS_WALLET] = value }
     suspend fun setActiveAddress(value: String) = dataStore.edit { it[KEY_ACTIVE_ADDRESS] = value }
     suspend fun setChatPhotoQualityPreset(value: com.kachat.app.models.ChatPhotoQualityPreset) = dataStore.edit { it[KEY_CHAT_PHOTO_QUALITY_PRESET] = value.name }
+    suspend fun setKaspaExplorer(value: com.kachat.app.models.KaspaExplorer) = dataStore.edit { it[KEY_KASPA_EXPLORER] = value.name }
     suspend fun revealPhoto(txId: String) = dataStore.edit {
         it[KEY_REVEALED_PHOTO_TX_IDS] = (it[KEY_REVEALED_PHOTO_TX_IDS] ?: emptySet()) + txId
     }
     suspend fun setBroadcastPopularEnabled(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_POPULAR_ENABLED] = value }
     suspend fun setBroadcastShowKnsAvatars(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_SHOW_KNS_AVATARS] = value }
     suspend fun setTabOrder(routes: List<String>) = dataStore.edit { it[KEY_TAB_ORDER] = routes.joinToString(",") }
+    suspend fun setTabHidden(route: String, hidden: Boolean) = dataStore.edit { prefs ->
+        val current = prefs[KEY_HIDDEN_TABS] ?: emptySet()
+        prefs[KEY_HIDDEN_TABS] = if (hidden) current + route else current - route
+    }
+    suspend fun setColdStorageTabEnabled(value: Boolean) = dataStore.edit { it[KEY_COLD_STORAGE_TAB_ENABLED] = value }
+    suspend fun setDarkModeEnabled(value: Boolean) = dataStore.edit { it[KEY_DARK_MODE_ENABLED] = value }
+    suspend fun setBiometricSeedPhraseEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_SEED_PHRASE_ENABLED] = value }
+    suspend fun setBiometricAccountLoginEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] = value }
+    suspend fun setSwapDisclaimerAgreed(value: Boolean) = dataStore.edit { it[KEY_SWAP_DISCLAIMER_AGREED] = value }
     suspend fun setNotificationsEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATIONS_ENABLED] = value }
     suspend fun setNotificationSoundEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATION_SOUND] = value }
     suspend fun setNotificationVibrationEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATION_VIBRATION] = value }

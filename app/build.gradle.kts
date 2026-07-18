@@ -60,6 +60,16 @@ val keystoreProperties = Properties().apply {
     }
 }
 
+// Third-party API keys — same gitignored-local-file pattern as keystore.properties above, but in
+// local.properties (already gitignored for the SDK path) rather than a dedicated file, since this
+// is a single dev-convenience key rather than a release-signing secret.
+val localProperties = Properties().apply {
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     namespace = "com.kachat.app"
     compileSdk = 35
@@ -70,6 +80,12 @@ android {
         targetSdk = 35
         versionCode = 8
         versionName = "2.0"
+
+        buildConfigField(
+            "String",
+            "CHANGENOW_API_KEY",
+            "\"${localProperties.getProperty("changenow.api.key", "")}\""
+        )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -174,6 +190,9 @@ dependencies {
 
     // Security (Keystore-backed encrypted storage)
     implementation(libs.security.crypto)
+
+    // Biometric / device-credential prompt (seed phrase view, unlocking a saved account)
+    implementation(libs.androidx.biometric)
 
     // Crypto (BIP39, BIP32/44)
     implementation(libs.bitcoinj.core)

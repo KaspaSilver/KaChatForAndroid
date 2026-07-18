@@ -37,6 +37,8 @@ class WalletManager @Inject constructor(
         private const val SECURE_PREFS_NAME = "kachat_secure_prefs"
         private const val PREF_ACCOUNTS = "accounts"
         private const val PREF_ACTIVE_ADDRESS = "active_address"
+        private const val PREF_HIDDEN_SPENDING_ADDRESSES = "hidden_spending_addresses"
+        private const val PREF_SPENDING_ADDRESS_LABELS = "spending_address_labels"
 
         // bitcoinj's own `MnemonicCode.INSTANCE` static initializer loads its wordlist via
         // `Class.getResourceAsStream`, which is documented by bitcoinj itself as "Won't work on
@@ -129,6 +131,52 @@ class WalletManager @Inject constructor(
     }
 
     fun getAllAccounts(): List<Account> = getAccounts()
+
+    /** One spending-chain address a user chose to hide from Manage Addresses — flat (walletAddress, index) keying, same pattern as Cold Storage's [ColdStorageManager] hidden addresses. Hiding never deletes anything; it's purely a display preference. */
+    private data class HiddenSpendingAddress(val walletAddress: String, val index: Int)
+
+    private fun getAllHiddenSpendingAddresses(): List<HiddenSpendingAddress> {
+        val json = sharedPrefs.getString(PREF_HIDDEN_SPENDING_ADDRESSES, null) ?: return emptyList()
+        val type = object : TypeToken<List<HiddenSpendingAddress>>() {}.type
+        return gson.fromJson(json, type)
+    }
+
+    private fun saveHiddenSpendingAddresses(hidden: List<HiddenSpendingAddress>) {
+        sharedPrefs.edit().putString(PREF_HIDDEN_SPENDING_ADDRESSES, gson.toJson(hidden)).apply()
+    }
+
+    /** Indices hidden under [walletAddress] — never deletes the address itself, just what Manage Addresses filters out. */
+    fun getHiddenSpendingIndices(walletAddress: String): Set<Int> =
+        getAllHiddenSpendingAddresses().filter { it.walletAddress == walletAddress }.map { it.index }.toSet()
+
+    fun setSpendingAddressHidden(walletAddress: String, index: Int, hidden: Boolean) {
+        val remaining = getAllHiddenSpendingAddresses().filterNot { it.walletAddress == walletAddress && it.index == index }
+        saveHiddenSpendingAddresses(if (hidden) remaining + HiddenSpendingAddress(walletAddress, index) else remaining)
+    }
+
+    /** A user-given nickname for one spending-chain address, shown in Manage Addresses in place of the default "Address #N" — same flat (walletAddress, index) keying as [HiddenSpendingAddress]. */
+    private data class SpendingAddressLabel(val walletAddress: String, val index: Int, val label: String)
+
+    private fun getAllSpendingAddressLabels(): List<SpendingAddressLabel> {
+        val json = sharedPrefs.getString(PREF_SPENDING_ADDRESS_LABELS, null) ?: return emptyList()
+        val type = object : TypeToken<List<SpendingAddressLabel>>() {}.type
+        return gson.fromJson(json, type)
+    }
+
+    private fun saveSpendingAddressLabels(labels: List<SpendingAddressLabel>) {
+        sharedPrefs.edit().putString(PREF_SPENDING_ADDRESS_LABELS, gson.toJson(labels)).apply()
+    }
+
+    /** Labels by index under [walletAddress] — indices with no custom label are simply absent. */
+    fun getSpendingAddressLabels(walletAddress: String): Map<Int, String> =
+        getAllSpendingAddressLabels().filter { it.walletAddress == walletAddress }.associate { it.index to it.label }
+
+    fun setSpendingAddressLabel(walletAddress: String, index: Int, label: String?) {
+        val remaining = getAllSpendingAddressLabels().filterNot { it.walletAddress == walletAddress && it.index == index }
+        saveSpendingAddressLabels(
+            if (!label.isNullOrBlank()) remaining + SpendingAddressLabel(walletAddress, index, label.trim()) else remaining
+        )
+    }
 
     /**
      * Generate a new BIP39 mnemonic and store it securely.

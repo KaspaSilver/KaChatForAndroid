@@ -76,8 +76,8 @@ class WalletService @Inject constructor(
      * plain identity-sourced send. "Pay in Kaspa" does NOT go through this — see [payInKaspa].
      * @return The transaction ID if successful.
      */
-    suspend fun sendKaspa(toAddress: String, amountSompi: Long, payloadBytes: ByteArray? = null): String {
-        val result = walletEngine.sendKaspa(toAddress, amountSompi, payloadBytes)
+    suspend fun sendKaspa(toAddress: String, amountSompi: Long, payloadBytes: ByteArray? = null, feeRateOverride: Long? = null): String {
+        val result = walletEngine.sendKaspa(toAddress, amountSompi, payloadBytes, feeRateOverride = feeRateOverride)
 
         if (result.isSuccess) {
             refreshBalance()
@@ -93,8 +93,42 @@ class WalletService @Inject constructor(
      * doesn't go through [sendKaspa] above; messaging/handshakes are unaffected.
      * @return The transaction ID if successful.
      */
-    suspend fun payInKaspa(toAddress: String, amountSompi: Long): String {
-        val result = walletEngine.sendSpendingPayment(toAddress, amountSompi)
+    suspend fun payInKaspa(toAddress: String, amountSompi: Long, feeRateOverride: Long? = null): String {
+        val result = walletEngine.sendSpendingPayment(toAddress, amountSompi, feeRateOverride)
+
+        if (result.isSuccess) {
+            refreshSpendingBalance()
+            return result.getOrThrow()
+        } else {
+            throw result.exceptionOrNull() ?: Exception("Unknown error during Kaspa send")
+        }
+    }
+
+    /**
+     * Sends exactly [amountSompi] from the current "Pay in Kaspa" spending address to [toAddress],
+     * leaving any change at that same address — used for swaps, where only part of the spending
+     * balance should move (unlike [payInKaspa], which sweeps the whole balance and rotates to a
+     * fresh address). Mirrors [WalletViewModel.withdrawFromSpendingAddress]'s by-index send, just
+     * always targeting whichever index is currently active rather than a user-picked one.
+     * @return The transaction ID if successful.
+     */
+    suspend fun sendFromCurrentSpendingAddress(toAddress: String, amountSompi: Long, feeRateOverride: Long? = null): String {
+        val index = walletManager.getActiveAccount()?.spendingAddressIndex
+            ?: throw IllegalStateException("No active account")
+        return sendFromSpendingAddress(index, toAddress, amountSompi, feeRateOverride)
+    }
+
+    /** Same as [sendFromCurrentSpendingAddress] but for an explicit, caller-chosen index — e.g. swapping from a non-primary address without switching what "Pay in Kaspa" sources from. */
+    suspend fun sendFromSpendingAddress(index: Int, toAddress: String, amountSompi: Long, feeRateOverride: Long? = null): String {
+        val fromAddress = walletManager.deriveSpendingAddress(index)
+        val result = walletEngine.sendKaspa(
+            toAddress = toAddress,
+            amountSompi = amountSompi,
+            fromAddress = fromAddress,
+            signingPrivateKey = walletManager.getSpendingPrivateKeyBytes(index),
+            changeAddress = fromAddress,
+            feeRateOverride = feeRateOverride
+        )
 
         if (result.isSuccess) {
             refreshSpendingBalance()
@@ -109,7 +143,9 @@ class WalletService @Inject constructor(
         val address: String,
         val balanceSompi: Long,
         val everUsed: Boolean,
-        val isCurrent: Boolean
+        val isCurrent: Boolean,
+        val hidden: Boolean = false,
+        val label: String? = null
     )
 
     /**
@@ -122,6 +158,8 @@ class WalletService @Inject constructor(
         val account = walletManager.getActiveAccount() ?: return emptyList()
         val maxIndex = maxOf(account.spendingAddressIndex, account.maxSpendingAddressIndex)
         val api = networkService.kaspaRestApi.value ?: return emptyList()
+        val hiddenIndices = walletManager.getHiddenSpendingIndices(account.address)
+        val labels = walletManager.getSpendingAddressLabels(account.address)
         // Each address's balance+history is an independent network round-trip — fetching them
         // concurrently instead of one-by-one is what keeps this fast enough to feel live as the
         // list grows past a couple of generated addresses.
@@ -131,10 +169,27 @@ class WalletService @Inject constructor(
                     val address = walletManager.deriveSpendingAddress(index)
                     val balance = try { api.getBalance(address).balance } catch (e: Exception) { 0L }
                     val everUsed = try { api.getTransactions(address, limit = 1).isNotEmpty() } catch (e: Exception) { false }
-                    SpendingAddressEntry(index, address, balance, everUsed, isCurrent = index == account.spendingAddressIndex)
+                    SpendingAddressEntry(
+                        index, address, balance, everUsed,
+                        isCurrent = index == account.spendingAddressIndex,
+                        hidden = index in hiddenIndices,
+                        label = labels[index]
+                    )
                 }
             }.awaitAll()
         }
+    }
+
+    /** Toggles whether one spending-chain address is hidden from the main Manage Addresses list — see [WalletManager.setSpendingAddressHidden]. */
+    fun setSpendingAddressHidden(index: Int, hidden: Boolean) {
+        val account = walletManager.getActiveAccount() ?: return
+        walletManager.setSpendingAddressHidden(account.address, index, hidden)
+    }
+
+    /** Sets or clears (blank/null) a user nickname for one spending-chain address — see [WalletManager.setSpendingAddressLabel]. */
+    fun setSpendingAddressLabel(index: Int, label: String?) {
+        val account = walletManager.getActiveAccount() ?: return
+        walletManager.setSpendingAddressLabel(account.address, index, label)
     }
 
     /** Derives one more spending-chain address for the Manage Addresses screen, without changing which one "Pay in Kaspa" currently sources from. */
@@ -200,7 +255,7 @@ class WalletService @Inject constructor(
      * the recipient can independently derive the exact same value and find it without
      * ever seeing a handshake (see [WalletManager.theirDeterministicAlias]).
      */
-    suspend fun sendKasiaMessage(toContactId: String, text: String): SendResult {
+    suspend fun sendKasiaMessage(toContactId: String, text: String, feeRateOverride: Long? = null): SendResult {
         val recipientPubKey = KaspaAddress.decode(toContactId).second
         val contact = chatRepository.getContact(toContactId)
 
@@ -213,7 +268,7 @@ class WalletService @Inject constructor(
         val encrypted = MessageProtocol.encrypt(text, recipientPubKey)
         val payloadBytes = MessageProtocol.buildCommPayload(alias, encrypted)
 
-        val txId = sendKaspa(toAddress = walletManager.getAddress(), amountSompi = 0, payloadBytes = payloadBytes)
+        val txId = sendKaspa(toAddress = walletManager.getAddress(), amountSompi = 0, payloadBytes = payloadBytes, feeRateOverride = feeRateOverride)
         return SendResult(txId, payloadBytes.toHexString())
     }
 
@@ -222,9 +277,9 @@ class WalletService @Inject constructor(
      * shape as [sendKasiaMessage] but never encrypted (broadcasts are plaintext by design, since
      * they're public one-to-many channels rather than a 1:1 conversation — matches Kasia).
      */
-    suspend fun sendBroadcast(channel: String, content: String): SendResult {
+    suspend fun sendBroadcast(channel: String, content: String, feeRateOverride: Long? = null): SendResult {
         val payloadBytes = MessageProtocol.buildBcastPayload(channel, content)
-        val txId = sendKaspa(toAddress = walletManager.getAddress(), amountSompi = 0, payloadBytes = payloadBytes)
+        val txId = sendKaspa(toAddress = walletManager.getAddress(), amountSompi = 0, payloadBytes = payloadBytes, feeRateOverride = feeRateOverride)
         return SendResult(txId, payloadBytes.toHexString())
     }
 

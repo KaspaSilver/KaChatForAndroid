@@ -36,6 +36,7 @@ import androidx.navigation.NavController
 import coil.compose.SubcomposeAsyncImage
 import com.kachat.app.R
 import com.kachat.app.ui.theme.KaspaBlue
+import com.kachat.app.ui.theme.LocalAppColors
 import com.kachat.app.ui.theme.KaspaSubtext
 import com.kachat.app.ui.theme.KaspaTeal
 import com.kachat.app.viewmodels.WalletViewModel
@@ -85,6 +86,7 @@ fun ChatsScreen(
 ) {
     val balance by walletViewModel.fullBalance.collectAsState()
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
+    val hiddenTabs by walletViewModel.hiddenTabs.collectAsState()
     val conversations by chatViewModel.conversations.collectAsState()
     val isRefreshing by chatViewModel.isRefreshing.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
@@ -100,7 +102,7 @@ fun ChatsScreen(
             conversations
         } else {
             conversations.filter { convo ->
-                val contactLabel = convo.contact.alias ?: convo.contact.id.takeLast(8)
+                val contactLabel = convo.contact.alias ?: com.kachat.app.util.KaspaAddress.shortDisplay(convo.contact.id)
                 listOfNotNull(
                     convo.contact.alias,
                     convo.contact.knsName,
@@ -150,11 +152,11 @@ fun ChatsScreen(
     }
 
     Scaffold(
-        containerColor = Color.Black,
+        containerColor = LocalAppColors.current.background,
         topBar = {
             Column(
                 modifier = Modifier
-                    .background(Color.Black)
+                    .background(LocalAppColors.current.background)
                     .statusBarsPadding()
             ) {
                 Column(modifier = Modifier.padding(horizontal = 16.dp)) {
@@ -195,24 +197,24 @@ fun ChatsScreen(
                             .fillMaxWidth()
                             .heightIn(min = 48.dp)
                             .clip(RoundedCornerShape(22.dp)),
-                        placeholder = { Text("Search chats", color = Color.Gray) },
+                        placeholder = { Text("Search chats", color = LocalAppColors.current.textSecondary) },
                         singleLine = true,
                         textStyle = MaterialTheme.typography.bodyMedium,
                         leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.Search, contentDescription = null, tint = LocalAppColors.current.textSecondary, modifier = Modifier.size(20.dp))
                         },
                         trailingIcon = {
                             if (searchQuery.isNotEmpty()) {
                                 IconButton(onClick = { searchQuery = "" }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear search", tint = Color.Gray, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Default.Close, contentDescription = "Clear search", tint = LocalAppColors.current.textSecondary, modifier = Modifier.size(18.dp))
                                 }
                             }
                         },
                         colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color(0xFF1C1C1E),
-                            unfocusedContainerColor = Color(0xFF1C1C1E),
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
+                            focusedContainerColor = LocalAppColors.current.surface,
+                            unfocusedContainerColor = LocalAppColors.current.surface,
+                            focusedTextColor = LocalAppColors.current.textPrimary,
+                            unfocusedTextColor = LocalAppColors.current.textPrimary,
                             cursorColor = KaspaTeal,
                             focusedIndicatorColor = Color.Transparent,
                             unfocusedIndicatorColor = Color.Transparent
@@ -226,46 +228,48 @@ fun ChatsScreen(
                 // avatar size/position and divider match the real chat rows exactly, pixel for
                 // pixel, rather than sitting inset an extra 16dp from the wrapping Column's own
                 // horizontal padding.
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { navController.navigate("broadcasts") }
-                        .padding(horizontal = 16.dp, vertical = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
+                if ("broadcasts" !in hiddenTabs) {
+                    Row(
                         modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF1C1C1E)),
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .clickable { navController.navigate("broadcasts") }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(LocalAppColors.current.surface),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.RssFeed,
+                                contentDescription = null,
+                                tint = KaspaTeal,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Text(
+                            text = "Broadcasts",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = LocalAppColors.current.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
                         Icon(
-                            imageVector = Icons.Default.RssFeed,
+                            imageVector = Icons.Default.ChevronRight,
                             contentDescription = null,
-                            tint = KaspaTeal,
-                            modifier = Modifier.size(24.dp)
+                            tint = LocalAppColors.current.textSecondary,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Text(
-                        text = "Broadcasts",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Icon(
-                        imageVector = Icons.Default.ChevronRight,
-                        contentDescription = null,
-                        tint = Color.Gray,
-                        modifier = Modifier.size(20.dp)
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 72.dp),
+                        color = Color.DarkGray.copy(alpha = 0.5f)
                     )
                 }
-                HorizontalDivider(
-                    modifier = Modifier.padding(start = 72.dp),
-                    color = Color.DarkGray.copy(alpha = 0.5f)
-                )
             }
         },
         floatingActionButton = {
@@ -276,15 +280,16 @@ fun ChatsScreen(
                 onClick = { navController.navigate("create_chat") },
                 containerColor = KaspaTeal,
                 contentColor = Color.Black,
-                shape = CircleShape
+                shape = CircleShape,
+                modifier = Modifier.size(64.dp)
             ) {
-                Icon(Icons.Default.PersonAddAlt1, "Create chat")
+                Icon(Icons.Default.PersonAddAlt1, "Create chat", modifier = Modifier.size(28.dp))
             }
         },
         bottomBar = {
             if (isSelectionMode) {
-                Column(modifier = Modifier.background(Color.Black).navigationBarsPadding()) {
-                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                Column(modifier = Modifier.background(LocalAppColors.current.background).navigationBarsPadding()) {
+                    HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.1f))
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -296,12 +301,12 @@ fun ChatsScreen(
                                 selectedContactIds = emptySet()
                             },
                             enabled = selectedContactIds.isNotEmpty(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2E)),
+                            colors = ButtonDefaults.buttonColors(containerColor = LocalAppColors.current.surfaceVariant),
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.MarkEmailRead, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Mark as Read", color = Color.White, fontSize = 13.sp)
+                            Text("Mark as Read", color = LocalAppColors.current.textPrimary, fontSize = 13.sp)
                         }
                         Button(
                             onClick = {
@@ -310,12 +315,12 @@ fun ChatsScreen(
                                 selectedContactIds = emptySet()
                             },
                             enabled = selectedContactIds.isNotEmpty(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2E)),
+                            colors = ButtonDefaults.buttonColors(containerColor = LocalAppColors.current.surfaceVariant),
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.MarkEmailUnread, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Mark as Unread", color = Color.White, fontSize = 13.sp)
+                            Text("Mark as Unread", color = LocalAppColors.current.textPrimary, fontSize = 13.sp)
                         }
                     }
                 }
@@ -345,14 +350,14 @@ fun ChatsScreen(
                         text = "No Conversations Yet",
                         style = MaterialTheme.typography.headlineSmall.copy(
                             fontWeight = FontWeight.Bold,
-                            color = Color.White
+                            color = LocalAppColors.current.textPrimary
                         )
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
                         text = "Start a new chat by adding a contact",
                         style = MaterialTheme.typography.bodyLarge,
-                        color = Color.Gray,
+                        color = LocalAppColors.current.textSecondary,
                         textAlign = TextAlign.Center
                     )
                     Spacer(Modifier.height(32.dp))
@@ -387,14 +392,14 @@ fun ChatsScreen(
                         text = "No Matching Chats",
                         style = MaterialTheme.typography.headlineSmall.copy(
                             fontWeight = FontWeight.Bold,
-                            color = Color.White
+                            color = LocalAppColors.current.textPrimary
                         )
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
                         text = "No chats match \"$searchQuery\"",
                         style = MaterialTheme.typography.bodyLarge,
-                        color = Color.Gray,
+                        color = LocalAppColors.current.textSecondary,
                         textAlign = TextAlign.Center
                     )
                 }
@@ -425,7 +430,7 @@ fun ChatsScreen(
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth().background(Color.Black)
+                                modifier = Modifier.fillMaxWidth().background(LocalAppColors.current.background)
                             ) {
                                 if (isSelectionMode) {
                                     Icon(
@@ -459,15 +464,15 @@ fun ChatsScreen(
 
                 contactToDelete?.let { contactId ->
                     val label = filteredConversations.find { it.contact.id == contactId }
-                        ?.contact?.let { it.alias ?: it.id.takeLast(8) } ?: "this chat"
+                        ?.contact?.let { it.alias ?: com.kachat.app.util.KaspaAddress.shortDisplay(it.id) } ?: "this chat"
                     AlertDialog(
                         onDismissRequest = { contactToDelete = null },
-                        containerColor = Color(0xFF1C1C1E),
-                        title = { Text("Delete Chat with $label", color = Color.White) },
+                        containerColor = LocalAppColors.current.surface,
+                        title = { Text("Delete Chat with $label", color = LocalAppColors.current.textPrimary) },
                         text = {
                             Text(
-                                "This permanently deletes every message with them on this device. This cannot be undone — messaging them again starts a brand new conversation.",
-                                color = Color.Gray
+                                "This permanently deletes every message with them on this device. This cannot be undone; messaging them again starts a brand new conversation.",
+                                color = LocalAppColors.current.textSecondary
                             )
                         },
                         confirmButton = {
@@ -480,7 +485,7 @@ fun ChatsScreen(
                         },
                         dismissButton = {
                             TextButton(onClick = { contactToDelete = null }) {
-                                Text("Cancel", color = Color.Gray)
+                                Text("Cancel", color = LocalAppColors.current.textSecondary)
                             }
                         }
                     )
@@ -491,7 +496,7 @@ fun ChatsScreen(
                 refreshing = isRefreshing,
                 state = pullRefreshState,
                 modifier = Modifier.align(Alignment.TopCenter),
-                backgroundColor = Color(0xFF1C1C1E),
+                backgroundColor = LocalAppColors.current.surface,
                 contentColor = KaspaTeal
             )
 
@@ -524,12 +529,16 @@ private fun messagePreviewText(message: MessageEntity?, contactLabel: String): S
  * threshold, with no separate tap step).
  */
 @Composable
-private fun SwipeActionRow(
+fun SwipeActionRow(
     enabled: Boolean = true,
-    leadingIcon: ImageVector,
-    leadingLabel: String,
-    leadingColor: Color,
-    onLeadingClick: () -> Unit,
+    // Matches the content's own corner radius so the leading/trailing action color underneath
+    // gets clipped to the same rounded shape — otherwise its sharp corners peek out past the
+    // content's rounded ones even at rest (offsetX == 0), showing as a stray sliver of color.
+    cornerRadius: Dp = 0.dp,
+    leadingIcon: ImageVector? = null,
+    leadingLabel: String? = null,
+    leadingColor: Color = Color.Transparent,
+    onLeadingClick: () -> Unit = {},
     trailingIcon: ImageVector,
     trailingLabel: String,
     trailingColor: Color,
@@ -539,28 +548,31 @@ private fun SwipeActionRow(
     val density = LocalDensity.current
     val actionWidthDp = 88.dp
     val actionWidthPx = with(density) { actionWidthDp.toPx() }
+    val hasLeading = leadingIcon != null
     var offsetX by remember { mutableStateOf(0f) }
 
     val draggableState = rememberDraggableState { delta ->
-        offsetX = (offsetX + delta).coerceIn(-actionWidthPx, actionWidthPx)
+        offsetX = (offsetX + delta).coerceIn(-actionWidthPx, if (hasLeading) actionWidthPx else 0f)
     }
 
-    Box(modifier = Modifier.fillMaxWidth()) {
+    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(cornerRadius))) {
         Row(modifier = Modifier.matchParentSize()) {
-            Box(
-                modifier = Modifier
-                    .width(actionWidthDp)
-                    .fillMaxHeight()
-                    .background(leadingColor)
-                    .clickable(enabled = offsetX > 1f) {
-                        onLeadingClick()
-                        offsetX = 0f
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(leadingIcon, contentDescription = leadingLabel, tint = Color.Black)
-                    Text(leadingLabel, color = Color.Black, style = MaterialTheme.typography.bodySmall)
+            if (hasLeading) {
+                Box(
+                    modifier = Modifier
+                        .width(actionWidthDp)
+                        .fillMaxHeight()
+                        .background(leadingColor)
+                        .clickable(enabled = offsetX > 1f) {
+                            onLeadingClick()
+                            offsetX = 0f
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(leadingIcon!!, contentDescription = leadingLabel, tint = Color.Black)
+                        Text(leadingLabel ?: "", color = Color.Black, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
             Spacer(Modifier.weight(1f))
@@ -576,8 +588,8 @@ private fun SwipeActionRow(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(trailingIcon, contentDescription = trailingLabel, tint = Color.White)
-                    Text(trailingLabel, color = Color.White, style = MaterialTheme.typography.bodySmall)
+                    Icon(trailingIcon, contentDescription = trailingLabel, tint = LocalAppColors.current.textPrimary)
+                    Text(trailingLabel, color = LocalAppColors.current.textPrimary, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -642,11 +654,11 @@ private fun ConversationRow(convo: Conversation, onClick: () -> Unit) {
         Spacer(Modifier.width(16.dp))
 
         Column(modifier = Modifier.weight(1f)) {
-            val contactLabel = convo.contact.alias ?: convo.contact.id.takeLast(8)
+            val contactLabel = convo.contact.alias ?: com.kachat.app.util.KaspaAddress.shortDisplay(convo.contact.id)
             Text(
                 text = contactLabel,
                 style = MaterialTheme.typography.titleMedium,
-                color = Color.White,
+                color = LocalAppColors.current.textPrimary,
                 fontWeight = FontWeight.Bold
             )
             Text(
@@ -672,7 +684,7 @@ private fun ConversationRow(convo: Conversation, onClick: () -> Unit) {
             ) {
                 Text(
                     text = convo.unreadCount.toString(),
-                    color = Color.White,
+                    color = LocalAppColors.current.textPrimary,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -688,7 +700,7 @@ fun ContactAvatar(
     fallbackText: String,
     size: Dp,
     modifier: Modifier = Modifier,
-    backgroundColor: Color = Color(0xFF1C1C1E),
+    backgroundColor: Color = LocalAppColors.current.surface,
     fontSize: TextUnit = 16.sp
 ) {
     Box(

@@ -73,6 +73,9 @@ class KaspaWalletEngine @Inject constructor(
      * instead, so a spend never leaves anything behind at the address it came from.
      * @param sweepAll Selects every fetched UTXO unconditionally instead of just enough to
      * cover amount+fee — see [KaspaUtxoSelector.selectAllUtxosAndCalculateFee].
+     * @param feeRateOverride Sompi-per-mass-gram rate to use instead of the live network
+     * estimate — e.g. from the Withdraw dialog's manual fee bump for a busy fee market. Still
+     * floored at [KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM] like the live estimate is.
      * @return Result containing the transaction ID or an error.
      */
     suspend fun sendKaspa(
@@ -82,7 +85,8 @@ class KaspaWalletEngine @Inject constructor(
         fromAddress: String = walletManager.getAddress(),
         signingPrivateKey: ByteArray = walletManager.getPrivateKeyBytes(),
         changeAddress: String = fromAddress,
-        sweepAll: Boolean = false
+        sweepAll: Boolean = false,
+        feeRateOverride: Long? = null
     ): Result<String> = sendMutex.withLock {
         try {
             // 1. Validate address
@@ -100,15 +104,20 @@ class KaspaWalletEngine @Inject constructor(
 
             // 3. Fetch network fee rate (sompi per mass-gram) — always at least the
             // network-enforced minimum, since a quoted rate below that would still
-            // get rejected on broadcast.
-            val feeRateSompiPerGram = try {
-                val estimate = api.getFeeEstimate()
-                val quoted = estimate.normalBuckets.firstOrNull()?.feerate
-                    ?: KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble()
-                ceil(quoted).toLong().coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
-            } catch (e: Exception) {
-                Log.w("KaspaWalletEngine", "Failed to fetch fee estimate, using network minimum", e)
-                KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM
+            // get rejected on broadcast. A caller-supplied override skips the live estimate
+            // entirely (still floored the same way).
+            val feeRateSompiPerGram = if (feeRateOverride != null) {
+                feeRateOverride.coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
+            } else {
+                try {
+                    val estimate = api.getFeeEstimate()
+                    val quoted = estimate.normalBuckets.firstOrNull()?.feerate
+                        ?: KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble()
+                    ceil(quoted).toLong().coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
+                } catch (e: Exception) {
+                    Log.w("KaspaWalletEngine", "Failed to fetch fee estimate, using network minimum", e)
+                    KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM
+                }
             }
 
             val recipientScriptHex = KaspaAddress.getScriptPublicKey(toAddress)
@@ -228,7 +237,7 @@ class KaspaWalletEngine @Inject constructor(
      * The stored index only advances after the send actually succeeds — a failed/rejected send
      * leaves the current spending address exactly as it was, safe to retry.
      */
-    suspend fun sendSpendingPayment(toAddress: String, amountSompi: Long): Result<String> {
+    suspend fun sendSpendingPayment(toAddress: String, amountSompi: Long, feeRateOverride: Long? = null): Result<String> {
         val identityAddress = walletManager.getAddress()
         val currentIndex = walletManager.getActiveAccount()?.spendingAddressIndex
             ?: return Result.failure(IllegalStateException("No active account"))
@@ -242,7 +251,8 @@ class KaspaWalletEngine @Inject constructor(
             fromAddress = currentSpendingAddress,
             signingPrivateKey = spendingPrivateKey,
             changeAddress = nextSpendingAddress,
-            sweepAll = true
+            sweepAll = true,
+            feeRateOverride = feeRateOverride
         )
         if (result.isSuccess) {
             walletManager.advanceSpendingAddressIndex(identityAddress)

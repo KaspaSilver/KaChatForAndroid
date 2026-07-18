@@ -24,6 +24,17 @@ object KaspaAddress {
     }
 
     /**
+     * Shortens a full address to "prefix:xxxx....xxxx" for display when there's no alias/KNS
+     * name to show instead — e.g. "kaspa:qypx....a83f".
+     */
+    fun shortDisplay(address: String): String {
+        val parts = address.split(":", limit = 2)
+        if (parts.size != 2) return address
+        val (prefix, body) = parts
+        return if (body.length <= 12) "$prefix:$body" else "$prefix:${body.take(4)}....${body.takeLast(4)}"
+    }
+
+    /**
      * Basic validation of a Kaspa address string.
      */
     fun isValid(address: String): Boolean {

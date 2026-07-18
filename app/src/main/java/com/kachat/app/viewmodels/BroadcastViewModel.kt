@@ -133,6 +133,16 @@ class BroadcastViewModel @Inject constructor(
 
     private val _currentUtxos = MutableStateFlow<List<UtxoEntry>>(emptyList())
     private val _networkFeeRate = MutableStateFlow(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble())
+    val networkFeeRate: StateFlow<Double> = _networkFeeRate.asStateFlow()
+
+    // User-adjustable override for a busy fee market — set via the composer's clickable fee pill.
+    // Applies to the next broadcast/voice send and clears itself afterward.
+    private val _feeRateOverride = MutableStateFlow<Long?>(null)
+    val feeRateOverride: StateFlow<Long?> = _feeRateOverride.asStateFlow()
+
+    fun setFeeRateOverride(rate: Long?) {
+        _feeRateOverride.value = rate
+    }
 
     // Declared here (ahead of the combine() below that references it) rather than down in the
     // "Voice messages" section further down — combine()'s flow arguments are evaluated
@@ -166,7 +176,8 @@ class BroadcastViewModel @Inject constructor(
      * estimateContextualMessageFee, which also prices off one output); the actual send path
      * computes this precisely against the real scriptPublicKey length.
      */
-    val estimatedFeeSompi: StateFlow<Long?> = combine(previewPayloadSize, _currentUtxos, _networkFeeRate) { payloadSize, utxos, rate ->
+    val estimatedFeeSompi: StateFlow<Long?> = combine(previewPayloadSize, _currentUtxos, _networkFeeRate, _feeRateOverride) { payloadSize, utxos, networkRate, overrideRate ->
+        val rate = overrideRate?.toDouble() ?: networkRate
         if (payloadSize == 0) return@combine null
 
         var total = 0L
@@ -254,6 +265,10 @@ class BroadcastViewModel @Inject constructor(
         viewModelScope.launch { settings.setBroadcastShowKnsAvatars(enabled) }
     }
 
+    /** Which block explorer website "Go to Explorer" opens — shared preference, set in Settings > Kaspa Explorer. */
+    val kaspaExplorer: StateFlow<com.kachat.app.models.KaspaExplorer> = settings.kaspaExplorer
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), com.kachat.app.models.KaspaExplorer.default)
+
     /** The active account's hidden sender addresses — set via "Hide User" on a sender's avatar. */
     val hiddenSenderAddresses: StateFlow<Set<String>> = broadcastRepository.getHiddenSenderAddresses()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
@@ -338,6 +353,8 @@ class BroadcastViewModel @Inject constructor(
         if (content.isBlank()) return
         if (_sendBroadcastState.value.status == SendBroadcastStatus.SENDING) return
         val reply = _replyingTo.value
+        val feeRate = _feeRateOverride.value
+        _feeRateOverride.value = null
         val payload = if (reply != null) {
             // Replying to a message that's itself a reply — unwrap to its actual text rather than
             // showing the inner reply's raw JSON as the preview.
@@ -351,7 +368,7 @@ class BroadcastViewModel @Inject constructor(
         viewModelScope.launch {
             _sendBroadcastState.value = SendBroadcastUiState(status = SendBroadcastStatus.SENDING)
             try {
-                broadcastRepository.sendBroadcast(channelName, payload)
+                broadcastRepository.sendBroadcast(channelName, payload, feeRateOverride = feeRate)
                 _replyingTo.value = null
                 _sendBroadcastState.value = SendBroadcastUiState()
             } catch (e: Exception) {

@@ -5,7 +5,9 @@ import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
@@ -52,6 +54,63 @@ private val LightColorScheme = lightColorScheme(
     error            = Color(0xFFE53E3E),
 )
 
+/**
+ * App-specific semantic color roles, alongside (not instead of) Material3's [ColorScheme] — this
+ * app's screens were all built against a fixed small palette of dark-mode literals (`Color.Black`,
+ * `Color(0xFF1C1C1E)` cards, `Color.White`/`Color.Gray` text) rather than `MaterialTheme.colorScheme`,
+ * so retrofitting light mode means giving every screen a themed equivalent of *that* palette
+ * specifically, not a generic Material3 remap. `textOnAccent`/`accent` are deliberately identical
+ * in both schemes: KaspaTeal itself doesn't change with the theme, and text/icons drawn on top of
+ * it (e.g. the Swap button's label) need to stay dark for contrast either way.
+ */
+data class AppColors(
+    val background: Color,
+    val surface: Color,
+    val surfaceVariant: Color,
+    val textPrimary: Color,
+    val textSecondary: Color,
+    val divider: Color,
+    val accent: Color,
+    val textOnAccent: Color,
+    val success: Color,
+    val warning: Color,
+    val danger: Color
+)
+
+val DarkAppColors = AppColors(
+    background     = Color.Black,
+    surface        = Color(0xFF1C1C1E),
+    surfaceVariant = Color(0xFF2C2C2E),
+    textPrimary    = Color.White,
+    textSecondary  = Color.Gray,
+    divider        = Color.White.copy(alpha = 0.08f),
+    accent         = KaspaTeal,
+    textOnAccent   = Color.Black,
+    success        = Color(0xFF4CD964),
+    warning        = Color(0xFFF39C12),
+    danger         = Color(0xFFFF3B30)
+)
+
+val LightAppColors = AppColors(
+    background     = Color(0xFFF2F2F7),
+    surface        = Color.White,
+    surfaceVariant = Color(0xFFE9E9EE),
+    textPrimary    = Color(0xFF1A1A1A),
+    textSecondary  = Color(0xFF6B6B70),
+    divider        = Color.Black.copy(alpha = 0.08f),
+    accent         = KaspaTeal,
+    textOnAccent   = Color.Black,
+    success        = Color(0xFF2E9E4F),
+    warning        = Color(0xFFB9740A),
+    danger         = Color(0xFFD32F2F)
+)
+
+val LocalAppColors = staticCompositionLocalOf { DarkAppColors }
+
+/** Shorthand for `LocalAppColors.current` — mirrors the `MaterialTheme.colorScheme` accessor pattern. */
+val MaterialTheme.appColors: AppColors
+    @Composable get() = LocalAppColors.current
+
 @Composable
 fun KaChatTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -76,9 +135,11 @@ fun KaChatTheme(
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = KaChatTypography,
-        content = content
-    )
+    CompositionLocalProvider(LocalAppColors provides if (darkTheme) DarkAppColors else LightAppColors) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = KaChatTypography,
+            content = content
+        )
+    }
 }
