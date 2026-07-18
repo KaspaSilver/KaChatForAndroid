@@ -15,6 +15,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -45,9 +48,21 @@ class WalletService @Inject constructor(
 
     data class SendResult(val txId: String, val payloadHex: String)
 
+    /**
+     * The REST API client is built asynchronously off [AppSettingsRepository]'s persisted URL
+     * (see [NetworkService.observeSettings]), so right after a cold app launch it can still be
+     * null for the first tens-of-milliseconds while that first DataStore read resolves. Every
+     * caller here used to just no-op on null with no retry, so a refresh that raced this window
+     * (as [WalletViewModel]'s own init block always does) silently never happened, leaving
+     * balance/UTXOs stale until some later, unrelated action happened to call this again — this
+     * waits briefly instead, bounded so a genuinely broken custom endpoint doesn't hang forever.
+     */
+    private suspend fun readyApi(): KaspaRestApi? =
+        networkService.kaspaRestApi.value ?: withTimeoutOrNull(10_000) { networkService.kaspaRestApi.filterNotNull().first() }
+
     suspend fun refreshBalance() {
         val address = try { walletManager.getAddress() } catch (e: Exception) { return }
-        val api = networkService.kaspaRestApi.value ?: return
+        val api = readyApi() ?: return
 
         try {
             val response = api.getBalance(address)
@@ -59,7 +74,7 @@ class WalletService @Inject constructor(
 
     suspend fun refreshSpendingBalance() {
         val address = try { walletManager.currentSpendingAddress() } catch (e: Exception) { return }
-        val api = networkService.kaspaRestApi.value ?: return
+        val api = readyApi() ?: return
 
         try {
             val response = api.getBalance(address)
@@ -157,7 +172,7 @@ class WalletService @Inject constructor(
     suspend fun getSpendingAddressList(): List<SpendingAddressEntry> {
         val account = walletManager.getActiveAccount() ?: return emptyList()
         val maxIndex = maxOf(account.spendingAddressIndex, account.maxSpendingAddressIndex)
-        val api = networkService.kaspaRestApi.value ?: return emptyList()
+        val api = readyApi() ?: return emptyList()
         val hiddenIndices = walletManager.getHiddenSpendingIndices(account.address)
         val labels = walletManager.getSpendingAddressLabels(account.address)
         // Each address's balance+history is an independent network round-trip — fetching them
@@ -231,7 +246,7 @@ class WalletService @Inject constructor(
         val account = walletManager.getActiveAccount() ?: return 0
         val currentIndex = account.spendingAddressIndex
         val maxIndex = maxOf(account.spendingAddressIndex, account.maxSpendingAddressIndex)
-        val api = networkService.kaspaRestApi.value ?: return 0
+        val api = readyApi() ?: return 0
         val currentAddress = walletManager.deriveSpendingAddress(currentIndex)
 
         var sweptCount = 0
