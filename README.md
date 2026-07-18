@@ -1,7 +1,7 @@
 # KaChat
 
 KaChat is an encrypted, peer-to-peer messaging app built directly on the Kaspa blockchain. There
-are no servers, no accounts, and no phone numbers — your identity is your Kaspa wallet, and every
+are no servers, no accounts, and no phone numbers. Your identity is your Kaspa wallet, and every
 message is end-to-end encrypted and sent as a transaction on-chain. You can chat and send KAS
 payments to anyone from the same app.
 
@@ -9,7 +9,7 @@ This is the Android version, a companion to [KaChat on iOS](https://github.com/v
 
 ## Features
 
-- End-to-end encrypted messaging — no central server, nothing to trust but the blockchain
+- End-to-end encrypted messaging, with no central server and nothing to trust but the blockchain
 - Send and receive KAS payments right inside a chat
 - Voice messages
 - KNS domain names (send to a human-readable name instead of a raw address)
@@ -21,10 +21,10 @@ This is the Android version, a companion to [KaChat on iOS](https://github.com/v
 
 1. Go to the [Releases page](../../releases) and download the latest `.apk` file.
 2. On your Android phone, open the downloaded file. If you're prompted to allow installing from
-   this source, allow it — this is expected for an app installed outside the Play Store.
+   this source, allow it. This is expected for an app installed outside the Play Store.
 3. Open KaChat and either create a new wallet or import an existing one with your seed phrase.
 
-Your seed phrase is the only way to recover your wallet — write it down and keep it somewhere
+Your seed phrase is the only way to recover your wallet, so write it down and keep it somewhere
 safe. Nobody, including the developers, can recover it for you if it's lost.
 
 ## Building from source
