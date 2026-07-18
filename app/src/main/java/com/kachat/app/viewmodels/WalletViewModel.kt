@@ -273,6 +273,17 @@ class WalletViewModel @Inject constructor(
             _accounts.value = walletManager.getAllAccounts()
             refreshBalance()
             refreshSpendingAddress()
+
+            // A cold start should land back in whichever account was already active, not the
+            // Welcome screen's saved-accounts list, since nothing about closing and reopening the
+            // app implies the user wants to switch or re-confirm anything — unless they've
+            // explicitly turned on biometrics for account login, in which case that tap-to-unlock
+            // gate (see OnboardingScreen's SavedAccountCard) is the whole point and must still fire.
+            viewModelScope.launch {
+                if (!settings.biometricAccountLoginEnabled.first()) {
+                    _isLoggedIn.value = true
+                }
+            }
         }
     }
 
