@@ -736,14 +736,6 @@ class WalletViewModel @Inject constructor(
         viewModelScope.launch { settings.setTabHidden(route, hidden) }
     }
 
-    /** Whether Cold Storage is its own bottom tab (true) or reached via Portfolio's "Cold Storage Devices" row (false, default). */
-    val coldStorageTabEnabled: StateFlow<Boolean> = settings.coldStorageTabEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false)
-
-    fun setColdStorageTabEnabled(enabled: Boolean) {
-        viewModelScope.launch { settings.setColdStorageTabEnabled(enabled) }
-    }
-
     val darkModeEnabled: StateFlow<Boolean> = settings.darkModeEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), true)
 

@@ -1680,7 +1680,9 @@ fun ProfileScreen(
                     balance = balance,
                     onStatusClick = { navController.navigate("connection_status") },
                     dotColorHex = dotColorHex,
-                    showAddButton = false
+                    showAddButton = false,
+                    showSettingsButton = true,
+                    onSettingsClick = { navController.navigate("settings") }
                 )
                 Spacer(modifier = Modifier.height(8.dp))
             }
@@ -4946,7 +4948,11 @@ fun TopStatusBar(
     isEditing: Boolean = false,
     onEditClick: () -> Unit = {},
     selectAllLabel: String? = null,
-    onSelectAllClick: () -> Unit = {}
+    onSelectAllClick: () -> Unit = {},
+    // Profile-only (matches iOS's gear button in ProfileView's toolbar) — Settings isn't a
+    // bottom-tab destination, this is its only entry point.
+    showSettingsButton: Boolean = false,
+    onSettingsClick: () -> Unit = {}
 ) {
     val statusColor = Color(dotColorHex)
 
@@ -5011,6 +5017,20 @@ fun TopStatusBar(
                         Icon(
                             imageVector = Icons.Default.PersonAddAlt1,
                             contentDescription = "Add Contact",
+                            tint = KaspaTeal,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                } else if (showSettingsButton) {
+                    IconButton(
+                        onClick = onSettingsClick,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(LocalAppColors.current.surface, CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
                             tint = KaspaTeal,
                             modifier = Modifier.size(20.dp)
                         )

@@ -59,19 +59,21 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
     object Portfolio   : Screen("portfolio",    "Portfolio",    Icons.Default.PieChart)
     object Profile     : Screen("profile",      "Profile",      Icons.Default.AccountCircle)
     object Swap        : Screen("swap",         "Swap",         Icons.Default.SwapHoriz)
-    // Opt-in sixth tab (Settings > Customization > Menu) — off the bottom nav by default, reached
-    // via Portfolio's "Cold Storage Devices" row instead. See AppSettingsRepository.coldStorageTabEnabled.
-    object ColdStorage : Screen("cold_storage", "Cold Storage", Icons.Default.Lock)
+    // Labeled "Storage" (not "Cold Storage") and always in the default tab set, matching iOS's
+    // AppTab.coldStorage — hideable like Portfolio/Swap via Settings > Customization > Menu, but
+    // no longer a separate opt-in reached through Portfolio's old "Cold Storage Devices" row.
+    object ColdStorage : Screen("cold_storage", "Storage",      Icons.Default.Lock)
 }
 
 /** Route strings for tabs that can never be hidden — see [resolveTabOrder]. */
-val ALWAYS_VISIBLE_TAB_ROUTES = setOf(Screen.Settings.route, Screen.Chats.route, Screen.Profile.route)
+val ALWAYS_VISIBLE_TAB_ROUTES = setOf(Screen.Chats.route, Screen.Profile.route)
 
-// All top-level tabs, in the app's default order. Cold Storage is deliberately excluded — it's
-// opt-in only, added dynamically in resolveTabOrder when enabled.
+// All top-level tabs, in the app's default order (matches iOS's AppTab.defaultOrder). Settings
+// isn't a tab at all (matches iOS) — it's reached one tap in from Profile's gear icon instead,
+// see ProfileScreen.
 val bottomNavItems = listOf(
-    Screen.Settings,
     Screen.Portfolio,
+    Screen.ColdStorage,
     Screen.Chats,
     Screen.Swap,
     Screen.Profile
@@ -84,15 +86,12 @@ val bottomNavItems = listOf(
  * last reordered) is appended at the end — so neither a stale persisted value nor an app update
  * can leave a tab permanently missing or crash on an unknown route. [hiddenTabs] then filters out
  * anything the user unchecked in Settings > Customization > Menu (never applied to
- * [ALWAYS_VISIBLE_TAB_ROUTES]), and [coldStorageEnabled] adds the opt-in sixth tab before any of
- * that ordering/filtering happens, so it slots in wherever the persisted order says (or at the
- * end, the first time it's turned on).
+ * [ALWAYS_VISIBLE_TAB_ROUTES]).
  */
-private fun resolveTabOrder(routes: List<String>, hiddenTabs: Set<String>, coldStorageEnabled: Boolean): List<Screen> {
-    val availableItems = if (coldStorageEnabled) bottomNavItems + Screen.ColdStorage else bottomNavItems
-    val byRoute = availableItems.associateBy { it.route }
+private fun resolveTabOrder(routes: List<String>, hiddenTabs: Set<String>): List<Screen> {
+    val byRoute = bottomNavItems.associateBy { it.route }
     val resolved = routes.mapNotNull { byRoute[it] }
-    val missing = availableItems.filter { it !in resolved }
+    val missing = bottomNavItems.filter { it !in resolved }
     val ordered = resolved + missing
     return ordered.filter { it.route in ALWAYS_VISIBLE_TAB_ROUTES || it.route !in hiddenTabs }
 }
@@ -138,14 +137,14 @@ fun MainShell(
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
-    // The broadcasts list isn't one of the three real tabs, but it's still a top-level browsing
+    // The broadcasts list isn't one of the four real tabs, but it's still a top-level browsing
     // screen (like Chats) rather than a "pushed" detail screen — the bottom nav should stay put
     // and stay functional there, not disappear the way it does for chat/chat_info/etc. A broadcast
     // room itself gets the same treatment (unlike a 1:1 chat thread) — it's still just browsing/
-    // participating in a public room, one tap away from Chats/Settings/Profile, not a private
-    // conversation you'd want to maximize screen space for.
+    // participating in a public room, one tap away from Chats/Profile, not a private conversation
+    // you'd want to maximize screen space for.
     val onTabRoute = currentDestination?.hierarchy?.any { dest ->
-        bottomNavItems.any { it.route == dest.route } || dest.route == Screen.ColdStorage.route ||
+        bottomNavItems.any { it.route == dest.route } ||
             dest.route == "broadcasts" || dest.route == "broadcast_channel/{channelName}"
     } == true
 
@@ -153,19 +152,18 @@ fun MainShell(
     // is only written on drag end; localTabOrder is the live, possibly-mid-drag copy the Row
     // actually renders from, reconciled back to the persisted order whenever it changes and no
     // drag is in progress (so a fresh install / another device's order still applies normally).
-    // Also reconciled on hiddenTabs/coldStorageTabEnabled changes, so toggling a tab in Settings >
-    // Customization > Menu updates the bar immediately without needing to leave/reopen it.
+    // Also reconciled on hiddenTabs changes, so toggling a tab in Settings > Customization > Menu
+    // updates the bar immediately without needing to leave/reopen it.
     val persistedTabOrder by walletViewModel.tabOrder.collectAsState()
     val hiddenTabs by walletViewModel.hiddenTabs.collectAsState()
-    val coldStorageTabEnabled by walletViewModel.coldStorageTabEnabled.collectAsState()
     val hideBottomBar by walletViewModel.hideBottomBar.collectAsState()
     var draggedScreen by remember { mutableStateOf<Screen?>(null) }
     var dragOffsetX by remember { mutableStateOf(0f) }
     var tabItemWidthPx by remember { mutableStateOf(0f) }
-    var localTabOrder by remember { mutableStateOf(resolveTabOrder(persistedTabOrder, hiddenTabs, coldStorageTabEnabled)) }
-    LaunchedEffect(persistedTabOrder, hiddenTabs, coldStorageTabEnabled) {
+    var localTabOrder by remember { mutableStateOf(resolveTabOrder(persistedTabOrder, hiddenTabs)) }
+    LaunchedEffect(persistedTabOrder, hiddenTabs) {
         if (draggedScreen == null) {
-            localTabOrder = resolveTabOrder(persistedTabOrder, hiddenTabs, coldStorageTabEnabled)
+            localTabOrder = resolveTabOrder(persistedTabOrder, hiddenTabs)
         }
     }
 
@@ -351,21 +349,18 @@ fun MainShell(
             popEnterTransition = { fadeIn(animationSpec = tween(150)) },
             popExitTransition = { fadeOut(animationSpec = tween(150)) }
         ) {
-            // The four bottom-tab destinations get an instant swap, overriding the NavHost-level
-            // 150ms fade above just for these routes — that fade is a good fit for pushed detail
-            // screens, but a tab bar's own instant selected-tint feedback reads as sluggish when
-            // paired with any fade on the content behind it, however short.
-            composable(
-                Screen.Settings.route,
-                enterTransition = { EnterTransition.None },
-                exitTransition = { ExitTransition.None },
-                popEnterTransition = { EnterTransition.None },
-                popExitTransition = { ExitTransition.None }
-            ) {
+            // Settings isn't a bottom-tab destination (matches iOS - reached one tap in from
+            // Profile's gear icon), so it gets the normal NavHost-level fade like any other
+            // pushed detail screen, not the instant tab-swap treatment below.
+            composable(Screen.Settings.route) {
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     SettingsScreen(navController, walletViewModel)
                 }
             }
+            // The four bottom-tab destinations get an instant swap, overriding the NavHost-level
+            // 150ms fade above just for these routes — that fade is a good fit for pushed detail
+            // screens, but a tab bar's own instant selected-tint feedback reads as sluggish when
+            // paired with any fade on the content behind it, however short.
             composable(
                 Screen.Chats.route,
                 enterTransition = { EnterTransition.None },
@@ -459,11 +454,19 @@ fun MainShell(
                 )
             }
 
-            composable("cold_storage") {
-                // Now potentially a tab destination too (Settings > Customization > Menu), so
-                // the floating bottom nav bar can be showing here — reserve room beneath the
-                // screen's own FAB the same way every other tab screen does, or the "Scan" button
-                // sits underneath/behind the nav bar instead of above it.
+            composable(
+                Screen.ColdStorage.route,
+                // One of the five real bottom tabs now (see bottomNavItems), so it gets the same
+                // instant tab-swap treatment as Portfolio/Chats/Swap/Profile above, not the
+                // NavHost-level fade.
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None }
+            ) {
+                // Reserve room beneath the screen's own FAB the same way every other tab screen
+                // does, or the "Scan" button sits underneath/behind the floating nav bar instead
+                // of above it.
                 Box(modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())) {
                     ColdStorageListScreen(navController = navController, walletViewModel = walletViewModel)
                 }

@@ -45,10 +45,10 @@ import com.kachat.app.viewmodels.WalletViewModel
 
 /**
  * Settings > Customization > Menu — which bottom-nav tabs show up, and in what set (order is
- * still controlled separately, by press-and-hold-drag on the bar itself). Settings/Chats/Profile
- * are permanently on (a wallet with no way back to its own settings, chat list, or profile isn't
- * useful), Portfolio/Swap can be hidden, and Cold Storage is the one opt-in extra tab — see
- * [WalletViewModel.coldStorageTabEnabled].
+ * still controlled separately, by press-and-hold-drag on the bar itself). Matches iOS's
+ * MenuVisibilityView: Chats/Profile are permanently on (Settings itself is reached from Profile
+ * now, not its own tab, so it isn't listed here at all), Portfolio/Storage/Swap can each be
+ * hidden. Broadcasts is an Android-only extra tab with no iOS equivalent.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,7 +57,6 @@ fun MenuVisibilityScreen(
     walletViewModel: WalletViewModel = hiltViewModel()
 ) {
     val hiddenTabs by walletViewModel.hiddenTabs.collectAsState()
-    val coldStorageTabEnabled by walletViewModel.coldStorageTabEnabled.collectAsState()
 
     Scaffold(
         containerColor = LocalAppColors.current.background,
@@ -92,14 +91,20 @@ fun MenuVisibilityScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column {
-                    MenuVisibilityRow(icon = Icons.Default.Settings, label = "Settings", checked = true, locked = true)
-                    HorizontalDivider(color = LocalAppColors.current.divider)
                     MenuVisibilityRow(
                         icon = Icons.Default.PieChart,
                         label = "Portfolio",
                         checked = "portfolio" !in hiddenTabs,
                         locked = false,
                         onToggle = { checked -> walletViewModel.setTabHidden("portfolio", !checked) }
+                    )
+                    HorizontalDivider(color = LocalAppColors.current.divider)
+                    MenuVisibilityRow(
+                        icon = Icons.Default.Lock,
+                        label = "Storage",
+                        checked = "cold_storage" !in hiddenTabs,
+                        locked = false,
+                        onToggle = { checked -> walletViewModel.setTabHidden("cold_storage", !checked) }
                     )
                     HorizontalDivider(color = LocalAppColors.current.divider)
                     MenuVisibilityRow(icon = Icons.Default.Forum, label = "Chats", checked = true, locked = true)
@@ -123,35 +128,6 @@ fun MenuVisibilityScreen(
                     )
                 }
             }
-
-            Spacer(Modifier.height(24.dp))
-            Text(
-                "More Menus",
-                color = LocalAppColors.current.textSecondary,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
-                modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
-            )
-            Surface(
-                color = LocalAppColors.current.surface,
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                MenuVisibilityRow(
-                    icon = Icons.Default.Lock,
-                    label = "Cold Storage",
-                    checked = coldStorageTabEnabled,
-                    locked = false,
-                    onToggle = { checked -> walletViewModel.setColdStorageTabEnabled(checked) }
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "When on, Cold Storage becomes its own tab and moves out of Portfolio's \"Cold Storage Devices\" row.",
-                color = LocalAppColors.current.textSecondary,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(horizontal = 4.dp)
-            )
         }
     }
 }

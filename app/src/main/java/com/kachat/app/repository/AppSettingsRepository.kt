@@ -82,18 +82,16 @@ class AppSettingsRepository @Inject constructor(
         // a channel — this toggle is what gates that.
         val KEY_BROADCAST_SHOW_KNS_AVATARS = booleanPreferencesKey("broadcast_show_kns_avatars")
         // User's custom bottom-tab order (press-and-hold to drag/reorder), comma-joined route
-        // strings e.g. "settings,portfolio,chats,swap,profile" — a stringSetPreferencesKey can't
+        // strings e.g. "portfolio,chats,swap,profile" — a stringSetPreferencesKey can't
         // be used here since Set has no defined iteration order, and order is the entire point.
         val KEY_TAB_ORDER = stringPreferencesKey("tab_order")
-        // Kept in sync with KaChatApp.kt's bottomNavItems default order.
-        val DEFAULT_TAB_ORDER = listOf("settings", "portfolio", "chats", "swap", "profile")
+        // Kept in sync with KaChatApp.kt's bottomNavItems default order. "settings" is deliberately
+        // absent - it isn't a tab (matches iOS), it's reached one tap in from Profile's gear icon.
+        val DEFAULT_TAB_ORDER = listOf("portfolio", "cold_storage", "chats", "swap", "profile")
         // Which bottom-tab routes the user has hidden from the nav bar (Settings > Customization >
-        // Menu) — "settings"/"chats"/"profile" are never allowed in here, only "portfolio"/"swap"/
-        // "cold_storage". A route absent from this set is visible.
+        // Menu) — "chats"/"profile" are never allowed in here, only "portfolio"/"cold_storage"/
+        // "swap". A route absent from this set is visible.
         val KEY_HIDDEN_TABS = stringSetPreferencesKey("hidden_tabs")
-        // Off by default — Cold Storage lives inside Portfolio ("Cold Storage Devices" row) until
-        // the user opts into it as its own bottom tab from Settings > Customization > Menu.
-        val KEY_COLD_STORAGE_TAB_ENABLED = booleanPreferencesKey("cold_storage_tab_enabled")
         // Settings > Customization > Dark Mode. True (dark) is the default so existing installs'
         // appearance is unchanged — every screen was designed dark-only until this toggle existed.
         val KEY_DARK_MODE_ENABLED = booleanPreferencesKey("dark_mode_enabled")
@@ -159,8 +157,6 @@ class AppSettingsRepository @Inject constructor(
     }
 
     val hiddenTabs: Flow<Set<String>> = dataStore.data.map { it[KEY_HIDDEN_TABS] ?: emptySet() }
-
-    val coldStorageTabEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_COLD_STORAGE_TAB_ENABLED] ?: false }
 
     val darkModeEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_DARK_MODE_ENABLED] ?: true }
 
@@ -251,7 +247,6 @@ class AppSettingsRepository @Inject constructor(
         val current = prefs[KEY_HIDDEN_TABS] ?: emptySet()
         prefs[KEY_HIDDEN_TABS] = if (hidden) current + route else current - route
     }
-    suspend fun setColdStorageTabEnabled(value: Boolean) = dataStore.edit { it[KEY_COLD_STORAGE_TAB_ENABLED] = value }
     suspend fun setDarkModeEnabled(value: Boolean) = dataStore.edit { it[KEY_DARK_MODE_ENABLED] = value }
     suspend fun setBiometricSeedPhraseEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_SEED_PHRASE_ENABLED] = value }
     suspend fun setBiometricAccountLoginEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] = value }

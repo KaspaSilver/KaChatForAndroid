@@ -137,17 +137,13 @@ private fun priceRangeLabel(days: Int): String = when (days) {
 @Composable
 fun PortfolioScreen(
     navController: NavController,
-    viewModel: PortfolioViewModel = hiltViewModel(),
-    walletViewModel: com.kachat.app.viewmodels.WalletViewModel = hiltViewModel()
+    viewModel: PortfolioViewModel = hiltViewModel()
 ) {
     val currentPriceUsd by viewModel.currentPriceUsd.collectAsState()
     val priceHistory by viewModel.priceHistory.collectAsState()
     val priceRangeDays by viewModel.priceRangeDays.collectAsState()
     val valueHistory by viewModel.valueHistory.collectAsState()
     val summary by viewModel.summary.collectAsState()
-    // Cold Storage moves out of here and into its own bottom tab once enabled (Settings >
-    // Customization > Menu) — see WalletViewModel.coldStorageTabEnabled.
-    val coldStorageTabEnabled by walletViewModel.coldStorageTabEnabled.collectAsState()
     // (timestamp, price) while scrubbing the price sparkline above, null otherwise — lifted up
     // here (rather than kept local to PriceChartCard) since the summary card below needs it too.
     var scrubbedPrice by remember { mutableStateOf<Pair<Long, Double>?>(null) }
@@ -199,18 +195,11 @@ fun PortfolioScreen(
                 label = "Transactions",
                 onClick = { navController.navigate("portfolio_transactions") }
             )
-            if (!coldStorageTabEnabled) {
-                PortfolioNavRow(
-                    icon = Icons.Default.QrCodeScanner,
-                    label = "Cold Storage Devices",
-                    onClick = { navController.navigate("cold_storage") }
-                )
-            }
         }
     }
 }
 
-/** Dark rounded-card row with a chevron — matches the "Cold Storage Devices" row style used elsewhere (Profile, Edit KNS Profile's Domains box). */
+/** Dark rounded-card row with a chevron — matches the style used elsewhere (Profile, Edit KNS Profile's Domains box). */
 @Composable
 private fun PortfolioNavRow(icon: ImageVector, label: String, onClick: () -> Unit) {
     Row(
