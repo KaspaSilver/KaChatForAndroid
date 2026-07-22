@@ -46,7 +46,8 @@ class ChatViewModel @Inject constructor(
     private val chatHistoryExportImportService: ChatHistoryExportImportService,
     private val diagnosticsExportService: com.kachat.app.services.DiagnosticsExportService,
     private val voiceRecorderService: VoiceRecorderService,
-    private val googleDriveBackupService: GoogleDriveBackupService
+    private val googleDriveBackupService: GoogleDriveBackupService,
+    private val groupRepository: com.kachat.app.repository.GroupRepository
 ) : ViewModel() {
 
     /** Suppresses a notification for whichever contact's thread is currently open. */
@@ -382,6 +383,7 @@ class ChatViewModel @Inject constructor(
             _wipeAccountState.value = DangerZoneOpState(status = DangerZoneOpStatus.IN_PROGRESS)
             try {
                 chatRepository.wipeAllLocalDataForAddress(address)
+                groupRepository.clearAllLocalData(address)
                 if (alsoDeleteCloud) {
                     googleDriveBackupService.deleteBackup(address)
                     settings.setGoogleBackupEnabled(false)
@@ -414,6 +416,36 @@ class ChatViewModel @Inject constructor(
                 Conversation(contact, latestByContact[contact.id], unreadByContact[contact.id] ?: 0)
             }.sortedByDescending { it.lastMessage?.blockTimestamp ?: 0L }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyList())
+
+    /**
+     * address -> cached KNS avatar URL, for group chat's per-sender avatars - group members are
+     * always saved contacts (created automatically when added to a group), so this reuses the
+     * same [com.kachat.app.models.ContactEntity.knsAvatarUrl] caching 1:1 chat avatars already
+     * rely on, rather than broadcast's separate anonymous-sender KNS lookup path.
+     */
+    val contactAvatarsByAddress: StateFlow<Map<String, String?>> = chatRepository.getContacts()
+        .map { contacts -> contacts.associateBy({ it.id }, { it.knsAvatarUrl }) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    /** address -> live contact alias (KNS-resolved name or custom nickname), for group chat's sender labels - see [contactAvatarsByAddress]. */
+    val contactAliasesByAddress: StateFlow<Map<String, String>> = chatRepository.getContacts()
+        .map { contacts -> contacts.mapNotNull { c -> c.alias?.takeIf { it.isNotBlank() }?.let { c.id to it } }.toMap() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    /**
+     * Fetches KNS name + avatar for every member of a group - group rosters cache a `displayName`
+     * snapshot taken at add/join time (`GroupMember.displayName`), which never reflects a KNS name
+     * resolved afterward, so the thread/info screens call this on appear the same way
+     * [refreshKnsNamesForAllContacts] runs for the chat list. `refreshKnsProfile` works for any
+     * address (creates no contact row itself), so this is safe even for members added by address/QR
+     * with no KNS domain.
+     */
+    fun refreshKnsProfilesForGroupMembers(addresses: List<String>) {
+        refreshKnsNamesForAllContacts()
+        for (address in addresses) {
+            refreshKnsProfile(address)
+        }
+    }
 
     fun markAsRead(contactId: String) {
         viewModelScope.launch { chatRepository.markAsRead(contactId) }
@@ -551,6 +583,23 @@ class ChatViewModel @Inject constructor(
         _pendingPhotoUri.value = null
     }
 
+    // Group chat's own photo-staging/voice-recording state - kept separate from the 1:1 fields
+    // above (rather than reused) since both screens share this same ViewModel instance and a
+    // photo staged on one screen bleeding into the other on a quick navigation would be a real bug.
+    private val _groupVoiceRecordingState = MutableStateFlow(VoiceRecordingState())
+    val groupVoiceRecordingState: StateFlow<VoiceRecordingState> = _groupVoiceRecordingState.asStateFlow()
+
+    private val _groupPendingPhotoUri = MutableStateFlow<Uri?>(null)
+    val groupPendingPhotoUri: StateFlow<Uri?> = _groupPendingPhotoUri.asStateFlow()
+
+    fun setGroupPendingPhoto(uri: Uri?) {
+        _groupPendingPhotoUri.value = uri
+    }
+
+    fun cancelGroupPendingPhoto() {
+        _groupPendingPhotoUri.value = null
+    }
+
     /**
      * The payload byte count to price the live fee preview off of: the real typed-text length
      * while composing, a rough elapsed-time-based estimate of the final encoded/encrypted size
@@ -607,6 +656,67 @@ class ChatViewModel @Inject constructor(
         val mass = com.kachat.app.util.KaspaMass.calculateMass(
             numInputs = count.coerceAtLeast(1),
             outputScriptLens = if (isPayment) listOf(34, 34) else listOf(34),
+            payloadSize = payloadSize
+        )
+        com.kachat.app.util.KaspaMass.calculateFee(mass, rate.toLong())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
+
+    // -------------------------------------------------------------------------
+    // Group chat's own live fee preview - same KaspaMass calc as [estimatedFeeSompi] above, but
+    // sized for gcomm's wire format (see estimatedGroupWirePayloadSize) instead of 1:1's plain
+    // ECIES envelope. The composer's text field is local Compose state (unlike 1:1's ViewModel-
+    // owned messageText), so setGroupMessageText bridges it in via LaunchedEffect.
+    // -------------------------------------------------------------------------
+
+    private val _groupMessageText = MutableStateFlow("")
+
+    fun setGroupMessageText(text: String) {
+        _groupMessageText.value = text
+    }
+
+    /**
+     * Raw bytes -> gcomm wire size: for media (photo/audio), raw bytes -> base64 (+33%) in the
+     * JSON envelope (+150 bytes overhead) first; either way, that content is then ChaCha20-Poly1305
+     * encrypted (+16 byte tag) and the whole ciphertext is hex-encoded (2x) for the wire, plus a
+     * fixed ~370 bytes of hex-encoded overhead (blinded_group_id/sender_id/sender_pub/msg_id/
+     * signature) that 1:1's plain-ECIES envelope doesn't carry. Matches iOS's
+     * GroupChatService.estimatedGroupWirePayloadSize. Preview only - the real send measures exactly.
+     */
+    private fun estimatedGroupWirePayloadSize(rawBytes: Int, isMediaEnvelope: Boolean): Int {
+        val innerBytes = if (isMediaEnvelope) (rawBytes * 1.33).toInt() + 150 else rawBytes
+        val ciphertextHexBytes = (innerBytes + 16) * 2
+        return ciphertextHexBytes + 370
+    }
+
+    /** Raw encoded-Opus-bytes/sec for [VoiceRecorderService]'s fixed 6kbps/48kHz config (bitrate/8 + WebM container overhead) - same heuristic as iOS's matching estimate for the same encoder settings. */
+    private fun estimatedGroupAudioRawBytes(elapsedMs: Long): Int {
+        val elapsedSeconds = elapsedMs / 1000.0
+        return (elapsedSeconds * 1_150.0).toInt()
+    }
+
+    private val groupPreviewPayloadSize: Flow<Int> = combine(_groupMessageText, groupVoiceRecordingState, groupPendingPhotoUri) { text, recording, photoUri ->
+        when {
+            recording.status == VoiceRecordingStatus.RECORDING -> estimatedGroupWirePayloadSize(estimatedGroupAudioRawBytes(recording.elapsedMs), isMediaEnvelope = true)
+            photoUri != null -> estimatedGroupWirePayloadSize(GROUP_PHOTO_TARGET_BYTES, isMediaEnvelope = true)
+            else -> estimatedGroupWirePayloadSize(text.toByteArray().size, isMediaEnvelope = false)
+        }
+    }
+
+    val groupEstimatedFeeSompi: StateFlow<Long?> = combine(groupPreviewPayloadSize, _currentUtxos, _networkFeeRate, _feeRateOverride) { payloadSize, utxos, networkRate, overrideRate ->
+        val rate = overrideRate?.toDouble() ?: networkRate
+        if (payloadSize <= 372) return@combine null // 370 fixed overhead + 2 for an empty ciphertext -> nothing actually staged/typed yet
+
+        var total = 0L
+        var count = 0
+        for (utxo in utxos) {
+            total += utxo.utxoEntry.amount
+            count++
+            if (total >= 1000) break
+        }
+
+        val mass = com.kachat.app.util.KaspaMass.calculateMass(
+            numInputs = count.coerceAtLeast(1),
+            outputScriptLens = listOf(34),
             payloadSize = payloadSize
         )
         com.kachat.app.util.KaspaMass.calculateFee(mass, rate.toLong())
@@ -704,6 +814,128 @@ class ChatViewModel @Inject constructor(
                 }
             }
             refreshKnsProfile(address)
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Group chats
+    // -------------------------------------------------------------------------
+
+    val groups = groupRepository.getGroups()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /**
+     * One-shot KNS resolve for a single group-member address row - unlike
+     * [onCreateChatAddressChanged]/[knsResolvedAddress] (single shared StateFlow, fine for the
+     * one-address Create Chat flow), the group member list can have up to 10 rows resolving
+     * concurrently, so each row owns its own debounce/resolving state locally in Compose and
+     * just calls this directly.
+     */
+    suspend fun resolveKnsDomain(domain: String): String? = knsService.resolve(domain)
+
+    private val _isCreatingGroup = MutableStateFlow(false)
+    val isCreatingGroup: StateFlow<Boolean> = _isCreatingGroup.asStateFlow()
+
+    private val _createGroupError = MutableStateFlow<String?>(null)
+    val createGroupError: StateFlow<String?> = _createGroupError.asStateFlow()
+
+    fun clearCreateGroupError() {
+        _createGroupError.value = null
+    }
+
+    /** Any address not already a contact is auto-added, matching [addContact]'s own-or-create behavior. */
+    fun createGroupChat(name: String, addresses: List<String>, onCreated: (String) -> Unit) {
+        val trimmedName = name.trim()
+        val trimmedAddresses = addresses.map { it.trim() }.filter { it.isNotEmpty() }
+        if (trimmedName.isEmpty()) {
+            _createGroupError.value = "Enter a group name."
+            return
+        }
+        if (trimmedAddresses.isEmpty()) {
+            _createGroupError.value = "Add at least one address."
+            return
+        }
+        val invalid = trimmedAddresses.firstOrNull { !com.kachat.app.util.KaspaAddress.isValid(it) }
+        if (invalid != null) {
+            _createGroupError.value = "Invalid address: $invalid"
+            return
+        }
+
+        _isCreatingGroup.value = true
+        _createGroupError.value = null
+        viewModelScope.launch {
+            try {
+                val contacts = trimmedAddresses.map { address ->
+                    chatRepository.getContact(address) ?: ContactEntity(
+                        id = address,
+                        walletAddress = walletManager.getAddress(),
+                        alias = null,
+                        knsName = null,
+                        publicKeyHex = null
+                    ).also { chatRepository.addContact(it) }
+                }
+                val group = groupRepository.createGroup(trimmedName, contacts)
+                _isCreatingGroup.value = false
+                onCreated(group.groupId)
+            } catch (e: Exception) {
+                _isCreatingGroup.value = false
+                _createGroupError.value = e.message ?: "Failed to create group"
+            }
+        }
+    }
+
+    fun getGroupMessages(groupId: String) = groupRepository.getMessages(groupId)
+
+    fun sendGroupMessage(text: String, groupId: String, onError: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                groupRepository.sendGroupMessage(text, groupId)
+            } catch (e: Exception) {
+                onError(e.message ?: "Failed to send")
+            }
+        }
+    }
+
+    fun addGroupMember(contact: ContactEntity, groupId: String, onResult: (Boolean, String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                groupRepository.addMember(contact, groupId)
+                onResult(true, null)
+            } catch (e: Exception) {
+                onResult(false, e.message)
+            }
+        }
+    }
+
+    fun removeGroupMember(member: com.kachat.app.models.GroupMember, groupId: String, onResult: (Boolean, String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                groupRepository.removeMember(member, groupId)
+                onResult(true, null)
+            } catch (e: Exception) {
+                onResult(false, e.message)
+            }
+        }
+    }
+
+    fun deleteGroupChat(groupId: String) {
+        viewModelScope.launch {
+            groupRepository.deleteGroup(groupId)
+        }
+    }
+
+    /**
+     * Group messages don't have an in-place "retry" record the way 1:1 does - resends the same
+     * content (works uniformly for text/photo/audio, since all three are just a content string)
+     * as a fresh message rather than mutating the failed one, which stays in history marked failed.
+     */
+    fun retryGroupMessage(groupId: String, content: String) {
+        viewModelScope.launch {
+            try {
+                groupRepository.sendGroupMessage(content, groupId)
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Error retrying group message", e)
+            }
         }
     }
 
@@ -1041,6 +1273,81 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Group chat photo/voice - same recording/compression pipeline as 1:1 above, routed through
+    // GroupRepository's sendGroupImage/sendGroupAudio (gcomm payload) instead of sendMessage.
+    // -------------------------------------------------------------------------
+
+    private var groupRecordingTickerJob: Job? = null
+
+    fun startGroupVoiceRecording(groupId: String) {
+        if (_groupVoiceRecordingState.value.status == VoiceRecordingStatus.RECORDING) return
+        try {
+            voiceRecorderService.startRecording()
+        } catch (e: Exception) {
+            Log.e("ChatViewModel", "Could not start group voice recording", e)
+            return
+        }
+        _groupVoiceRecordingState.value = VoiceRecordingState(status = VoiceRecordingStatus.RECORDING)
+        val startedAt = System.currentTimeMillis()
+        groupRecordingTickerJob = viewModelScope.launch {
+            while (isActive && _groupVoiceRecordingState.value.status == VoiceRecordingStatus.RECORDING) {
+                val elapsed = System.currentTimeMillis() - startedAt
+                _groupVoiceRecordingState.value = _groupVoiceRecordingState.value.copy(elapsedMs = elapsed)
+                if (elapsed >= VoiceRecorderService.MAX_RECORDING_DURATION_MS) {
+                    stopAndSendGroupVoiceRecording(groupId)
+                    break
+                }
+                delay(200)
+            }
+        }
+    }
+
+    fun stopAndSendGroupVoiceRecording(groupId: String) {
+        if (_groupVoiceRecordingState.value.status != VoiceRecordingStatus.RECORDING) return
+        val elapsed = _groupVoiceRecordingState.value.elapsedMs
+        groupRecordingTickerJob?.cancel()
+        groupRecordingTickerJob = null
+        _groupVoiceRecordingState.value = VoiceRecordingState()
+
+        val file = voiceRecorderService.stopRecording()
+        if (file == null || elapsed < VoiceRecorderService.MIN_RECORDING_DURATION_MS) {
+            file?.delete()
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val bytes = file.readBytes()
+                groupRepository.sendGroupAudio(bytes, groupId, fileName = file.name)
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Error sending group voice message", e)
+            } finally {
+                file.delete()
+            }
+        }
+    }
+
+    fun cancelGroupVoiceRecording() {
+        groupRecordingTickerJob?.cancel()
+        groupRecordingTickerJob = null
+        _groupVoiceRecordingState.value = VoiceRecordingState()
+        voiceRecorderService.cancelRecording()
+    }
+
+    /** Mirrors [sendPendingPhoto] for the group's own staged photo - smaller default target than 1:1's preset since group's `gcomm` payload hex-encodes the ciphertext (vs. 1:1's base64) plus extra fixed per-message fields, so the same raw photo lands as a noticeably larger on-chain payload. */
+    fun sendPendingGroupPhoto(groupId: String) {
+        val uri = _groupPendingPhotoUri.value ?: return
+        _groupPendingPhotoUri.value = null
+        viewModelScope.launch {
+            try {
+                val prepared = ImagePrep.prepareForChatMessage(appContext, uri, GROUP_PHOTO_TARGET_BYTES)
+                groupRepository.sendGroupImage(prepared.bytes, groupId, fileName = prepared.fileName, mimeType = prepared.mimeType)
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Error preparing group photo message", e)
+            }
+        }
+    }
+
     /** Compresses and sends the currently staged [pendingPhotoUri] — clears the staged photo either way, matching the picker-cancel UX (a failed compression just drops back to the empty input bar, same as [sendVoiceMessage] logging and moving on rather than surfacing a dedicated error). */
     fun sendPendingPhoto(contactId: String) {
         val uri = _pendingPhotoUri.value ?: return
@@ -1165,6 +1472,9 @@ class ChatViewModel @Inject constructor(
     companion object {
         /** KNS domain shown as "Donate" in Settings -> About — see [startDonationChat]. */
         const val DONATION_KNS_DOMAIN = "kachat.kas"
+
+        /** Target raw JPEG bytes for a group chat photo — see [sendPendingGroupPhoto]. */
+        private const val GROUP_PHOTO_TARGET_BYTES = 10_000
 
         /**
          * We've reached out with no handshake (deterministic-alias messaging) and haven't

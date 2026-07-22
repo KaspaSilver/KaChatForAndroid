@@ -675,8 +675,23 @@ fun MainShell(
                             popUpTo(Screen.Chats.route)
                         }
                     },
+                    onGroupCreated = { groupId ->
+                        navController.navigate("group_chat/$groupId") {
+                            popUpTo(Screen.Chats.route)
+                        }
+                    },
                     chatViewModel = chatViewModel
                 )
+            }
+
+            composable("group_chat/{groupId}") { backStackEntry ->
+                val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
+                GroupChatThreadScreen(navController = navController, groupId = groupId, chatViewModel = chatViewModel)
+            }
+
+            composable("group_chat_info/{groupId}") { backStackEntry ->
+                val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
+                GroupChatInfoScreen(navController = navController, groupId = groupId, chatViewModel = chatViewModel)
             }
 
             // Chat thread — navigated to from ChatsScreen. paymentMode is an optional query-style

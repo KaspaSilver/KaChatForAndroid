@@ -12,6 +12,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.kachat.app.services.BroadcastScanningService
+import com.kachat.app.services.GroupScanningService
 import com.kachat.app.services.SyncForegroundService
 import com.kachat.app.services.SyncWorker
 import dagger.hilt.android.HiltAndroidApp
@@ -32,6 +33,12 @@ class KaChatApplication : Application(), Configuration.Provider {
     // screen.
     @Inject
     lateinit var broadcastScanningService: BroadcastScanningService
+
+    // Same reasoning as broadcastScanningService above - forces GroupScanningService to exist
+    // from app startup so its group-count/pending-invite observers (see its init block) run for
+    // the app's whole lifetime, not just after a group chat screen happens to be opened.
+    @Inject
+    lateinit var groupScanningService: GroupScanningService
 
     @Inject
     lateinit var nodePoolManager: com.kachat.app.services.NodePoolManager

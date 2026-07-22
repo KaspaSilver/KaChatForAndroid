@@ -189,6 +189,26 @@ interface KasiaIndexerApi {
         @Query("limit") limit: Int = 50,
         @Query("block_time") blockTime: Long? = null
     ): List<ContextualMessageIndexerResponse>
+
+    /**
+     * [blindedGroupId] is the sender-specific blinded group id (hex-encoded 32 bytes) - callers
+     * must query once per known group member, since each member sends under their own blinded id
+     * (see GroupCipher's protocol notes).
+     */
+    @GET("group-messages/by-blinded-group-id")
+    suspend fun getGroupMessagesByBlindedGroupId(
+        @Query("blinded_group_id") blindedGroupId: String,
+        @Query("limit") limit: Int = 50,
+        @Query("block_time") blockTime: Long? = null
+    ): List<GroupMessageIndexerResponse>
+
+    /** [sender] is the group admin's Kaspa address - `gctl` is always sent as a self-stash tx from the admin's own address. */
+    @GET("group-control/by-sender")
+    suspend fun getGroupControlBySender(
+        @Query("sender") sender: String,
+        @Query("limit") limit: Int = 50,
+        @Query("block_time") blockTime: Long? = null
+    ): List<GroupControlIndexerResponse>
 }
 
 data class HandshakeIndexerResponse(
@@ -203,6 +223,21 @@ data class ContextualMessageIndexerResponse(
     @SerializedName("tx_id") val txId: String,
     val sender: String,
     val alias: String? = null,
+    @SerializedName("block_time") val blockTime: Long,
+    @SerializedName("message_payload") val messagePayload: String
+)
+
+data class GroupMessageIndexerResponse(
+    @SerializedName("tx_id") val txId: String,
+    val sender: String? = null,
+    @SerializedName("blinded_group_id") val blindedGroupId: String,
+    @SerializedName("block_time") val blockTime: Long,
+    @SerializedName("message_payload") val messagePayload: String
+)
+
+data class GroupControlIndexerResponse(
+    @SerializedName("tx_id") val txId: String,
+    val sender: String,
     @SerializedName("block_time") val blockTime: Long,
     @SerializedName("message_payload") val messagePayload: String
 )

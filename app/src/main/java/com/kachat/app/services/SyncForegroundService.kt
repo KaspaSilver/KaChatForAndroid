@@ -19,9 +19,10 @@ import javax.inject.Inject
  * new-message/handshake/payment notifications from ever firing. This service does no
  * work of its own; ChatRepository's existing singleton-scoped poll loop keeps running
  * in the same process as long as a foreground service is active, so just holding the
- * required persistent notification here is enough. BroadcastScanningService's block-scanning
- * loop (when the user has opted in) benefits from the same process-priority protection for
- * free — the notification text below just reflects that it's also running.
+ * required persistent notification here is enough. BroadcastScanningService's and
+ * GroupScanningService's block-scanning loops (the latter whenever a wallet is active, see
+ * GroupScanningService's own doc comment) benefit from the same process-priority protection for
+ * free — the notification text below just reflects that broadcast scanning is also running.
  */
 @AndroidEntryPoint
 class SyncForegroundService : Service() {

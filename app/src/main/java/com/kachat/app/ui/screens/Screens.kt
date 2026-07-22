@@ -5999,11 +5999,21 @@ fun QrCodeOverlay(
 fun CreateChatScreen(
     onBack: () -> Unit,
     onChatCreated: (String) -> Unit,
+    onGroupCreated: (String) -> Unit = {},
     chatViewModel: ChatViewModel = hiltViewModel()
 ) {
     var address by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var showScanner by remember { mutableStateOf(false) }
+
+    // Group chat mode — same screen, just a toggle: instead of one address, up to 10, plus a
+    // group name instead of an optional contact nickname.
+    var isGroupMode by remember { mutableStateOf(false) }
+    var groupName by remember { mutableStateOf("") }
+    var groupAddressRows by remember { mutableStateOf(listOf(GroupAddressRow())) }
+    var scanningGroupRowIndex by remember { mutableStateOf<Int?>(null) }
+    val isCreatingGroup by chatViewModel.isCreatingGroup.collectAsState()
+    val createGroupError by chatViewModel.createGroupError.collectAsState()
     var importErrorMessage by remember { mutableStateOf<String?>(null) }
     val clipboardManager = LocalClipboardManager.current
     val isValidRawAddress = remember(address) { KaspaAddress.isValid(address) }
@@ -6081,30 +6091,84 @@ fun CreateChatScreen(
         return
     }
 
+    scanningGroupRowIndex?.let { rowIndex ->
+        BackHandler {
+            // Scanner dismissed without a scan - drop the row it was pre-appended for if the
+            // user never filled it in.
+            if (groupAddressRows.getOrNull(rowIndex)?.trimmedText?.isEmpty() == true && groupAddressRows.size > 1) {
+                groupAddressRows = groupAddressRows.toMutableList().also { it.removeAt(rowIndex) }
+            }
+            scanningGroupRowIndex = null
+        }
+        QrScannerOverlay(
+            onScanned = { scanned ->
+                groupAddressRows = groupAddressRows.toMutableList().also {
+                    if (rowIndex < it.size) it[rowIndex] = it[rowIndex].copy(text = scanned.trim())
+                }
+                scanningGroupRowIndex = null
+            },
+            onDismiss = {
+                if (groupAddressRows.getOrNull(rowIndex)?.trimmedText?.isEmpty() == true && groupAddressRows.size > 1) {
+                    groupAddressRows = groupAddressRows.toMutableList().also { it.removeAt(rowIndex) }
+                }
+                scanningGroupRowIndex = null
+            }
+        )
+        return
+    }
+
+    val canCreateGroup = groupName.trim().isNotEmpty() &&
+        groupAddressRows.filter { it.trimmedText.isNotEmpty() }.let { rows -> rows.isNotEmpty() && rows.all { it.effectiveAddress?.let(KaspaAddress::isValid) == true } }
+
     Scaffold(
         containerColor = LocalAppColors.current.background,
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("Create chat", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold) },
+                title = {
+                    Text(
+                        if (isGroupMode) "New Group Chat" else "Create chat",
+                        color = LocalAppColors.current.textPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
                 navigationIcon = {
                     TextButton(onClick = onBack) {
                         Text("Cancel", color = KaspaTeal, fontWeight = FontWeight.Bold)
                     }
                 },
                 actions = {
-                    TextButton(
-                        onClick = {
-                            val resolvedAddress = effectiveAddress ?: return@TextButton
-                            chatViewModel.addContact(
-                                address = resolvedAddress,
-                                name = name,
-                                knsName = if (looksLikeKnsDomain) com.kachat.app.services.KnsService.normalizeDomain(address) else null
-                            )
-                            onChatCreated(resolvedAddress)
-                        },
-                        enabled = isValidAddress
-                    ) {
-                        Text("Add", color = if (isValidAddress) KaspaTeal else Color.DarkGray, fontWeight = FontWeight.Bold)
+                    if (isGroupMode) {
+                        if (isCreatingGroup) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), color = KaspaTeal, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(16.dp))
+                        } else {
+                            TextButton(
+                                onClick = {
+                                    val resolvedAddresses = groupAddressRows.mapNotNull { it.effectiveAddress }
+                                    chatViewModel.createGroupChat(groupName, resolvedAddresses) { groupId ->
+                                        onGroupCreated(groupId)
+                                    }
+                                },
+                                enabled = canCreateGroup
+                            ) {
+                                Text("Create", color = if (canCreateGroup) KaspaTeal else Color.DarkGray, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    } else {
+                        TextButton(
+                            onClick = {
+                                val resolvedAddress = effectiveAddress ?: return@TextButton
+                                chatViewModel.addContact(
+                                    address = resolvedAddress,
+                                    name = name,
+                                    knsName = if (looksLikeKnsDomain) com.kachat.app.services.KnsService.normalizeDomain(address) else null
+                                )
+                                onChatCreated(resolvedAddress)
+                            },
+                            enabled = isValidAddress
+                        ) {
+                            Text("Add", color = if (isValidAddress) KaspaTeal else Color.DarkGray, fontWeight = FontWeight.Bold)
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = LocalAppColors.current.background)
@@ -6116,8 +6180,44 @@ fun CreateChatScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 24.dp)
+                .let { if (isGroupMode) it.verticalScroll(rememberScrollState()) else it }
         ) {
             Spacer(modifier = Modifier.height(24.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(LocalAppColors.current.surface)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Group Chat", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold)
+                Switch(
+                    checked = isGroupMode,
+                    onCheckedChange = {
+                        isGroupMode = it
+                        chatViewModel.clearCreateGroupError()
+                    },
+                    colors = SwitchDefaults.colors(checkedTrackColor = KaspaTeal)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            if (isGroupMode) {
+                GroupChatCreationFields(
+                    groupName = groupName,
+                    onGroupNameChange = { groupName = it },
+                    rows = groupAddressRows,
+                    onRowsChange = { groupAddressRows = it },
+                    onScanRequested = { rowIndex -> scanningGroupRowIndex = rowIndex },
+                    errorMessage = createGroupError,
+                    chatViewModel = chatViewModel
+                )
+                return@Column
+            }
 
             Text(
                 text = "Address",
@@ -6278,6 +6378,206 @@ fun CreateChatActionItem(icon: ImageVector, label: String, onClick: () -> Unit) 
         Spacer(Modifier.width(8.dp))
         Text(label, color = KaspaTeal, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+private const val MAX_GROUP_MEMBERS = 10
+
+/** One row in the group-member address list - supports both a raw Kaspa address and a KNS domain, resolved the same way the single-contact flow's address field does. */
+data class GroupAddressRow(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val text: String = "",
+    val resolvedAddress: String? = null,
+    val isResolvingKns: Boolean = false,
+    val knsError: String? = null
+) {
+    val trimmedText: String get() = text.trim()
+    val looksLikeDomain: Boolean get() = com.kachat.app.services.KnsService.looksLikeDomain(trimmedText)
+
+    /** The actual address this row resolves to - resolved KNS owner address, or the raw typed/scanned address. Null while a domain hasn't resolved yet. */
+    val effectiveAddress: String? get() = if (looksLikeDomain) resolvedAddress else trimmedText.ifEmpty { null }
+}
+
+@Composable
+fun GroupChatCreationFields(
+    groupName: String,
+    onGroupNameChange: (String) -> Unit,
+    rows: List<GroupAddressRow>,
+    onRowsChange: (List<GroupAddressRow>) -> Unit,
+    onScanRequested: (Int) -> Unit,
+    errorMessage: String?,
+    chatViewModel: ChatViewModel
+) {
+    Text(
+        text = "Group Name",
+        color = LocalAppColors.current.textPrimary,
+        fontWeight = FontWeight.Bold,
+        style = MaterialTheme.typography.titleMedium
+    )
+    Spacer(modifier = Modifier.height(12.dp))
+    TextField(
+        value = groupName,
+        onValueChange = onGroupNameChange,
+        placeholder = { Text("Group name", color = Color.DarkGray) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp)),
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = LocalAppColors.current.surface,
+            unfocusedContainerColor = LocalAppColors.current.surface,
+            focusedTextColor = LocalAppColors.current.textPrimary,
+            unfocusedTextColor = LocalAppColors.current.textPrimary,
+            cursorColor = KaspaTeal,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent
+        ),
+        singleLine = true
+    )
+
+    Spacer(modifier = Modifier.height(32.dp))
+
+    Text(
+        text = "Members",
+        color = LocalAppColors.current.textPrimary,
+        fontWeight = FontWeight.Bold,
+        style = MaterialTheme.typography.titleMedium
+    )
+    Spacer(modifier = Modifier.height(12.dp))
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(LocalAppColors.current.surface)
+            .padding(16.dp)
+    ) {
+        rows.forEachIndexed { index, row ->
+            if (index > 0) Spacer(modifier = Modifier.height(8.dp))
+
+            // Debounced KNS resolution for this row, independent of every other row.
+            LaunchedEffect(row.text) {
+                val trimmed = row.text.trim()
+                if (trimmed.isEmpty() || !com.kachat.app.services.KnsService.looksLikeDomain(trimmed)) {
+                    if (row.resolvedAddress != null || row.knsError != null || row.isResolvingKns) {
+                        onRowsChange(rows.toMutableList().also {
+                            if (index < it.size) it[index] = it[index].copy(resolvedAddress = null, knsError = null, isResolvingKns = false)
+                        })
+                    }
+                    return@LaunchedEffect
+                }
+                onRowsChange(rows.toMutableList().also {
+                    if (index < it.size) it[index] = it[index].copy(isResolvingKns = true, resolvedAddress = null, knsError = null)
+                })
+                kotlinx.coroutines.delay(500)
+                val resolved = chatViewModel.resolveKnsDomain(trimmed)
+                onRowsChange(rows.toMutableList().also {
+                    if (index < it.size && it[index].trimmedText == trimmed) {
+                        it[index] = it[index].copy(
+                            isResolvingKns = false,
+                            resolvedAddress = resolved,
+                            knsError = if (resolved == null) "KNS domain not found" else null
+                        )
+                    }
+                })
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextField(
+                    value = row.text,
+                    onValueChange = { newValue ->
+                        onRowsChange(rows.toMutableList().also { it[index] = it[index].copy(text = newValue) })
+                    },
+                    placeholder = { Text("kaspa:qr... or name.kas", color = Color.DarkGray) },
+                    modifier = Modifier.weight(1f),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedTextColor = LocalAppColors.current.textPrimary,
+                        unfocusedTextColor = LocalAppColors.current.textPrimary,
+                        cursorColor = KaspaTeal,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    ),
+                    singleLine = true
+                )
+                if (rows.size > 1) {
+                    IconButton(onClick = {
+                        onRowsChange(rows.toMutableList().also { it.removeAt(index) })
+                    }) {
+                        Icon(Icons.Default.RemoveCircle, contentDescription = "Remove", tint = Color(0xFFFF3B30))
+                    }
+                }
+            }
+
+            if (row.trimmedText.isNotEmpty()) {
+                when {
+                    row.isResolvingKns -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = KaspaTeal, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Resolving KNS domain…", color = LocalAppColors.current.textSecondary, fontSize = 12.sp)
+                    }
+                    row.knsError != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF3B30), modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(row.knsError, color = Color(0xFFFF3B30), fontSize = 12.sp)
+                    }
+                    row.looksLikeDomain && row.resolvedAddress != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CD964), modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Resolved: ${row.resolvedAddress.takeLast(12)}", color = Color(0xFF4CD964), fontSize = 12.sp)
+                    }
+                    !row.looksLikeDomain -> {
+                        val isValid = KaspaAddress.isValid(row.trimmedText)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                if (isValid) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = if (isValid) Color(0xFF4CD964) else Color(0xFFFF3B30),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                if (isValid) "Valid address" else "Invalid address format",
+                                color = if (isValid) Color(0xFF4CD964) else Color(0xFFFF3B30),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (rows.size < MAX_GROUP_MEMBERS) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                CreateChatActionItem(Icons.Default.Add, "Add Address") {
+                    onRowsChange(rows + GroupAddressRow())
+                }
+                CreateChatActionItem(Icons.Default.QrCodeScanner, "Scan QR Code") {
+                    val newRows = rows + GroupAddressRow()
+                    onRowsChange(newRows)
+                    onScanRequested(newRows.size - 1)
+                }
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+    Text(
+        text = "Up to $MAX_GROUP_MEMBERS addresses or KNS domains. Anyone not already a contact will be added automatically.",
+        color = LocalAppColors.current.textSecondary,
+        style = MaterialTheme.typography.bodySmall
+    )
+
+    errorMessage?.let { message ->
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF3B30), modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(message, color = Color(0xFFFF3B30), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+
+    Spacer(modifier = Modifier.height(32.dp))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

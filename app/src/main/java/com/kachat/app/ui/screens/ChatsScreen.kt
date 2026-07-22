@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.*
@@ -92,6 +93,7 @@ fun ChatsScreen(
     var searchQuery by remember { mutableStateOf("") }
     var isSelectionMode by remember { mutableStateOf(false) }
     var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var groupToDelete by remember { mutableStateOf<String?>(null) }
 
     // Matches on whatever's already shown per row — display name/alias, KNS domain, the raw
     // address (so pasting/typing part of an address you recognize still finds it), and the last
@@ -264,6 +266,58 @@ fun ChatsScreen(
                             tint = LocalAppColors.current.textSecondary,
                             modifier = Modifier.size(20.dp)
                         )
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 72.dp),
+                        color = Color.DarkGray.copy(alpha = 0.5f)
+                    )
+                }
+
+                val groups by chatViewModel.groups.collectAsState()
+                groups.forEach { group ->
+                    SwipeActionRow(
+                        trailingIcon = Icons.Default.Delete,
+                        trailingLabel = "Delete",
+                        trailingColor = Color(0xFFFF3B30),
+                        onTrailingClick = { groupToDelete = group.groupId }
+                    ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(LocalAppColors.current.background)
+                            .clickable { navController.navigate("group_chat/${group.groupId}") }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(LocalAppColors.current.surface),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Groups,
+                                contentDescription = null,
+                                tint = KaspaTeal,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Text(
+                            text = group.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = LocalAppColors.current.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = LocalAppColors.current.textSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                     }
                     HorizontalDivider(
                         modifier = Modifier.padding(start = 72.dp),
@@ -485,6 +539,35 @@ fun ChatsScreen(
                         },
                         dismissButton = {
                             TextButton(onClick = { contactToDelete = null }) {
+                                Text("Cancel", color = LocalAppColors.current.textSecondary)
+                            }
+                        }
+                    )
+                }
+
+                groupToDelete?.let { groupId ->
+                    val groups by chatViewModel.groups.collectAsState()
+                    val groupName = groups.firstOrNull { it.groupId == groupId }?.name ?: "this group"
+                    AlertDialog(
+                        onDismissRequest = { groupToDelete = null },
+                        containerColor = LocalAppColors.current.surface,
+                        title = { Text("Delete \"$groupName\"", color = LocalAppColors.current.textPrimary) },
+                        text = {
+                            Text(
+                                "This removes the group and its messages from this device. This cannot be undone, and other members won't be notified.",
+                                color = LocalAppColors.current.textSecondary
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                chatViewModel.deleteGroupChat(groupId)
+                                groupToDelete = null
+                            }) {
+                                Text("Delete", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { groupToDelete = null }) {
                                 Text("Cancel", color = LocalAppColors.current.textSecondary)
                             }
                         }

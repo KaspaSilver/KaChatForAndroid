@@ -1,0 +1,705 @@
+package com.kachat.app.ui.screens
+
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.NavController
+import com.kachat.app.models.GroupMember
+import com.kachat.app.repository.ChatRepository
+import com.kachat.app.repository.GroupMessage
+import com.kachat.app.ui.theme.KaspaTeal
+import com.kachat.app.ui.theme.LocalAppColors
+import com.kachat.app.util.ChatTimeFormat
+import com.kachat.app.util.ImageMessage
+import com.kachat.app.util.VoiceMessage
+import com.kachat.app.viewmodels.ChatViewModel
+
+/** Parses a [com.kachat.app.models.GroupEntity]'s stored roster JSON, or empty on failure - shared by every screen below instead of each re-implementing the same try/catch. */
+private fun parseGroupMembers(group: com.kachat.app.models.GroupEntity): List<GroupMember> {
+    return try {
+        val type = object : com.google.gson.reflect.TypeToken<List<GroupMember>>() {}.type
+        com.google.gson.Gson().fromJson<List<GroupMember>>(group.membersJson, type) ?: emptyList()
+    } catch (e: Exception) {
+        emptyList()
+    }
+}
+
+/**
+ * Group chat thread — mirrors 1:1 chat's look (avatars, "+" send-mode menu, photo/audio bubbles
+ * via the same [ImageBubble]/[AudioBubble]/[ImageMessage]/[VoiceMessage] components 1:1 chat
+ * uses) with one deliberate difference: no in-thread payments (the group protocol has no
+ * shared-wallet/escrow concept, same reason broadcast rooms don't support them - "Pay in Kaspa"
+ * isn't in the "+" menu here). Kotlin/Compose port of iOS KaChat's `GroupChatDetailView.swift`.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GroupChatThreadScreen(
+    navController: NavController,
+    groupId: String,
+    chatViewModel: ChatViewModel = hiltViewModel(),
+    walletViewModel: com.kachat.app.viewmodels.WalletViewModel = hiltViewModel()
+) {
+    val myAddress by walletViewModel.address.collectAsState()
+    val myKnsProfile by walletViewModel.knsProfile.collectAsState()
+    val groups by chatViewModel.groups.collectAsState()
+    val group = groups.firstOrNull { it.groupId == groupId }
+    val messages by chatViewModel.getGroupMessages(groupId).collectAsState(initial = emptyList())
+    val contactAvatarsByAddress by chatViewModel.contactAvatarsByAddress.collectAsState()
+    val contactAliasesByAddress by chatViewModel.contactAliasesByAddress.collectAsState()
+    val pendingPhotoUri by chatViewModel.groupPendingPhotoUri.collectAsState()
+    val voiceRecordingState by chatViewModel.groupVoiceRecordingState.collectAsState()
+    val estimatedFee by chatViewModel.groupEstimatedFeeSompi.collectAsState()
+    var draft by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var showComposerMenu by remember { mutableStateOf(false) }
+    var composerMenuAnchor by remember { mutableStateOf(Offset.Zero) }
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(Unit) {
+        chatViewModel.refreshUtxos()
+    }
+    LaunchedEffect(draft) {
+        chatViewModel.setGroupMessageText(draft)
+    }
+
+    val micContext = LocalContext.current
+    val recordAudioPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) chatViewModel.startGroupVoiceRecording(groupId)
+    }
+    val photoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) chatViewModel.setGroupPendingPhoto(uri)
+    }
+    val startVoiceRecordingIfPermitted = {
+        if (chatViewModel.voiceRecordingSupported) {
+            if (ContextCompat.checkSelfPermission(micContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                chatViewModel.startGroupVoiceRecording(groupId)
+            } else {
+                recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+    }
+
+    // KNS name/avatar for each member isn't fetched automatically - the roster's own
+    // `displayName` is a one-time snapshot from add/join time, so refresh live contact
+    // alias/avatar the same way the chat list does on appear (see contactAliasesByAddress/
+    // contactAvatarsByAddress above, which this populates).
+    LaunchedEffect(group?.groupId) {
+        val addresses = group?.let(::parseGroupMembers)?.map { it.address } ?: return@LaunchedEffect
+        chatViewModel.refreshKnsProfilesForGroupMembers(addresses)
+    }
+
+    Scaffold(
+        containerColor = LocalAppColors.current.background,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = {
+                    Text(
+                        group?.name ?: "Group",
+                        color = LocalAppColors.current.textPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = LocalAppColors.current.textPrimary)
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { navController.navigate("group_chat_info/$groupId") }) {
+                        Icon(Icons.Default.Info, contentDescription = "Group Info", tint = LocalAppColors.current.textPrimary)
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = LocalAppColors.current.background)
+            )
+        },
+        bottomBar = {
+            Column(modifier = Modifier.background(LocalAppColors.current.background).imePadding().navigationBarsPadding()) {
+                errorMessage?.let { message ->
+                    Text(
+                        text = message,
+                        color = Color(0xFFFF3B30),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    if (pendingPhotoUri != null) {
+                        Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                            groupFeePill(estimatedFee)
+                            groupPhotoPreviewRow(
+                                pendingPhotoUri = pendingPhotoUri,
+                                onCancel = { chatViewModel.cancelGroupPendingPhoto() },
+                                onSend = { chatViewModel.sendPendingGroupPhoto(groupId) }
+                            )
+                        }
+                    } else if (voiceRecordingState.status == ChatViewModel.VoiceRecordingStatus.RECORDING) {
+                        Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                            groupFeePill(estimatedFee)
+                            groupRecordingRow(
+                                elapsedMs = voiceRecordingState.elapsedMs,
+                                onCancel = { chatViewModel.cancelGroupVoiceRecording() },
+                                onSend = { chatViewModel.stopAndSendGroupVoiceRecording(groupId) }
+                            )
+                        }
+                    } else {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                        if (estimatedFee != null && draft.isNotEmpty()) {
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                groupFeePill(estimatedFee, modifier = Modifier.align(Alignment.Center))
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            TextField(
+                                value = draft,
+                                onValueChange = { draft = it },
+                                placeholder = { Text("Message", color = Color.DarkGray) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(20.dp)),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = LocalAppColors.current.surface,
+                                    unfocusedContainerColor = LocalAppColors.current.surface,
+                                    focusedTextColor = LocalAppColors.current.textPrimary,
+                                    unfocusedTextColor = LocalAppColors.current.textPrimary,
+                                    cursorColor = KaspaTeal,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent
+                                ),
+                                maxLines = 5
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            if (draft.isEmpty()) {
+                                Box(
+                                    modifier = Modifier.onGloballyPositioned { coords ->
+                                        composerMenuAnchor = coords.positionInWindow()
+                                    }
+                                ) {
+                                    ChatActionButton(Icons.Default.Add, onClick = { showComposerMenu = true })
+                                }
+                                if (showComposerMenu) {
+                                    CenteredOptionsMenu(onDismissRequest = { showComposerMenu = false }, anchor = composerMenuAnchor) {
+                                        PopupMenuRow(Icons.Default.Image, "Photo") {
+                                            showComposerMenu = false
+                                            photoPickerLauncher.launch("image/*")
+                                        }
+                                        HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                                        PopupMenuRow(Icons.Default.Mic, "Audio Message") {
+                                            showComposerMenu = false
+                                            startVoiceRecordingIfPermitted()
+                                        }
+                                    }
+                                }
+                            } else {
+                                IconButton(
+                                    onClick = {
+                                        val text = draft.trim()
+                                        if (text.isEmpty()) return@IconButton
+                                        draft = ""
+                                        errorMessage = null
+                                        chatViewModel.sendGroupMessage(text, groupId) { error -> errorMessage = error }
+                                    },
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .background(KaspaTeal, CircleShape)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.Send,
+                                        contentDescription = "Send",
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+                        }
+                    }
+                }
+            }
+        }
+    ) { padding ->
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(messages, key = { it.txId }) { message ->
+                GroupMessageBubble(
+                    message = message,
+                    group = group,
+                    avatarUrl = message.senderAddress?.let { contactAvatarsByAddress[it] },
+                    liveAlias = message.senderAddress?.let { contactAliasesByAddress[it] },
+                    myAddress = myAddress,
+                    myAvatarUrl = myKnsProfile?.avatarUrl,
+                    navController = navController,
+                    onRetry = { chatViewModel.retryGroupMessage(groupId, message.content) }
+                )
+            }
+        }
+    }
+}
+
+/** "fee: N KAS" pill above the composer, matching 1:1/broadcast's identical display (no click-to-edit override here - group has no fee-editor UI). */
+@Composable
+private fun groupFeePill(feeSompi: Long?, modifier: Modifier = Modifier) {
+    if (feeSompi == null) return
+    Surface(
+        color = LocalAppColors.current.surface,
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier.padding(bottom = 8.dp)
+    ) {
+        Text(
+            text = "fee: ${ChatRepository.formatKas(feeSompi)} KAS",
+            color = KaspaTeal,
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun groupPhotoPreviewRow(pendingPhotoUri: android.net.Uri?, onCancel: () -> Unit, onSend: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 40.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(LocalAppColors.current.surface)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        IconButton(onClick = onCancel) {
+            Icon(Icons.Default.Delete, contentDescription = "Cancel photo", tint = Color(0xFFFF3B30))
+        }
+        val thumbnailContext = LocalContext.current
+        val thumbnail = remember(pendingPhotoUri) {
+            pendingPhotoUri?.let { uri ->
+                try {
+                    thumbnailContext.contentResolver.openInputStream(uri)?.use {
+                        android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 })
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+        if (thumbnail != null) {
+            Image(
+                bitmap = thumbnail.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)),
+                contentScale = ContentScale.Crop
+            )
+        }
+        Text("Photo", color = LocalAppColors.current.textPrimary, modifier = Modifier.weight(1f))
+        IconButton(
+            onClick = onSend,
+            modifier = Modifier.size(32.dp).background(KaspaTeal, CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.Send,
+                contentDescription = "Send photo",
+                tint = Color.Black,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun groupRecordingRow(elapsedMs: Long, onCancel: () -> Unit, onSend: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 40.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(LocalAppColors.current.surface)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        IconButton(onClick = onCancel) {
+            Icon(Icons.Default.Delete, contentDescription = "Cancel recording", tint = Color(0xFFFF3B30))
+        }
+        Icon(Icons.Default.Mic, contentDescription = null, tint = Color(0xFFFF3B30), modifier = Modifier.size(18.dp))
+        Text(
+            text = "Recording... ${formatRecordingElapsed(elapsedMs)}",
+            color = LocalAppColors.current.textPrimary,
+            modifier = Modifier.weight(1f)
+        )
+        IconButton(
+            onClick = onSend,
+            modifier = Modifier.size(40.dp).background(KaspaTeal, CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.Send,
+                contentDescription = "Send",
+                tint = Color.Black,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun GroupMessageBubble(
+    message: GroupMessage,
+    group: com.kachat.app.models.GroupEntity?,
+    avatarUrl: String?,
+    liveAlias: String?,
+    myAddress: String?,
+    myAvatarUrl: String?,
+    navController: NavController,
+    onRetry: () -> Unit
+) {
+    val isSent = message.isOutgoing
+    // Prefers the live contact alias (kept current by refreshKnsProfilesForGroupMembers, e.g. a
+    // KNS name resolved after the member was added) over the roster's own `displayName`, which is
+    // only ever a one-time snapshot taken at add/join time and never updated afterward.
+    val senderName = remember(message.senderAddress, group, liveAlias) {
+        val address = message.senderAddress ?: return@remember "Unknown"
+        if (!liveAlias.isNullOrBlank()) return@remember liveAlias
+        val member = group?.let(::parseGroupMembers)?.firstOrNull { it.address == address }
+        member?.displayName?.takeIf { it.isNotBlank() } ?: address.takeLast(10)
+    }
+    val voiceContent = remember(message.content) { VoiceMessage.parseOrNull(message.content) }
+    val imageContent = remember(message.content) { if (voiceContent == null) ImageMessage.parseOrNull(message.content) else null }
+    val clipboardManager = LocalClipboardManager.current
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+
+    var showMenu by remember { mutableStateOf(false) }
+    var menuAnchor by remember { mutableStateOf(Offset.Zero) }
+    val canRetry = isSent && message.deliveryStatus == "failed"
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isSent) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom
+    ) {
+        if (!isSent) {
+            groupAvatarButton(address = message.senderAddress, avatarUrl = avatarUrl, fallbackText = senderName, navController = navController)
+            Spacer(modifier = Modifier.width(8.dp))
+        }
+
+        Column(
+            horizontalAlignment = if (isSent) Alignment.End else Alignment.Start,
+            modifier = Modifier.onGloballyPositioned { coords ->
+                menuAnchor = coords.positionInWindow() + Offset(0f, coords.size.height.toFloat())
+            }
+        ) {
+            if (!isSent) {
+                Text(
+                    text = senderName,
+                    color = KaspaTeal,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 2.dp)
+                )
+            }
+
+            when {
+                voiceContent != null -> AudioBubble(voiceContent = voiceContent, isSent = isSent, onLongPress = { showMenu = true })
+                imageContent != null -> ImageBubble(imageContent = imageContent, isSent = isSent, onLongPress = { showMenu = true }, senderDisplayName = senderName)
+                else -> Surface(
+                    color = if (isSent) KaspaTeal else LocalAppColors.current.surface,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .widthIn(max = 280.dp)
+                        .combinedClickable(onClick = {}, onLongClick = { showMenu = true })
+                ) {
+                    Text(
+                        text = message.content,
+                        color = if (isSent) Color.Black else LocalAppColors.current.textPrimary,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
+            }
+
+            if (isSent) {
+                Row(modifier = Modifier.padding(top = 4.dp)) {
+                    when (message.deliveryStatus) {
+                        "failed" -> Icon(Icons.Default.Error, contentDescription = "Failed to send", tint = Color(0xFFFF3B30), modifier = Modifier.size(12.dp))
+                        "pending" -> Icon(Icons.Default.Schedule, contentDescription = "Sending", tint = LocalAppColors.current.textSecondary, modifier = Modifier.size(12.dp))
+                        else -> Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CD964), modifier = Modifier.size(12.dp))
+                    }
+                }
+            }
+
+            if (showMenu) {
+                CenteredOptionsMenu(onDismissRequest = { showMenu = false }, anchor = menuAnchor) {
+                    PopupMenuRow(Icons.Default.ContentCopy, "Copy Message") {
+                        clipboardManager.setText(AnnotatedString(message.content))
+                        showMenu = false
+                    }
+                    HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                    PopupMenuRow(Icons.Default.Tag, "View in Explorer") {
+                        uriHandler.openUri(com.kachat.app.models.KaspaExplorer.default.txUrl(message.txId))
+                        showMenu = false
+                    }
+                    if (canRetry) {
+                        HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                        PopupMenuRow(Icons.Default.Refresh, "Retry Send") {
+                            onRetry()
+                            showMenu = false
+                        }
+                    }
+                }
+            }
+        }
+
+        if (isSent) {
+            Spacer(modifier = Modifier.width(8.dp))
+            groupAvatarButton(address = myAddress, avatarUrl = myAvatarUrl, fallbackText = "You", navController = navController)
+        }
+    }
+}
+
+/**
+ * Avatar with the same View Profile / Open Chat / Pay in Kaspa / Copy Address menu
+ * [BroadcastScreens.kt]'s avatar `CenteredOptionsMenu` offers for a tapped sender - group
+ * members are always saved contacts, so this navigates straight to the existing chat/chat_info
+ * routes instead of Broadcast's "create a contact for this anonymous sender first" step.
+ */
+@Composable
+private fun groupAvatarButton(address: String?, avatarUrl: String?, fallbackText: String, navController: NavController) {
+    if (address == null) {
+        ContactAvatar(imageUrl = avatarUrl, fallbackText = fallbackText, size = 32.dp)
+        return
+    }
+    var showAvatarMenu by remember { mutableStateOf(false) }
+    var avatarMenuAnchor by remember { mutableStateOf(Offset.Zero) }
+    val clipboardManager = LocalClipboardManager.current
+
+    Box(
+        modifier = Modifier.onGloballyPositioned { coords ->
+            avatarMenuAnchor = coords.positionInWindow() + Offset(0f, coords.size.height.toFloat())
+        }
+    ) {
+        ContactAvatar(
+            imageUrl = avatarUrl,
+            fallbackText = fallbackText,
+            size = 32.dp,
+            modifier = Modifier.clickable { showAvatarMenu = true }
+        )
+        if (showAvatarMenu) {
+            CenteredOptionsMenu(onDismissRequest = { showAvatarMenu = false }, anchor = avatarMenuAnchor) {
+                PopupMenuRow(Icons.Default.Person, "View Profile") {
+                    navController.navigate("chat_info/$address?fromBroadcast=true")
+                    showAvatarMenu = false
+                }
+                HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                PopupMenuRow(Icons.AutoMirrored.Filled.Chat, "Open Chat") {
+                    navController.navigate("chat/$address")
+                    showAvatarMenu = false
+                }
+                HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                PopupMenuRow(painterResource(com.kachat.app.R.drawable.ic_kaspa_logo), "Pay in Kaspa", iconTint = Color.Unspecified) {
+                    navController.navigate("chat/$address?paymentMode=true")
+                    showAvatarMenu = false
+                }
+                HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                PopupMenuRow(Icons.Default.ContentCopy, "Copy Address") {
+                    clipboardManager.setText(AnnotatedString(address))
+                    showAvatarMenu = false
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Group membership. Kept intentionally minimal, mirroring iOS KaChat's `GroupChatInfoView` —
+ * member add/remove UI is a natural next step once this is in front of you. No invite-link/join
+ * flow - every member is added directly by the admin (see `GroupRepository`'s class doc for why
+ * the invite beacon was removed). Tapping a member opens their normal 1:1 "User Info" screen.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GroupChatInfoScreen(
+    navController: NavController,
+    groupId: String,
+    chatViewModel: ChatViewModel = hiltViewModel()
+) {
+    val groups by chatViewModel.groups.collectAsState()
+    val group = groups.firstOrNull { it.groupId == groupId }
+    val contactAvatarsByAddress by chatViewModel.contactAvatarsByAddress.collectAsState()
+    val contactAliasesByAddress by chatViewModel.contactAliasesByAddress.collectAsState()
+    val members = remember(group?.membersJson) {
+        group?.let(::parseGroupMembers) ?: emptyList()
+    }
+
+    LaunchedEffect(group?.groupId) {
+        val addresses = group?.let(::parseGroupMembers)?.map { it.address } ?: return@LaunchedEffect
+        chatViewModel.refreshKnsProfilesForGroupMembers(addresses)
+    }
+
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
+
+    Scaffold(
+        containerColor = LocalAppColors.current.background,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("Group Info", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = LocalAppColors.current.textPrimary)
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = LocalAppColors.current.background)
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 24.dp)
+        ) {
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = "Members (${members.size})",
+                color = LocalAppColors.current.textPrimary,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMedium
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(LocalAppColors.current.surface)
+            ) {
+                members.forEachIndexed { index, member ->
+                    val memberLabel = contactAliasesByAddress[member.address]?.takeIf { it.isNotBlank() }
+                        ?: member.displayName?.takeIf { it.isNotBlank() }
+                        ?: member.address.takeLast(10)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { navController.navigate("chat_info/${member.address}?fromBroadcast=true") }
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            ContactAvatar(imageUrl = contactAvatarsByAddress[member.address], fallbackText = memberLabel, size = 32.dp)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(text = memberLabel, color = LocalAppColors.current.textPrimary)
+                        }
+                        if (member.isAdmin) {
+                            Text("Admin", color = LocalAppColors.current.textSecondary, fontSize = 12.sp)
+                        }
+                    }
+                    if (index < members.size - 1) {
+                        HorizontalDivider(color = Color.DarkGray.copy(alpha = 0.3f))
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(LocalAppColors.current.surface)
+                    .clickable { showDeleteConfirmation = true }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFFF3B30))
+                Spacer(Modifier.width(12.dp))
+                Text("Delete Group", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+            }
+            Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
+
+    if (showDeleteConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Delete \"${group?.name ?: "this group"}\"", color = LocalAppColors.current.textPrimary) },
+            text = {
+                Text(
+                    "This removes the group and its messages from this device. This cannot be undone, and other members won't be notified.",
+                    color = LocalAppColors.current.textSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    chatViewModel.deleteGroupChat(groupId)
+                    showDeleteConfirmation = false
+                    navController.popBackStack("chats", inclusive = false)
+                }) {
+                    Text("Delete", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirmation = false }) {
+                    Text("Cancel", color = LocalAppColors.current.textSecondary)
+                }
+            }
+        )
+    }
+}

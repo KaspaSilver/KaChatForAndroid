@@ -8,6 +8,9 @@ import com.kachat.app.models.BroadcastChannelEntity
 import com.kachat.app.models.BroadcastMessageEntity
 import com.kachat.app.models.ContactEntity
 import com.kachat.app.models.DeletedContactEntity
+import com.kachat.app.models.GroupEntity
+import com.kachat.app.models.GroupMessageEntity
+import com.kachat.app.models.GroupSyncCursorEntity
 import com.kachat.app.models.HiddenBroadcastSenderEntity
 import com.kachat.app.models.MessageEntity
 import com.kachat.app.models.MessageSyncCursorEntity
@@ -32,8 +35,11 @@ import com.kachat.app.models.SwapTransactionEntity
         MessageSyncCursorEntity::class,
         PortfolioTransactionEntity::class,
         SwapTransactionEntity::class,
+        GroupEntity::class,
+        GroupMessageEntity::class,
+        GroupSyncCursorEntity::class,
     ],
-    version = 23,
+    version = 25,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {
@@ -42,6 +48,7 @@ abstract class KaChatDatabase : RoomDatabase() {
     abstract fun broadcastDao(): BroadcastDao
     abstract fun portfolioDao(): PortfolioDao
     abstract fun swapDao(): SwapDao
+    abstract fun groupDao(): GroupDao
 
     companion object {
         /**
@@ -194,6 +201,49 @@ abstract class KaChatDatabase : RoomDatabase() {
         val MIGRATION_22_23 = object : Migration(22, 23) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `swap_transactions` ADD COLUMN `addedToPortfolio` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v23 -> v24: adds `groups` and `group_messages` — group chat metadata and message
+         * cache (see [GroupEntity]/[GroupMessageEntity]). Purely additive, same shape of change
+         * as the v16->v17/v17->v18/v21->v22 new-table migrations. Secret key material (group
+         * seed/root epoch/blinding key) deliberately isn't here — it lives in
+         * [com.kachat.app.services.GroupSecretStore]'s own encrypted prefs, not this database.
+         */
+        val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `groups` (" +
+                        "`groupId` TEXT NOT NULL, `walletAddress` TEXT NOT NULL, `name` TEXT NOT NULL, " +
+                        "`adminAddress` TEXT NOT NULL, `adminXOnlyPubKeyHex` TEXT NOT NULL, `currentEpoch` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, `isAdmin` INTEGER NOT NULL, `membersJson` TEXT NOT NULL, " +
+                        "PRIMARY KEY(`groupId`, `walletAddress`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `group_messages` (" +
+                        "`txId` TEXT NOT NULL, `walletAddress` TEXT NOT NULL, `groupId` TEXT NOT NULL, " +
+                        "`senderAddress` TEXT, `senderIdHex` TEXT NOT NULL, `epoch` INTEGER NOT NULL, " +
+                        "`msgIdHex` TEXT NOT NULL, `contentEncryptedHex` TEXT NOT NULL, `blockTimestamp` INTEGER NOT NULL, " +
+                        "`isOutgoing` INTEGER NOT NULL, `deliveryStatus` TEXT NOT NULL, " +
+                        "PRIMARY KEY(`txId`, `walletAddress`))"
+                )
+            }
+        }
+
+        /**
+         * v24 -> v25: adds `group_sync_cursors`, tracking how far into the indexer's new
+         * `group-messages/by-blinded-group-id`/`group-control/by-sender` streams this wallet has
+         * synced (see [GroupSyncCursorEntity]) - group chat catch-up, mirroring
+         * `message_sync_cursors` (v16->v17) for 1:1 contextual messages. Purely additive.
+         */
+        val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `group_sync_cursors` (" +
+                        "`syncKey` TEXT NOT NULL, `walletAddress` TEXT NOT NULL, `lastBlockTime` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`syncKey`, `walletAddress`))"
+                )
             }
         }
     }
