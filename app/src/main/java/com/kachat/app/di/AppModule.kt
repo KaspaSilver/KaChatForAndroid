@@ -63,7 +63,7 @@ object AppModule {
             KaChatDatabase::class.java,
             "kachat.db"
         )
-            .addMigrations(KaChatDatabase.MIGRATION_15_16, KaChatDatabase.MIGRATION_16_17, KaChatDatabase.MIGRATION_17_18, KaChatDatabase.MIGRATION_18_19, KaChatDatabase.MIGRATION_19_20, KaChatDatabase.MIGRATION_20_21, KaChatDatabase.MIGRATION_21_22, KaChatDatabase.MIGRATION_22_23, KaChatDatabase.MIGRATION_23_24, KaChatDatabase.MIGRATION_24_25)
+            .addMigrations(KaChatDatabase.MIGRATION_15_16, KaChatDatabase.MIGRATION_16_17, KaChatDatabase.MIGRATION_17_18, KaChatDatabase.MIGRATION_18_19, KaChatDatabase.MIGRATION_19_20, KaChatDatabase.MIGRATION_20_21, KaChatDatabase.MIGRATION_21_22, KaChatDatabase.MIGRATION_22_23, KaChatDatabase.MIGRATION_23_24, KaChatDatabase.MIGRATION_24_25, KaChatDatabase.MIGRATION_25_26)
             // Safety net only, for version jumps that don't have an explicit Migration above —
             // every future schema change should get a real Migration instead of relying on this,
             // since it silently wipes every user's local contacts/messages.

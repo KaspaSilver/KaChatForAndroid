@@ -51,8 +51,8 @@ interface GroupDao {
     suspend fun deleteAllMessages(walletAddress: String)
 
     /** How far into this group catch-up sync object's stream we've already synced — see [GroupSyncCursorEntity]. */
-    @Query("SELECT lastBlockTime FROM group_sync_cursors WHERE syncKey = :syncKey AND walletAddress = :walletAddress")
-    suspend fun getGroupSyncCursor(syncKey: String, walletAddress: String): Long?
+    @Query("SELECT cursor FROM group_sync_cursors WHERE syncKey = :syncKey AND walletAddress = :walletAddress")
+    suspend fun getGroupSyncCursor(syncKey: String, walletAddress: String): String?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun setGroupSyncCursor(cursor: GroupSyncCursorEntity)

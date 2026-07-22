@@ -193,21 +193,40 @@ interface KasiaIndexerApi {
     /**
      * [blindedGroupId] is the sender-specific blinded group id (hex-encoded 32 bytes) - callers
      * must query once per known group member, since each member sends under their own blinded id
-     * (see GroupCipher's protocol notes).
+     * (see GroupCipher's protocol notes). Pass [cursor] from a previous response's last item to
+     * resume losslessly (`block_time` alone can collide across items) - omit only for a
+     * first-ever sync. See docs/GROUP_CHAT_API.md.
      */
     @GET("group-messages/by-blinded-group-id")
     suspend fun getGroupMessagesByBlindedGroupId(
         @Query("blinded_group_id") blindedGroupId: String,
         @Query("limit") limit: Int = 50,
-        @Query("block_time") blockTime: Long? = null
+        @Query("cursor") cursor: String? = null
     ): List<GroupMessageIndexerResponse>
 
-    /** [sender] is the group admin's Kaspa address - `gctl` is always sent as a self-stash tx from the admin's own address. */
+    /**
+     * [sender] is the group admin's Kaspa address - `gctl` is always sent as a self-stash tx from
+     * the admin's own address. Only meaningful for a group already known locally - see
+     * [getGroupControlByRecipient] for first-invite discovery.
+     */
     @GET("group-control/by-sender")
     suspend fun getGroupControlBySender(
         @Query("sender") sender: String,
         @Query("limit") limit: Int = 50,
-        @Query("block_time") blockTime: Long? = null
+        @Query("cursor") cursor: String? = null
+    ): List<GroupControlIndexerResponse>
+
+    /**
+     * [recipient] is our own wallet address. Recipient-addressed `gctl` controls carry the
+     * recipient's x-only pubkey on-chain, so this discovers "you were added to a group" before
+     * the device knows any admin address at all - the fix for first-invite catch-up/push that a
+     * global device-fanout fallback used to paper over. See docs/GROUP_CHAT_API.md.
+     */
+    @GET("group-control/by-recipient")
+    suspend fun getGroupControlByRecipient(
+        @Query("recipient") recipient: String,
+        @Query("limit") limit: Int = 50,
+        @Query("cursor") cursor: String? = null
     ): List<GroupControlIndexerResponse>
 }
 
@@ -232,13 +251,22 @@ data class GroupMessageIndexerResponse(
     val sender: String? = null,
     @SerializedName("blinded_group_id") val blindedGroupId: String,
     @SerializedName("block_time") val blockTime: Long,
+    // Opaque lossless pagination cursor - block_time alone can collide across items, so catch-up
+    // sync should persist and resume from this instead. Optional for source compatibility with an
+    // older indexer that doesn't send it yet. See docs/GROUP_CHAT_API.md.
+    val cursor: String? = null,
     @SerializedName("message_payload") val messagePayload: String
 )
 
 data class GroupControlIndexerResponse(
     @SerializedName("tx_id") val txId: String,
     val sender: String,
+    // Present for recipient-addressed controls (GET /group-control/by-recipient); null for legacy
+    // unaddressed ones. See docs/GROUP_CHAT_API.md.
+    val recipient: String? = null,
     @SerializedName("block_time") val blockTime: Long,
+    // Opaque lossless pagination cursor - see GroupMessageIndexerResponse.cursor.
+    val cursor: String? = null,
     @SerializedName("message_payload") val messagePayload: String
 )
 

@@ -59,16 +59,24 @@ data class GroupMessageEntity(
 
 /**
  * How far into one group catch-up sync object's indexer stream this wallet has already synced -
- * same "adaptive per-object cursor" idea as [MessageSyncCursorEntity], applied to group chat's
- * two sync object shapes: `gcomm|<groupId>|<blindedGroupIdHex>` (queried once per known member,
- * since `blinded_group_id` is per-sender not per-group - see GroupCipher's protocol notes) and
- * `gctl|<adminAddressLowercased>` (queried once per group's admin address). [syncKey] folds both
- * shapes into one disjoint string key rather than a second table, since neither maps cleanly onto
- * (contactId, aliasHex).
+ * applied to group chat's three sync object shapes: `gcomm|<groupId>|<blindedGroupIdHex>`
+ * (queried once per known member, since `blinded_group_id` is per-sender not per-group - see
+ * GroupCipher's protocol notes), `gctl|<adminAddressLowercased>` (queried once per group's admin
+ * address, for groups already joined), and `gctl-recipient|<walletAddressLowercased>`
+ * (recipient-addressed controls - the only path that discovers "you were added to a group"
+ * without already knowing an admin address, see GroupRepository.syncGroupControlByRecipient).
+ * [syncKey] folds all three shapes into one disjoint string key rather than a separate table,
+ * since none maps cleanly onto (contactId, aliasHex).
+ *
+ * [cursor] is the indexer's opaque lossless pagination cursor (unlike a plain `block_time`, which
+ * can collide across items sharing a timestamp) - see docs/GROUP_CHAT_API.md. `lastBlockTime` is
+ * unused as of the cursor-based rewrite but the column is left in place rather than dropped
+ * (nothing was ever shipped against the old block_time-only shape).
  */
 @Entity(tableName = "group_sync_cursors", primaryKeys = ["syncKey", "walletAddress"])
 data class GroupSyncCursorEntity(
     val syncKey: String,
     val walletAddress: String,
-    val lastBlockTime: Long
+    val lastBlockTime: Long = 0L,
+    val cursor: String? = null
 )

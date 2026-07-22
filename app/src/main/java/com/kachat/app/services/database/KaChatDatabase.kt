@@ -39,7 +39,7 @@ import com.kachat.app.models.SwapTransactionEntity
         GroupMessageEntity::class,
         GroupSyncCursorEntity::class,
     ],
-    version = 25,
+    version = 26,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {
@@ -244,6 +244,19 @@ abstract class KaChatDatabase : RoomDatabase() {
                         "`syncKey` TEXT NOT NULL, `walletAddress` TEXT NOT NULL, `lastBlockTime` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`syncKey`, `walletAddress`))"
                 )
+            }
+        }
+
+        /**
+         * v25 -> v26: adds `group_sync_cursors.cursor` - the indexer's opaque lossless pagination
+         * cursor, replacing plain `block_time` for group catch-up sync (multiple items can share
+         * a `block_time`, which a numeric-only cursor can't disambiguate - see
+         * docs/GROUP_CHAT_API.md). `lastBlockTime` is left in place unused rather than dropped;
+         * nothing was ever shipped against the v25-only shape.
+         */
+        val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `group_sync_cursors` ADD COLUMN `cursor` TEXT DEFAULT NULL")
             }
         }
     }

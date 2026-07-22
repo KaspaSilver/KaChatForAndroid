@@ -136,7 +136,7 @@ class GroupScanningService @Inject constructor(
                     val senderAddress = tx.outputsList.firstOrNull()
                         ?.let { KaspaAddress.addressFromScriptPublicKey(it.scriptPublicKey.scriptPublicKey, groupRepository.addressPrefix()) }
                         ?: continue
-                    groupRepository.handleIncomingControlMessage(payloadString, senderAddress)
+                    groupRepository.handleIncomingControlMessage(GroupCipher.normalizeControlPayload(payloadString), senderAddress)
                 }
             }
         }

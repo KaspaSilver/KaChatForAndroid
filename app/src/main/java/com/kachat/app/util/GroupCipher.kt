@@ -283,6 +283,26 @@ object GroupCipher {
         }
     }
 
+    /**
+     * Recipient-addressed gctl (`ciph_msg:1:gctl:{recipient_xonly_pubkey}:{encrypted}`) is only
+     * relevant to the live block-scan path - the indexer already strips this routing prefix from
+     * `message_payload` in REST catch-up responses (see docs/GROUP_CHAT_API.md), so catch-up
+     * never needs this. Detects and strips an addressed-format recipient prefix, if present, so
+     * the rest of the parse/decrypt path (shared with legacy gctl) always sees the uniform
+     * `ciph_msg:1:gctl:{encrypted}` shape. No recipient-address filtering happens here - same as
+     * legacy gctl already relied on, a mismatched recipient's ECIES decrypt just fails silently.
+     */
+    fun normalizeControlPayload(payloadString: String): String {
+        val prefix = "ciph_msg:1:gctl:"
+        if (!payloadString.startsWith(prefix)) return payloadString
+        val rest = payloadString.substring(prefix.length)
+        val parts = rest.split(":")
+        if (parts.size != 2 || parts[0].length != 64 || !parts[0].all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }) {
+            return payloadString
+        }
+        return prefix + parts[1]
+    }
+
     // -------------------------------------------------------------------------
     // Random generation
     // -------------------------------------------------------------------------

@@ -352,10 +352,17 @@ class GroupRepository @Inject constructor(
         sendControlPayload(json, recipientXOnlyPub, adminPrivateKey)
     }
 
+    /**
+     * Wire format is recipient-addressed (`ciph_msg:1:gctl:{recipient_xonly}:{encrypted}`), not
+     * the legacy unaddressed shape - see docs/GROUP_CHAT_API.md. This lets a brand-new member
+     * discover a "you were added" control via `GET /group-control/by-recipient` before it knows
+     * the admin's address at all, and lets push route it to their device even with zero
+     * locally-known groups (no more indexer-side fan-out-to-everyone fallback).
+     */
     private suspend fun sendControlPayload(json: String, recipientXOnlyPub: ByteArray, privateKey: ByteArray) {
         val walletAddress = walletManager.getAddress()
         val encrypted = KasiaCipher.encrypt(json, recipientXOnlyPub)
-        val payloadString = "ciph_msg:1:gctl:" + encrypted.toBytes().toHexString()
+        val payloadString = "ciph_msg:1:gctl:" + recipientXOnlyPub.toHexString() + ":" + encrypted.toBytes().toHexString()
         walletService.sendKaspa(toAddress = walletAddress, amountSompi = 0, payloadBytes = payloadString.toByteArray(Charsets.UTF_8))
     }
 
@@ -497,22 +504,26 @@ class GroupRepository @Inject constructor(
     // -------------------------------------------------------------------------
 
     /**
-     * Fetches missed `gcomm`/`gctl` history from the indexer for every local group, so a device
-     * that wasn't actively block-scanning while away (backgrounded, killed, or just closed) still
-     * catches up. Mirrors [ChatRepository]'s per-(contact, alias) cursor sync, applied to group
-     * chat's two sync object shapes (see [GroupSyncCursorEntity]'s doc comment).
-     *
-     * `blinded_group_id` is per-sender, not per-group, so `gcomm` catch-up queries once per known
-     * member (their blinded id is cheap to recompute locally from the group's shared blindingKey).
-     * `gctl` catch-up queries by the group's admin address - only meaningful for groups already
-     * joined, since a brand-new invite has no admin address to key off yet locally (that case
-     * depends on push or being online at the right moment instead).
+     * Fetches missed `gcomm`/`gctl` history from the indexer, so a device that wasn't actively
+     * block-scanning while away (backgrounded, killed, or just closed) still catches up. Runs
+     * three kinds of sync object, each with its own persisted opaque cursor (see
+     * [GroupSyncCursorEntity]):
+     *  - `gcomm` per known group member (`blinded_group_id` is per-sender, not per-group, so this
+     *    queries once per member, using their blinded id recomputed from the group's shared
+     *    blindingKey).
+     *  - `gctl` by admin address, for groups already joined.
+     *  - `gctl` by our own wallet address (recipient-addressed) - runs unconditionally, even with
+     *    zero local groups, since this is what actually discovers "you were added to a group"
+     *    without needing to already know the admin. This replaced the indexer's old
+     *    fan-out-to-every-device push fallback for that same case.
      */
     suspend fun syncGroups() {
         val api = networkService.indexerApi.value ?: return
         val walletAddress = walletManager.getAddress()
-        val groups = database.groupDao().getGroupsOnce(walletAddress)
 
+        syncGroupControlByRecipient(api, walletAddress)
+
+        val groups = database.groupDao().getGroupsOnce(walletAddress)
         for (group in groups) {
             val bag = groupSecretStore.loadBag(walletAddress, group.groupId) ?: continue
             val blindingKey = try { bag.blindingKey.hexToByteArray() } catch (e: Exception) { continue }
@@ -524,7 +535,7 @@ class GroupRepository @Inject constructor(
             }
 
             if (group.adminAddress.isNotEmpty()) {
-                syncGroupControl(api, walletAddress, group.adminAddress)
+                syncGroupControlBySender(api, walletAddress, group.adminAddress)
             }
         }
     }
@@ -533,15 +544,12 @@ class GroupRepository @Inject constructor(
         val syncKey = "gcomm|$groupId|$blindedGroupIdHex"
         val cursor = database.groupDao().getGroupSyncCursor(syncKey, walletAddress)
         val messages: List<GroupMessageIndexerResponse> = try {
-            api.getGroupMessagesByBlindedGroupId(blindedGroupIdHex, blockTime = cursor)
+            api.getGroupMessagesByBlindedGroupId(blindedGroupIdHex, cursor = cursor)
         } catch (e: Exception) {
             Log.w("GroupRepository", "Catch-up gcomm fetch failed for group ${groupId.take(12)}", e)
             return
         }
-        val maxBlockTime = messages.maxOfOrNull { it.blockTime }
-        if (maxBlockTime != null && maxBlockTime > (cursor ?: 0L)) {
-            database.groupDao().setGroupSyncCursor(GroupSyncCursorEntity(syncKey = syncKey, walletAddress = walletAddress, lastBlockTime = maxBlockTime))
-        }
+        advanceGroupSyncCursor(syncKey, walletAddress, messages.lastOrNull()?.cursor)
         for (msg in messages) {
             val payloadString = reconstructPayloadString("ciph_msg:1:gcomm:", msg.messagePayload) ?: continue
             val parsed = GroupCipher.parseGroupMessagePayload(payloadString) ?: continue
@@ -549,23 +557,45 @@ class GroupRepository @Inject constructor(
         }
     }
 
-    private suspend fun syncGroupControl(api: KasiaIndexerApi, walletAddress: String, adminAddress: String) {
+    private suspend fun syncGroupControlBySender(api: KasiaIndexerApi, walletAddress: String, adminAddress: String) {
         val syncKey = "gctl|${adminAddress.lowercase()}"
         val cursor = database.groupDao().getGroupSyncCursor(syncKey, walletAddress)
         val messages: List<GroupControlIndexerResponse> = try {
-            api.getGroupControlBySender(adminAddress, blockTime = cursor)
+            api.getGroupControlBySender(adminAddress, cursor = cursor)
         } catch (e: Exception) {
-            Log.w("GroupRepository", "Catch-up gctl fetch failed for admin ${adminAddress.takeLast(10)}", e)
+            Log.w("GroupRepository", "Catch-up gctl-by-sender fetch failed for admin ${adminAddress.takeLast(10)}", e)
             return
         }
-        val maxBlockTime = messages.maxOfOrNull { it.blockTime }
-        if (maxBlockTime != null && maxBlockTime > (cursor ?: 0L)) {
-            database.groupDao().setGroupSyncCursor(GroupSyncCursorEntity(syncKey = syncKey, walletAddress = walletAddress, lastBlockTime = maxBlockTime))
-        }
+        advanceGroupSyncCursor(syncKey, walletAddress, messages.lastOrNull()?.cursor)
         for (msg in messages) {
             val payloadString = reconstructPayloadString("ciph_msg:1:gctl:", msg.messagePayload) ?: continue
             handleIncomingControlMessage(payloadString, msg.sender)
         }
+    }
+
+    /**
+     * Discovers "you were added to a group" via recipient-addressed `gctl` - the only catch-up
+     * path that works before this device knows any group exists at all. See [syncGroups].
+     */
+    private suspend fun syncGroupControlByRecipient(api: KasiaIndexerApi, walletAddress: String) {
+        val syncKey = "gctl-recipient|${walletAddress.lowercase()}"
+        val cursor = database.groupDao().getGroupSyncCursor(syncKey, walletAddress)
+        val messages: List<GroupControlIndexerResponse> = try {
+            api.getGroupControlByRecipient(walletAddress, cursor = cursor)
+        } catch (e: Exception) {
+            Log.w("GroupRepository", "Catch-up gctl-by-recipient fetch failed", e)
+            return
+        }
+        advanceGroupSyncCursor(syncKey, walletAddress, messages.lastOrNull()?.cursor)
+        for (msg in messages) {
+            val payloadString = reconstructPayloadString("ciph_msg:1:gctl:", msg.messagePayload) ?: continue
+            handleIncomingControlMessage(payloadString, msg.sender)
+        }
+    }
+
+    private suspend fun advanceGroupSyncCursor(syncKey: String, walletAddress: String, cursor: String?) {
+        if (cursor == null) return
+        database.groupDao().setGroupSyncCursor(GroupSyncCursorEntity(syncKey = syncKey, walletAddress = walletAddress, cursor = cursor))
     }
 
     /**
