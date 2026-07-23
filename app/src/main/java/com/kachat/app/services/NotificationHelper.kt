@@ -72,6 +72,10 @@ class NotificationHelper @Inject constructor(
         activeGroupId.value = groupId
     }
 
+    /** Lets `GroupRepository` check this without needing its own copy of the state - used to keep
+     *  a group marked read in real time while its thread is on screen, not just once on open. */
+    fun isViewingGroup(groupId: String): Boolean = activeGroupId.value == groupId
+
     suspend fun show(contactId: String, title: String, text: String, notificationOverride: ContactNotificationMode? = null) {
         if (activeContactId.value == contactId) return // already looking at this conversation
         if (!settings.notificationsEnabled.first()) return

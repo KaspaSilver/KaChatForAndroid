@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -87,7 +88,8 @@ class GroupRepository @Inject constructor(
     private val walletService: WalletService,
     private val groupSecretStore: GroupSecretStore,
     private val networkService: NetworkService,
-    private val notificationHelper: NotificationHelper
+    private val notificationHelper: NotificationHelper,
+    private val settings: AppSettingsRepository
 ) {
     private val gson = Gson()
     private val membersListType = object : TypeToken<List<GroupMember>>() {}.type
@@ -108,6 +110,12 @@ class GroupRepository @Inject constructor(
     suspend fun markGroupRead(groupId: String) {
         val walletAddress = walletManager.getAddress()
         database.groupDao().markGroupRead(groupId, walletAddress, System.currentTimeMillis())
+    }
+
+    /** Forces a group back to "unread" - clears lastReadAt, the same state as never opened. */
+    suspend fun markGroupUnread(groupId: String) {
+        val walletAddress = walletManager.getAddress()
+        database.groupDao().markGroupUnread(groupId, walletAddress)
     }
 
     /** True whenever a wallet is active, regardless of group state - see [com.kachat.app.services.GroupScanningService] for why `gctl` scanning must key off this instead of group count. */
@@ -223,6 +231,39 @@ class GroupRepository @Inject constructor(
     suspend fun removeMember(member: GroupMember, groupId: String) {
         rotateEpoch(groupId, "remove") { roster ->
             roster.removeAll { it.address == member.address }
+        }
+    }
+
+    /**
+     * Renames a group and redistributes the updated gctl_root to every member so they all see
+     * the new name - unlike add/removeMember, this does NOT rotate the epoch (a name change isn't
+     * a forward-secrecy event), so it re-signs and re-sends the root at the *current* epoch.
+     * `completeJoin`'s replay guard only rejects a strictly older epoch than what's already
+     * stored, so a same-epoch re-send like this is accepted and simply updates the locally-cached
+     * name/roster. Mirrors iOS's `GroupChatService.renameGroup` exactly.
+     */
+    suspend fun renameGroup(groupId: String, newName: String) {
+        val walletAddress = walletManager.getAddress()
+        val entity = database.groupDao().getGroup(groupId, walletAddress) ?: throw IllegalStateException("Unknown group.")
+        if (!entity.isAdmin) throw IllegalStateException("Only the group admin can rename the group.")
+        val bag = groupSecretStore.loadBag(walletAddress, groupId) ?: throw IllegalStateException("Missing admin group secrets.")
+        val privateKey = walletManager.getPrivateKeyBytes()
+        val roster = membersOf(entity)
+
+        val updatedEntity = entity.copy(name = newName)
+        database.groupDao().upsertGroup(updatedEntity)
+
+        var failures = 0
+        for (member in roster) {
+            if (member.address == walletAddress) continue
+            try {
+                sendRootControlMessage(updatedEntity, roster, bag, member.address, privateKey)
+            } catch (e: Exception) {
+                failures++
+            }
+        }
+        if (failures > 0) {
+            throw IllegalStateException("Renamed, but $failures member(s) may not have received the update yet.")
         }
     }
 
@@ -440,16 +481,31 @@ class GroupRepository @Inject constructor(
             // already-seen txId (e.g. catch-up re-fetching something the live scan already
             // processed) - only notify for a genuinely new, incoming (not our own) message.
             if (rowId != -1L && !isOutgoing) {
-                val senderLabel = membersOf(group).firstOrNull { it.address == senderAddress }?.displayName
-                    ?: senderAddress.takeLast(8)
-                val replyContent = MessageReply.parseOrNull(plaintext)
-                val notificationText = when {
-                    replyContent != null -> "$senderLabel replied to \"${replyContent.replyToPreview}\""
-                    VoiceMessage.parseOrNull(plaintext) != null -> "$senderLabel: 🎤 Audio message"
-                    ImageMessage.parseOrNull(plaintext) != null -> "$senderLabel: 📷 Photo"
-                    else -> "$senderLabel: $plaintext"
+                if (notificationHelper.isViewingGroup(group.groupId)) {
+                    // Already looking at this group's thread right now - keep it marked read
+                    // instead of letting the badge tick up for a message arriving live.
+                    markGroupRead(group.groupId)
                 }
-                notificationHelper.showGroup(group.groupId, group.name, notificationText)
+                val replyContent = MessageReply.parseOrNull(plaintext)
+                // Muting still lets the message show up in the thread (getMessages isn't
+                // filtered on mute, only on hide) - it only skips the notification, same as
+                // iOS's mute (enforced there via push-registration exclusion instead, since
+                // Android has no remote push to gate the same way).
+                val isMuted = "${group.groupId}|$senderAddress" in settings.groupMutedMembers.first()
+                val mentionsOnly = group.groupId in settings.groupMentionsOnly.first()
+                val mentionsMe = plaintext.contains("@$walletAddress")
+                val isReplyToMe = replyContent?.replyToSender == walletAddress
+                if (!isMuted && (!mentionsOnly || mentionsMe || isReplyToMe)) {
+                    val senderLabel = membersOf(group).firstOrNull { it.address == senderAddress }?.displayName
+                        ?: senderAddress.takeLast(8)
+                    val notificationText = when {
+                        replyContent != null -> "$senderLabel replied to \"${replyContent.replyToPreview}\""
+                        VoiceMessage.parseOrNull(plaintext) != null -> "$senderLabel: 🎤 Audio message"
+                        ImageMessage.parseOrNull(plaintext) != null -> "$senderLabel: 📷 Photo"
+                        else -> "$senderLabel: $plaintext"
+                    }
+                    notificationHelper.showGroup(group.groupId, group.name, notificationText)
+                }
             }
             return
         }
@@ -484,12 +540,17 @@ class GroupRepository @Inject constructor(
 
         // device_id is persistent per device - preserve it across epoch-rotation updates to an
         // already-joined group; only a genuinely first-time join mints a new one. msgCounter
-        // always resets to 0 on a new epoch root. groupSeed is preserved defensively in case
-        // this device somehow already held admin secrets for this group.
+        // resets to 0 only when the epoch actually advances - a same-epoch re-send of the root
+        // (e.g. `renameGroup`, which doesn't rotate the epoch, or any other duplicate delivery)
+        // must NOT reset it, since a msg_id must never be reused - resetting here would let this
+        // device's next send collide with a counter value it already used earlier in the same
+        // epoch. groupSeed is preserved defensively in case this device somehow already held
+        // admin secrets for this group.
         val deviceId = existingBag?.deviceId ?: GroupCipher.generateDeviceId().toHexString()
+        val preservedCounter = if (existingBag?.currentEpoch == payload.epoch) existingBag.msgCounter else 0
         val bag = GroupBag(
             groupId = payload.groupId, groupSeed = existingBag?.groupSeed, groupRootEpoch = payload.groupRootEpoch,
-            blindingKey = payload.blindingKey, currentEpoch = payload.epoch, deviceId = deviceId, msgCounter = 0
+            blindingKey = payload.blindingKey, currentEpoch = payload.epoch, deviceId = deviceId, msgCounter = preservedCounter
         )
         groupSecretStore.saveBag(walletAddress, bag)
 

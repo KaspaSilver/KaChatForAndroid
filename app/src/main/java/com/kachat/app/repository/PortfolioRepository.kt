@@ -5,10 +5,14 @@ import android.net.Uri
 import androidx.core.content.FileProvider
 import com.kachat.app.models.PortfolioTransactionEntity
 import com.kachat.app.services.CoinGeckoApi
+import com.kachat.app.services.WalletManager
 import com.kachat.app.services.database.KaChatDatabase
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import java.io.File
 import java.text.SimpleDateFormat
 import java.time.Instant
@@ -30,18 +34,31 @@ import kotlin.math.roundToLong
  * real purchase from an ordinary payment, so entries are user-entered only (matches
  * CoinMarketCap's own portfolio feature).
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 @Singleton
 class PortfolioRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val database: KaChatDatabase,
-    private val coinGeckoApi: CoinGeckoApi
+    private val coinGeckoApi: CoinGeckoApi,
+    private val walletManager: WalletManager
 ) {
-    fun getTransactions(): Flow<List<PortfolioTransactionEntity>> = database.portfolioDao().getTransactions()
+    /** Whichever account is currently active — re-emits automatically on account switch, same pattern as BroadcastRepository/GroupRepository. Pre-scoping rows (walletAddress="") are claimed for the first account to subscribe post-upgrade. */
+    fun getTransactions(): Flow<List<PortfolioTransactionEntity>> {
+        return walletManager.activeAddressFlow.flatMapLatest { address ->
+            if (address == null) {
+                flowOf(emptyList())
+            } else {
+                database.portfolioDao().claimUnscopedTransactions(address)
+                database.portfolioDao().getTransactions(address)
+            }
+        }
+    }
 
     suspend fun addTransaction(type: String, amountSompi: Long, fiatValue: Double, timestampMillis: Long = System.currentTimeMillis(), notes: String? = null) {
         database.portfolioDao().insert(
             PortfolioTransactionEntity(
                 id = UUID.randomUUID().toString(),
+                walletAddress = walletManager.getAddress(),
                 type = type,
                 amountSompi = amountSompi,
                 fiatValue = fiatValue,
@@ -56,6 +73,7 @@ class PortfolioRepository @Inject constructor(
         database.portfolioDao().insert(
             PortfolioTransactionEntity(
                 id = id,
+                walletAddress = walletManager.getAddress(),
                 type = type,
                 amountSompi = amountSompi,
                 fiatValue = fiatValue,
@@ -182,7 +200,8 @@ class PortfolioRepository @Inject constructor(
         val header = lines.removeAt(0)
         val dateFormat = makeDateFormat(parseHeaderUtcOffset(header))
 
-        val existing = database.portfolioDao().getTransactions().first()
+        val walletAddress = walletManager.getAddress()
+        val existing = database.portfolioDao().getTransactions(walletAddress).first()
         val idByTimestamp = existing.associate { it.timestampMillis to it.id }.toMutableMap()
 
         var imported = 0
@@ -222,6 +241,7 @@ class PortfolioRepository @Inject constructor(
                 database.portfolioDao().insert(
                     PortfolioTransactionEntity(
                         id = newId,
+                        walletAddress = walletAddress,
                         type = type,
                         amountSompi = amountSompi,
                         fiatValue = fiatValue,

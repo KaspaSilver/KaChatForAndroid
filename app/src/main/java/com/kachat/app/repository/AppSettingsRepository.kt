@@ -55,6 +55,16 @@ class AppSettingsRepository @Inject constructor(
         // mirrors iOS's `PhotoRevealStore`. Not per-wallet: txIds are unique on-chain already.
         val KEY_REVEALED_PHOTO_TX_IDS = stringSetPreferencesKey("revealed_photo_tx_ids")
 
+        // Per-group hidden/muted member sets - each entry is "{groupId}|{address}", flattened
+        // into one Set<String> rather than a nested map since DataStore preferences only have
+        // flat native collection types. Mirrors iOS's GroupChatService.groupHiddenMembers/
+        // groupMutedMembers (there, a real [String: Set<String>] via UserDefaults-JSON).
+        val KEY_GROUP_HIDDEN_MEMBERS = stringSetPreferencesKey("group_hidden_members")
+        val KEY_GROUP_MUTED_MEMBERS  = stringSetPreferencesKey("group_muted_members")
+        // Group ids with "Only Notify if I'm Mentioned" on - mirrors iOS's
+        // GroupChatService.groupMentionsOnlyNotifications.
+        val KEY_GROUP_MENTIONS_ONLY  = stringSetPreferencesKey("group_mentions_only")
+
         // Notifications — mirrors iOS's notificationMode/sound/vibration settings, minus
         // the remote-push mode (there's no FCM/APNs-equivalent registration wired up yet,
         // see NotificationHelper — only local notifications while the app process is alive).
@@ -192,6 +202,31 @@ class AppSettingsRepository @Inject constructor(
 
     val showFeeEstimate: Flow<Boolean> = dataStore.data.map {
         it[KEY_SHOW_FEE_ESTIMATE] ?: true
+    }
+
+    val groupHiddenMembers: Flow<Set<String>> = dataStore.data.map { it[KEY_GROUP_HIDDEN_MEMBERS] ?: emptySet() }
+    val groupMutedMembers: Flow<Set<String>> = dataStore.data.map { it[KEY_GROUP_MUTED_MEMBERS] ?: emptySet() }
+    val groupMentionsOnly: Flow<Set<String>> = dataStore.data.map { it[KEY_GROUP_MENTIONS_ONLY] ?: emptySet() }
+
+    suspend fun hideGroupMember(groupId: String, address: String) = dataStore.edit {
+        it[KEY_GROUP_HIDDEN_MEMBERS] = (it[KEY_GROUP_HIDDEN_MEMBERS] ?: emptySet()) + "$groupId|$address"
+    }
+
+    suspend fun unhideGroupMember(groupId: String, address: String) = dataStore.edit {
+        it[KEY_GROUP_HIDDEN_MEMBERS] = (it[KEY_GROUP_HIDDEN_MEMBERS] ?: emptySet()) - "$groupId|$address"
+    }
+
+    suspend fun muteGroupMember(groupId: String, address: String) = dataStore.edit {
+        it[KEY_GROUP_MUTED_MEMBERS] = (it[KEY_GROUP_MUTED_MEMBERS] ?: emptySet()) + "$groupId|$address"
+    }
+
+    suspend fun unmuteGroupMember(groupId: String, address: String) = dataStore.edit {
+        it[KEY_GROUP_MUTED_MEMBERS] = (it[KEY_GROUP_MUTED_MEMBERS] ?: emptySet()) - "$groupId|$address"
+    }
+
+    suspend fun setGroupMentionsOnly(groupId: String, enabled: Boolean) = dataStore.edit {
+        val current = it[KEY_GROUP_MENTIONS_ONLY] ?: emptySet()
+        it[KEY_GROUP_MENTIONS_ONLY] = if (enabled) current + groupId else current - groupId
     }
 
     val autoCreateSystemContactsEnabled: Flow<Boolean> = dataStore.data.map {

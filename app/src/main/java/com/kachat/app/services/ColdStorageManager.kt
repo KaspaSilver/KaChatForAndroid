@@ -17,10 +17,13 @@ import javax.inject.Singleton
  * completely different trust domain from KaChat's identity/spending wallet: no mnemonic or
  * private key material is ever stored here, only public keys, and a future "wipe wallet" action
  * on the main wallet must never be able to touch (or be confused with) this store, or vice versa.
+ * [WalletManager] is injected purely to read which wallet is currently active for scoping
+ * accounts per wallet (see [ColdAccount.walletAddress]) — never its mnemonic/private key.
  */
 @Singleton
 class ColdStorageManager @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val walletManager: WalletManager
 ) {
     companion object {
         private const val SECURE_PREFS_NAME = "cold_storage_secure_prefs"
@@ -33,6 +36,9 @@ class ColdStorageManager @Inject constructor(
         val id: String,
         val name: String,
         val kpub: String,
+        // Which spending wallet this was imported under - "" for accounts saved before this
+        // field existed (see getAccounts()'s claim-on-first-load migration).
+        val walletAddress: String = "",
         // Highest external-chain (chain 0) index ever derived/shown for this account — bounds
         // the Manage-style address list the same way WalletManager.Account.maxSpendingAddressIndex
         // bounds the spending-chain list. "Generate More Addresses" bumps this directly, ahead of
@@ -60,7 +66,7 @@ class ColdStorageManager @Inject constructor(
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )
 
-    fun getAccounts(): List<ColdAccount> {
+    private fun getAllAccounts(): List<ColdAccount> {
         val json = sharedPrefs.getString(PREF_ACCOUNTS, null) ?: return emptyList()
         val type = object : TypeToken<List<ColdAccount>>() {}.type
         return gson.fromJson(json, type)
@@ -71,29 +77,51 @@ class ColdStorageManager @Inject constructor(
         sharedPrefs.edit().putString(PREF_ACCOUNTS, json).apply()
     }
 
-    /** Re-importing the same kpub updates the existing entry's name rather than creating a duplicate. */
+    /**
+     * Accounts imported under whichever wallet is currently active — otherwise switching
+     * accounts on this device would show one wallet's imported kpubs under another. Accounts
+     * saved before this field existed (walletAddress="") are claimed for the first wallet that
+     * loads them post-upgrade, then persisted immediately so no other wallet can also claim
+     * them — mirrors PortfolioRepository's identical migration.
+     */
+    fun getAccounts(): List<ColdAccount> {
+        val walletAddress = walletManager.getAddress()
+        val all = getAllAccounts()
+        val unclaimed = all.filter { it.walletAddress.isEmpty() }
+        if (unclaimed.isNotEmpty()) {
+            val claimed = all.map { if (it.walletAddress.isEmpty()) it.copy(walletAddress = walletAddress) else it }
+            saveAccounts(claimed)
+            return claimed.filter { it.walletAddress == walletAddress }
+        }
+        return all.filter { it.walletAddress == walletAddress }
+    }
+
+    /** Re-importing the same kpub under the same wallet updates the existing entry's name rather than creating a duplicate; the same kpub imported under a different wallet is a separate entry. */
     fun saveAccount(name: String, kpub: String): Result<ColdAccount> {
         if (!KaspaExtendedPublicKey.isValidKpub(kpub)) {
             return Result.failure(IllegalArgumentException("Not a valid kpub"))
         }
-        val existing = getAccounts().find { it.kpub == kpub }
-        val account = existing?.copy(name = name) ?: ColdAccount(id = UUID.randomUUID().toString(), name = name, kpub = kpub)
-        val accounts = getAccounts().filter { it.kpub != kpub } + account
+        val walletAddress = walletManager.getAddress()
+        val all = getAllAccounts()
+        val existing = all.find { it.kpub == kpub && it.walletAddress == walletAddress }
+        val account = existing?.copy(name = name)
+            ?: ColdAccount(id = UUID.randomUUID().toString(), name = name, kpub = kpub, walletAddress = walletAddress)
+        val accounts = all.filterNot { it.kpub == kpub && it.walletAddress == walletAddress } + account
         saveAccounts(accounts)
         return Result.success(account)
     }
 
     fun renameAccount(id: String, newName: String) {
-        saveAccounts(getAccounts().map { if (it.id == id) it.copy(name = newName) else it })
+        saveAccounts(getAllAccounts().map { if (it.id == id) it.copy(name = newName) else it })
     }
 
     fun deleteAccount(id: String) {
-        saveAccounts(getAccounts().filter { it.id != id })
+        saveAccounts(getAllAccounts().filter { it.id != id })
     }
 
     fun ensureMaxDerivedIndexAtLeast(id: String, minIndex: Int) {
         saveAccounts(
-            getAccounts().map {
+            getAllAccounts().map {
                 if (it.id == id && minIndex > it.maxDerivedIndex) it.copy(maxDerivedIndex = minIndex) else it
             }
         )

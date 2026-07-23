@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.pager.HorizontalPager
@@ -81,6 +82,7 @@ import com.kachat.app.util.MessageReply
 import com.kachat.app.util.VoiceMessage
 import com.kachat.app.viewmodels.BroadcastViewModel
 import com.kachat.app.viewmodels.WalletViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -593,6 +595,18 @@ fun BroadcastChannelScreen(
     val uriHandler = LocalUriHandler.current
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
+    var highlightedMessageId by remember { mutableStateOf<String?>(null) }
+    val jumpToReply: (String) -> Unit = { targetId ->
+        val index = messages.indexOfFirst { it.id == targetId }
+        if (index >= 0) {
+            coroutineScope.launch {
+                listState.animateScrollToItem(index)
+                highlightedMessageId = targetId
+                delay(1200)
+                if (highlightedMessageId == targetId) highlightedMessageId = null
+            }
+        }
+    }
 
     // Swipe-left-to-reveal-timestamps (iMessage-style): dragging left across the whole message
     // list shifts every message row left by the same amount, uncovering a per-message time in the
@@ -922,7 +936,15 @@ fun BroadcastChannelScreen(
                         }
                     }
 
-                    Box(modifier = Modifier.fillMaxWidth()) {
+                    val highlightColor by animateColorAsState(
+                        if (message.id == highlightedMessageId) KaspaTeal.copy(alpha = 0.18f) else Color.Transparent,
+                        label = "messageHighlight"
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(highlightColor, RoundedCornerShape(12.dp))
+                    ) {
                         Text(
                             text = remember(message.blockTimestamp) { ChatTimeFormat.formatMessageTime(message.blockTimestamp) },
                             color = LocalAppColors.current.textSecondary,
@@ -964,7 +986,10 @@ fun BroadcastChannelScreen(
                                 Surface(
                                     color = LocalAppColors.current.surfaceVariant,
                                     shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.padding(bottom = 4.dp).widthIn(max = 240.dp)
+                                    modifier = Modifier
+                                        .padding(bottom = 4.dp)
+                                        .widthIn(max = 240.dp)
+                                        .clickable { jumpToReply(replyContent.replyToId) }
                                 ) {
                                     Column(modifier = Modifier.padding(8.dp)) {
                                         Text(

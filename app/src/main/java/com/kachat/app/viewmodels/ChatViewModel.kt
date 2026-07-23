@@ -56,6 +56,13 @@ class ChatViewModel @Inject constructor(
         notificationHelper.setActiveContact(contactId)
     }
 
+    /** Suppresses a notification for whichever group's thread is currently open, and (via
+     *  `GroupRepository`'s `isViewingGroup` check) keeps it marked read in real time so a message
+     *  arriving while you're actively looking at it doesn't tick the unread badge up. */
+    fun setActiveGroup(groupId: String?) {
+        notificationHelper.setActiveGroup(groupId)
+    }
+
     val chatPhotoQualityPreset: StateFlow<com.kachat.app.models.ChatPhotoQualityPreset> = settings.chatPhotoQualityPreset
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), com.kachat.app.models.ChatPhotoQualityPreset.default)
 
@@ -910,15 +917,91 @@ class ChatViewModel @Inject constructor(
     }
 
     fun getGroupMessages(groupId: String) = groupRepository.getMessages(groupId)
+        .combine(groupHiddenMembers) { messages, hidden ->
+            messages.filter { it.senderAddress == null || "$groupId|${it.senderAddress}" !in hidden }
+        }
+
+    // The group message currently being replied to (long-press menu on its bubble to set this),
+    // shown as a banner above the compose field — cleared automatically once the reply sends.
+    // Mirrors [_replyingTo]'s shape for 1:1 chats.
+    private val _groupReplyingTo = MutableStateFlow<com.kachat.app.repository.GroupMessage?>(null)
+    val groupReplyingTo: StateFlow<com.kachat.app.repository.GroupMessage?> = _groupReplyingTo.asStateFlow()
+
+    fun startGroupReplyTo(message: com.kachat.app.repository.GroupMessage) {
+        _groupReplyingTo.value = message
+    }
+
+    fun cancelGroupReply() {
+        _groupReplyingTo.value = null
+    }
+
+    // -------------------------------------------------------------------------
+    // Group hide/mute/mentions-only - mirrors iOS's GroupChatService equivalents.
+    // -------------------------------------------------------------------------
+
+    val groupHiddenMembers: StateFlow<Set<String>> = settings.groupHiddenMembers
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+    val groupMutedMembers: StateFlow<Set<String>> = settings.groupMutedMembers
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+    val groupMentionsOnly: StateFlow<Set<String>> = settings.groupMentionsOnly
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    fun isGroupMemberHidden(groupId: String, address: String) = "$groupId|$address" in groupHiddenMembers.value
+    fun isGroupMemberMuted(groupId: String, address: String) = "$groupId|$address" in groupMutedMembers.value
+    fun isGroupMentionsOnly(groupId: String) = groupId in groupMentionsOnly.value
+
+    fun hideGroupMember(groupId: String, address: String) {
+        viewModelScope.launch { settings.hideGroupMember(groupId, address) }
+    }
+
+    fun unhideGroupMember(groupId: String, address: String) {
+        viewModelScope.launch { settings.unhideGroupMember(groupId, address) }
+    }
+
+    fun muteGroupMember(groupId: String, address: String) {
+        viewModelScope.launch { settings.muteGroupMember(groupId, address) }
+    }
+
+    fun unmuteGroupMember(groupId: String, address: String) {
+        viewModelScope.launch { settings.unmuteGroupMember(groupId, address) }
+    }
+
+    fun setGroupMentionsOnly(groupId: String, enabled: Boolean) {
+        viewModelScope.launch { settings.setGroupMentionsOnly(groupId, enabled) }
+    }
 
     fun markGroupRead(groupId: String) {
         viewModelScope.launch { groupRepository.markGroupRead(groupId) }
     }
 
+    /** Bulk "Mark as Read" for multi-selected groups in the Group Chats tab — mirrors [markContactsAsRead]'s shape. */
+    fun markGroupsAsRead(groupIds: Collection<String>) {
+        viewModelScope.launch { groupIds.forEach { groupRepository.markGroupRead(it) } }
+    }
+
+    /** Bulk "Mark as Unread" for multi-selected groups in the Group Chats tab — mirrors [markContactsAsUnread]'s shape. */
+    fun markGroupsAsUnread(groupIds: Collection<String>) {
+        viewModelScope.launch { groupIds.forEach { groupRepository.markGroupUnread(it) } }
+    }
+
     fun sendGroupMessage(text: String, groupId: String, onError: (String) -> Unit = {}) {
+        val reply = _groupReplyingTo.value
         viewModelScope.launch {
             try {
-                groupRepository.sendGroupMessage(text, groupId)
+                // If replying, wrap the content in the shared reply envelope (matches
+                // ChatViewModel.sendMessage/BroadcastViewModel's identical wrapping) so the
+                // quote survives even if the original message is later pruned.
+                val payload = if (reply != null) {
+                    val preview = VoiceMessage.parseOrNull(reply.content)?.let { "🎤 Audio message" }
+                        ?: ImageMessage.parseOrNull(reply.content)?.let { "📷 Photo" }
+                        ?: MessageReply.parseOrNull(reply.content)?.text
+                        ?: reply.content
+                    MessageReply.encode(replyToId = reply.txId, replyToSender = reply.senderAddress ?: "", replyToPreview = preview, text = text)
+                } else {
+                    text
+                }
+                groupRepository.sendGroupMessage(payload, groupId)
+                _groupReplyingTo.value = null
             } catch (e: Exception) {
                 onError(e.message ?: "Failed to send")
             }
@@ -950,6 +1033,16 @@ class ChatViewModel @Inject constructor(
     fun deleteGroupChat(groupId: String) {
         viewModelScope.launch {
             groupRepository.deleteGroup(groupId)
+        }
+    }
+
+    fun renameGroup(groupId: String, newName: String, onError: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                groupRepository.renameGroup(groupId, newName)
+            } catch (e: Exception) {
+                onError(e.message ?: "Failed to rename group")
+            }
         }
     }
 

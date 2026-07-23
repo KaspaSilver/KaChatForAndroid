@@ -39,7 +39,7 @@ import com.kachat.app.models.SwapTransactionEntity
         GroupMessageEntity::class,
         GroupSyncCursorEntity::class,
     ],
-    version = 27,
+    version = 28,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {
@@ -264,6 +264,19 @@ abstract class KaChatDatabase : RoomDatabase() {
         val MIGRATION_26_27 = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `groups` ADD COLUMN `lastReadAt` INTEGER DEFAULT NULL")
+            }
+        }
+
+        /**
+         * Scopes the portfolio ledger per wallet - see PortfolioTransactionEntity's doc comment.
+         * Existing rows get walletAddress='' (a non-null default, since SQLite's ALTER TABLE ADD
+         * COLUMN NOT NULL requires one on a non-empty table) and are claimed for a real address
+         * lazily by PortfolioRepository, not here - a Migration only has the raw database, not
+         * WalletManager's active-account state.
+         */
+        val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `portfolio_transactions` ADD COLUMN `walletAddress` TEXT NOT NULL DEFAULT ''")
             }
         }
     }

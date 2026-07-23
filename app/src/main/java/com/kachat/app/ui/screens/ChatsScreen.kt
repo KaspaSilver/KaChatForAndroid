@@ -46,6 +46,7 @@ import com.kachat.app.viewmodels.WalletViewModel
 import com.kachat.app.viewmodels.ConnectionViewModel
 import com.kachat.app.viewmodels.ChatViewModel
 import com.kachat.app.models.Conversation
+import com.kachat.app.models.GroupMember
 import com.kachat.app.models.MessageEntity
 import com.kachat.app.util.ImageMessage
 import com.kachat.app.util.MessageReply
@@ -99,7 +100,12 @@ fun ChatsScreen(
     var searchQuery by remember { mutableStateOf("") }
     var isSelectionMode by remember { mutableStateOf(false) }
     var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedGroupIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     val pagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
+    // Selection is scoped to whichever tab it was started on - switching tabs mid-select would
+    // either strand a selection the visible list can't act on, or blend Chats and Group Chats
+    // selections together, so the other tab is blocked while editing (matches iOS).
+    val isOnGroupsTab = pagerState.currentPage == 1
     val tabCoroutineScope = rememberCoroutineScope()
 
     // Matches on whatever's already shown per row — display name/alias, KNS domain, the raw
@@ -118,6 +124,25 @@ fun ChatsScreen(
                     convo.contact.id,
                     messagePreviewText(convo.lastMessage, contactLabel)
                 ).any { it.contains(query, ignoreCase = true) }
+            }
+        }
+    }
+
+    // Mirrors filteredConversations above for the Group Chats tab: group name, each member's
+    // display-name-or-address, and the last message preview text.
+    val filteredGroupConversations = remember(groupConversations, searchQuery) {
+        val query = searchQuery.trim()
+        if (query.isBlank()) {
+            groupConversations
+        } else {
+            groupConversations.filter { convo ->
+                val members = parseGroupMembers(convo.group)
+                listOfNotNull(convo.group.name, groupMessagePreviewText(convo.lastMessage, members))
+                    .any { it.contains(query, ignoreCase = true) } ||
+                    members.any { member ->
+                        (member.displayName?.contains(query, ignoreCase = true) == true) ||
+                            member.address.contains(query, ignoreCase = true)
+                    }
             }
         }
     }
@@ -176,22 +201,33 @@ fun ChatsScreen(
                         onStatusClick = { navController.navigate("connection_status") },
                         dotColorHex = dotColorHex,
                         showAddButton = false,
-                        showEditButton = conversations.isNotEmpty(),
+                        showEditButton = if (isOnGroupsTab) groupConversations.isNotEmpty() else conversations.isNotEmpty(),
                         isEditing = isSelectionMode,
                         onEditClick = {
                             isSelectionMode = !isSelectionMode
-                            if (!isSelectionMode) selectedContactIds = emptySet()
+                            if (!isSelectionMode) {
+                                selectedContactIds = emptySet()
+                                selectedGroupIds = emptySet()
+                            }
                         },
-                        selectAllLabel = if (selectedContactIds.size == filteredConversations.size && filteredConversations.isNotEmpty()) {
-                            "Deselect All"
+                        selectAllLabel = if (isOnGroupsTab) {
+                            if (selectedGroupIds.size == filteredGroupConversations.size && filteredGroupConversations.isNotEmpty()) "Deselect All" else "Select All"
                         } else {
-                            "Select All"
+                            if (selectedContactIds.size == filteredConversations.size && filteredConversations.isNotEmpty()) "Deselect All" else "Select All"
                         },
                         onSelectAllClick = {
-                            selectedContactIds = if (selectedContactIds.size == filteredConversations.size) {
-                                emptySet()
+                            if (isOnGroupsTab) {
+                                selectedGroupIds = if (selectedGroupIds.size == filteredGroupConversations.size) {
+                                    emptySet()
+                                } else {
+                                    filteredGroupConversations.map { it.group.groupId }.toSet()
+                                }
                             } else {
-                                filteredConversations.map { it.contact.id }.toSet()
+                                selectedContactIds = if (selectedContactIds.size == filteredConversations.size) {
+                                    emptySet()
+                                } else {
+                                    filteredConversations.map { it.contact.id }.toSet()
+                                }
                             }
                         }
                     )
@@ -241,19 +277,31 @@ fun ChatsScreen(
                 ) {
                     Tab(
                         selected = pagerState.currentPage == 0,
-                        onClick = { tabCoroutineScope.launch { pagerState.animateScrollToPage(0) } },
+                        onClick = {
+                            if (!isSelectionMode) tabCoroutineScope.launch { pagerState.animateScrollToPage(0) }
+                        },
                         text = {
                             TabBadge(count = chatsUnreadCount) {
-                                Text("Chats", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Chats",
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelectionMode && isOnGroupsTab) LocalContentColor.current.copy(alpha = 0.25f) else LocalContentColor.current
+                                )
                             }
                         }
                     )
                     Tab(
                         selected = pagerState.currentPage == 1,
-                        onClick = { tabCoroutineScope.launch { pagerState.animateScrollToPage(1) } },
+                        onClick = {
+                            if (!isSelectionMode) tabCoroutineScope.launch { pagerState.animateScrollToPage(1) }
+                        },
                         text = {
                             TabBadge(count = groupsUnreadCount) {
-                                Text("Group Chats", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Group Chats",
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelectionMode && !isOnGroupsTab) LocalContentColor.current.copy(alpha = 0.25f) else LocalContentColor.current
+                                )
                             }
                         }
                     )
@@ -284,11 +332,16 @@ fun ChatsScreen(
                     ) {
                         Button(
                             onClick = {
-                                chatViewModel.markContactsAsRead(selectedContactIds)
+                                if (isOnGroupsTab) {
+                                    chatViewModel.markGroupsAsRead(selectedGroupIds)
+                                } else {
+                                    chatViewModel.markContactsAsRead(selectedContactIds)
+                                }
                                 isSelectionMode = false
                                 selectedContactIds = emptySet()
+                                selectedGroupIds = emptySet()
                             },
-                            enabled = selectedContactIds.isNotEmpty(),
+                            enabled = if (isOnGroupsTab) selectedGroupIds.isNotEmpty() else selectedContactIds.isNotEmpty(),
                             colors = ButtonDefaults.buttonColors(containerColor = LocalAppColors.current.surfaceVariant),
                             modifier = Modifier.weight(1f)
                         ) {
@@ -298,11 +351,16 @@ fun ChatsScreen(
                         }
                         Button(
                             onClick = {
-                                chatViewModel.markContactsAsUnread(selectedContactIds)
+                                if (isOnGroupsTab) {
+                                    chatViewModel.markGroupsAsUnread(selectedGroupIds)
+                                } else {
+                                    chatViewModel.markContactsAsUnread(selectedContactIds)
+                                }
                                 isSelectionMode = false
                                 selectedContactIds = emptySet()
+                                selectedGroupIds = emptySet()
                             },
-                            enabled = selectedContactIds.isNotEmpty(),
+                            enabled = if (isOnGroupsTab) selectedGroupIds.isNotEmpty() else selectedContactIds.isNotEmpty(),
                             colors = ButtonDefaults.buttonColors(containerColor = LocalAppColors.current.surfaceVariant),
                             modifier = Modifier.weight(1f)
                         ) {
@@ -324,7 +382,24 @@ fun ChatsScreen(
             modifier = Modifier.fillMaxSize().padding(padding)
         ) { page ->
         when (page) {
-            1 -> GroupListBody(navController = navController, groupConversations = groupConversations, onDeleteGroup = { chatViewModel.deleteGroupChat(it) })
+            1 -> GroupListBody(
+                navController = navController,
+                groupConversations = filteredGroupConversations,
+                hasAnyGroups = groupConversations.isNotEmpty(),
+                searchQuery = searchQuery,
+                onDeleteGroup = { chatViewModel.deleteGroupChat(it) },
+                isSelectionMode = isSelectionMode,
+                selectedGroupIds = selectedGroupIds,
+                onToggleGroupSelected = { groupId ->
+                    selectedGroupIds = if (groupId in selectedGroupIds) {
+                        selectedGroupIds - groupId
+                    } else {
+                        selectedGroupIds + groupId
+                    }
+                },
+                onMarkGroupRead = { chatViewModel.markGroupsAsRead(listOf(it)) },
+                onMarkGroupUnread = { chatViewModel.markGroupsAsUnread(listOf(it)) }
+            )
             else -> Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -604,11 +679,41 @@ private fun BroadcastsEntryRow(onClick: () -> Unit) {
 fun GroupListBody(
     navController: NavController,
     groupConversations: List<GroupConversation>,
-    onDeleteGroup: (String) -> Unit
+    /** Whether the account has any groups at all, before search filtering - distinguishes a
+     *  genuinely empty account from a search that just matched nothing. */
+    hasAnyGroups: Boolean = groupConversations.isNotEmpty(),
+    searchQuery: String = "",
+    onDeleteGroup: (String) -> Unit,
+    isSelectionMode: Boolean = false,
+    selectedGroupIds: Set<String> = emptySet(),
+    onToggleGroupSelected: (String) -> Unit = {},
+    onMarkGroupRead: (String) -> Unit = {},
+    onMarkGroupUnread: (String) -> Unit = {}
 ) {
     var groupToDelete by remember { mutableStateOf<String?>(null) }
 
-    if (groupConversations.isEmpty()) {
+    if (groupConversations.isEmpty() && hasAnyGroups && searchQuery.isNotBlank()) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxSize().padding(bottom = 100.dp)
+        ) {
+            Text(
+                text = "No Matching Groups",
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    color = LocalAppColors.current.textPrimary
+                )
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "No groups match \"$searchQuery\"",
+                style = MaterialTheme.typography.bodyLarge,
+                color = LocalAppColors.current.textSecondary,
+                textAlign = TextAlign.Center
+            )
+        }
+    } else if (groupConversations.isEmpty()) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
@@ -640,6 +745,17 @@ fun GroupListBody(
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(groupConversations, key = { it.group.groupId }) { convo ->
                 SwipeActionRow(
+                    enabled = !isSelectionMode,
+                    leadingIcon = if (convo.unreadCount > 0) Icons.Default.MarkEmailRead else Icons.Default.MarkEmailUnread,
+                    leadingLabel = if (convo.unreadCount > 0) "Read" else "Unread",
+                    leadingColor = KaspaTeal,
+                    onLeadingClick = {
+                        if (convo.unreadCount > 0) {
+                            onMarkGroupRead(convo.group.groupId)
+                        } else {
+                            onMarkGroupUnread(convo.group.groupId)
+                        }
+                    },
                     trailingIcon = Icons.Default.Delete,
                     trailingLabel = "Delete",
                     trailingColor = Color(0xFFFF3B30),
@@ -650,10 +766,25 @@ fun GroupListBody(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(LocalAppColors.current.background)
-                                .clickable { navController.navigate("group_chat/${convo.group.groupId}") }
+                                .clickable {
+                                    if (isSelectionMode) {
+                                        onToggleGroupSelected(convo.group.groupId)
+                                    } else {
+                                        navController.navigate("group_chat/${convo.group.groupId}")
+                                    }
+                                }
                                 .padding(horizontal = 16.dp, vertical = 16.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            if (isSelectionMode) {
+                                Icon(
+                                    imageVector = if (convo.group.groupId in selectedGroupIds) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                    contentDescription = "Select group",
+                                    tint = if (convo.group.groupId in selectedGroupIds) KaspaTeal else Color.Gray,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.width(16.dp))
+                            }
                             Box(
                                 modifier = Modifier
                                     .size(48.dp)
@@ -677,12 +808,30 @@ fun GroupListBody(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    text = groupMessagePreviewText(convo.lastMessage) ?: "No messages yet",
+                                    text = groupMessagePreviewText(convo.lastMessage, parseGroupMembers(convo.group)) ?: "No messages yet",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = Color.Gray,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                            }
+
+                            if (convo.unreadCount > 0) {
+                                Spacer(Modifier.width(8.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .defaultMinSize(minWidth = 24.dp, minHeight = 24.dp)
+                                        .background(KaspaTeal, CircleShape)
+                                        .padding(horizontal = 6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = convo.unreadCount.toString(),
+                                        color = LocalAppColors.current.textPrimary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                         }
                         HorizontalDivider(
@@ -734,14 +883,21 @@ fun GroupListBody(
     }
 }
 
-/** Mirrors [messagePreviewText] for group messages - no reply-attribution ("Alice replied to..."), since resolving a sender's alias here isn't worth the extra lookup for a one-line list preview. */
-private fun groupMessagePreviewText(message: GroupMessage?): String? {
+/** Mirrors [messagePreviewText] for group messages. Resolves `@{address}` mentions back to a
+ *  display name using the roster's own (possibly stale) `displayName` snapshot rather than a
+ *  live contact/KNS lookup - not worth threading that all the way down for a one-line preview. */
+private fun groupMessagePreviewText(message: GroupMessage?, members: List<GroupMember> = emptyList()): String? {
     val body = message?.content ?: return null
+    val resolve: (String) -> String = { address ->
+        members.firstOrNull { it.address == address }?.displayName?.takeIf { it.isNotBlank() } ?: address.takeLast(10)
+    }
     val replyContent = MessageReply.parseOrNull(body)
-    if (replyContent != null) return "Replied to \"${replyContent.replyToPreview}\""
+    if (replyContent != null) {
+        return "Replied to \"${GroupMentionCodec.decodeForDisplay(replyContent.replyToPreview, members, resolve)}\""
+    }
     if (VoiceMessage.parseOrNull(body) != null) return "🎤 Audio message"
     if (ImageMessage.parseOrNull(body) != null) return "📷 Photo"
-    return body
+    return GroupMentionCodec.decodeForDisplay(body, members, resolve)
 }
 
 /**

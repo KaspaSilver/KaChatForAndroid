@@ -15,24 +15,23 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 enum class ConnectionStatus {
-    CONNECTED, DEGRADED, WEAK, DISCONNECTED
+    CONNECTED, DEGRADED, DISCONNECTED
 }
 
 /**
  * Pure threshold logic, extracted so it's directly unit-testable without needing
  * a real NodePoolManager/AppSettingsRepository — see ConnectionViewModel.status.
- * Same latency thresholds as [deriveDotColorHex] (which derives from this) so the
+ * Same latency threshold as [deriveDotColorHex] (which derives from this) so the
  * "Status"/"Pool Health" text on screen can never say something that contradicts
- * the dot's color: green <=150ms, orange (degraded) 150-200ms, red (weak) above
- * that, and red/disconnected when there's no active node to read a latency from.
+ * the dot's color: red whenever there's no active node at all (regardless of
+ * latency), otherwise green under 300ms and orange at 300ms or above.
  */
 internal fun deriveConnectionStatus(activeNodes: List<NodeInfo>): ConnectionStatus {
     val bestLatencyMs = activeNodes.firstOrNull()?.latency?.removeSuffix("ms")?.toIntOrNull()
     return when {
         activeNodes.isEmpty() || bestLatencyMs == null -> ConnectionStatus.DISCONNECTED
-        bestLatencyMs <= 150 -> ConnectionStatus.CONNECTED
-        bestLatencyMs <= 200 -> ConnectionStatus.DEGRADED
-        else -> ConnectionStatus.WEAK
+        bestLatencyMs < 300 -> ConnectionStatus.CONNECTED
+        else -> ConnectionStatus.DEGRADED
     }
 }
 
@@ -40,7 +39,7 @@ internal fun deriveConnectionStatus(activeNodes: List<NodeInfo>): ConnectionStat
 internal fun deriveDotColorHex(activeNodes: List<NodeInfo>): Long = when (deriveConnectionStatus(activeNodes)) {
     ConnectionStatus.CONNECTED -> 0xFF4CD964
     ConnectionStatus.DEGRADED -> 0xFFF39C12
-    ConnectionStatus.WEAK, ConnectionStatus.DISCONNECTED -> 0xFFFF3B30
+    ConnectionStatus.DISCONNECTED -> 0xFFFF3B30
 }
 
 data class NodeInfo(
@@ -66,7 +65,7 @@ class ConnectionViewModel @Inject constructor(
         .map(::deriveConnectionStatus)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ConnectionStatus.DISCONNECTED)
 
-    /** Connection dot color: green <=150ms, orange 150-200ms, red >200ms (or disconnected). */
+    /** Connection dot color: green under 300ms, orange at 300ms+, red when disconnected. */
     val dotColorHex: StateFlow<Long> = activeNodes
         .map(::deriveDotColorHex)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0xFFFF3B30)

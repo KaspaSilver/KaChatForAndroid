@@ -19,6 +19,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -684,6 +685,20 @@ fun ChatThreadScreen(
     ) { padding ->
         val scrollState = rememberLazyListState()
         val coroutineScope = rememberCoroutineScope()
+        var highlightedMessageId by remember { mutableStateOf<String?>(null) }
+        val jumpToReply: (String) -> Unit = { targetId ->
+            val index = messages.indexOfFirst { it.id == targetId }
+            if (index >= 0) {
+                coroutineScope.launch {
+                    scrollState.animateScrollToItem(index)
+                    highlightedMessageId = targetId
+                    delay(1200)
+                    if (highlightedMessageId == targetId) highlightedMessageId = null
+                }
+            } else {
+                Toast.makeText(micContext, "Original message not available", Toast.LENGTH_SHORT).show()
+            }
+        }
 
         // Auto-scroll to bottom when new messages arrive
         LaunchedEffect(messages.size) {
@@ -793,7 +808,9 @@ fun ChatThreadScreen(
                             ),
                             isPhotoRevealed = msg.id in revealedPhotoTxIds,
                             onRevealPhoto = { chatViewModel.revealPhoto(msg.id) },
-                            kaspaExplorer = kaspaExplorer
+                            kaspaExplorer = kaspaExplorer,
+                            onJumpToReply = jumpToReply,
+                            isHighlighted = msg.id == highlightedMessageId
                         )
                     }
                     if (ChatViewModel.shouldShowUnnotifiedWarning(messages)) {
@@ -935,7 +952,10 @@ fun MessageBubble(
     photosBlocked: Boolean = false,
     isPhotoRevealed: Boolean = false,
     onRevealPhoto: () -> Unit = {},
-    kaspaExplorer: com.kachat.app.models.KaspaExplorer = com.kachat.app.models.KaspaExplorer.default
+    kaspaExplorer: com.kachat.app.models.KaspaExplorer = com.kachat.app.models.KaspaExplorer.default,
+    /** Tapping the reply quote (if any) jumps to and highlights the original message. */
+    onJumpToReply: (String) -> Unit = {},
+    isHighlighted: Boolean = false
 ) {
     val isSent = message.direction == "sent"
     var showMenu by remember { mutableStateOf(false) }
@@ -1000,7 +1020,15 @@ fun MessageBubble(
         return
     }
 
-    Box(modifier = Modifier.fillMaxWidth()) {
+    val highlightColor by animateColorAsState(
+        if (isHighlighted) KaspaTeal.copy(alpha = 0.18f) else Color.Transparent,
+        label = "messageHighlight"
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(highlightColor, RoundedCornerShape(12.dp))
+    ) {
         Text(
             text = remember(message.blockTimestamp) { ChatTimeFormat.formatMessageTime(message.blockTimestamp) },
             color = LocalAppColors.current.textSecondary,
@@ -1031,7 +1059,10 @@ fun MessageBubble(
             Surface(
                 color = LocalAppColors.current.surfaceVariant,
                 shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.padding(bottom = 4.dp).widthIn(max = 240.dp)
+                modifier = Modifier
+                    .padding(bottom = 4.dp)
+                    .widthIn(max = 240.dp)
+                    .clickable { onJumpToReply(replyContent.replyToId) }
             ) {
                 Column(modifier = Modifier.padding(8.dp)) {
                     Text(
@@ -1635,6 +1666,7 @@ fun ProfileScreen(
     chatViewModel: ChatViewModel = hiltViewModel()
 ) {
     val address by viewModel.address.collectAsState()
+    val accountName by viewModel.accountName.collectAsState()
     val balance by viewModel.fullBalance.collectAsState()
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val scrollState = rememberScrollState()
@@ -1727,6 +1759,18 @@ fun ProfileScreen(
                             Text("Retry Inscription Reveal", color = Color.Black, fontWeight = FontWeight.Bold)
                         }
                     }
+                }
+            }
+
+            if (!accountName.isNullOrBlank()) {
+                SettingsSection(title = "Account") {
+                    Text(
+                        accountName!!,
+                        color = LocalAppColors.current.textPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(16.dp)
+                    )
                 }
             }
 
@@ -4259,8 +4303,8 @@ fun SettingsScreen(
                 TopStatusBar(
                     balance = balance,
                     onStatusClick = { navController.navigate("connection_status") },
-                    onAddClick = { navController.navigate("create_chat") },
-                    dotColorHex = dotColorHex
+                    dotColorHex = dotColorHex,
+                    showAddButton = false
                 )
                 Spacer(modifier = Modifier.height(8.dp))
             }
@@ -5003,8 +5047,9 @@ fun TopStatusBar(
     onStatusClick: () -> Unit,
     onAddClick: () -> Unit = {},
     dotColorHex: Long = 0xFF4CD964,
-    // Chats has this moved to a floating action button instead (see ChatsScreen.kt) — false
-    // there. Still defaults on for Profile/Settings, which keep the icon in the status bar.
+    // Chats has this moved to a floating action button instead (see ChatsScreen.kt), and
+    // Profile/Settings have no "add chat" action of their own - every current caller passes
+    // false explicitly, so this default only matters for a future screen that doesn't.
     showAddButton: Boolean = true,
     showEditButton: Boolean = false,
     isEditing: Boolean = false,
@@ -5053,17 +5098,14 @@ fun TopStatusBar(
                 Spacer(Modifier.width(4.dp))
             }
             if (showEditButton) {
-                IconButton(
-                    onClick = onEditClick,
-                    modifier = Modifier
-                        .size(40.dp)
-                        .background(LocalAppColors.current.surface, CircleShape)
-                ) {
-                    Icon(
-                        imageVector = if (isEditing) Icons.Default.Close else Icons.Default.Edit,
-                        contentDescription = if (isEditing) "Done" else "Select Chats",
-                        tint = KaspaTeal,
-                        modifier = Modifier.size(20.dp)
+                // Text toggle instead of a pen icon, matching iOS's "Select"/"Cancel" toolbar
+                // button (ChatListView.swift) rather than a Material edit-pencil affordance.
+                TextButton(onClick = onEditClick) {
+                    Text(
+                        text = if (isEditing) "Cancel" else "Select",
+                        color = KaspaTeal,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
                     )
                 }
                 if (!isEditing) Spacer(Modifier.width(8.dp))
@@ -5126,20 +5168,18 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
-    // status is derived from the exact same latency thresholds as dotColorHex, so
+    // status is derived from the exact same latency threshold as dotColorHex, so
     // the text here can never contradict the dot's color: green only says
-    // Connected/Healthy, orange only says Degraded, red only says Weak/Unhealthy.
+    // Connected/Healthy, orange only says Degraded, red only says Disconnected/Unhealthy.
     val statusColor = Color(dotColorHex)
     val statusText = when (status) {
         ConnStatus.CONNECTED -> "Connected"
         ConnStatus.DEGRADED -> "Degraded"
-        ConnStatus.WEAK -> "Weak"
         ConnStatus.DISCONNECTED -> "Disconnected"
     }
     val poolHealthText = when (status) {
         ConnStatus.CONNECTED -> "Healthy"
         ConnStatus.DEGRADED -> "Degraded"
-        ConnStatus.WEAK -> "Weak"
         ConnStatus.DISCONNECTED -> "Unhealthy"
     }
     // "Verified" = currently reachable at all (Active or Suspect), a broader real count

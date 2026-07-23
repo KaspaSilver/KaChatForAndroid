@@ -28,6 +28,10 @@ interface GroupDao {
     @Query("UPDATE groups SET lastReadAt = :timestamp WHERE groupId = :groupId AND walletAddress = :walletAddress")
     suspend fun markGroupRead(groupId: String, walletAddress: String, timestamp: Long)
 
+    /** Forces a group back to "unread" - clears lastReadAt to NULL, same state as never opened. */
+    @Query("UPDATE groups SET lastReadAt = NULL WHERE groupId = :groupId AND walletAddress = :walletAddress")
+    suspend fun markGroupUnread(groupId: String, walletAddress: String)
+
     @Query("DELETE FROM groups WHERE groupId = :groupId AND walletAddress = :walletAddress")
     suspend fun deleteGroup(groupId: String, walletAddress: String)
 
