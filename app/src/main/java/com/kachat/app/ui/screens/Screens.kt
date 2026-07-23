@@ -650,6 +650,11 @@ fun ChatThreadScreen(
                                             showComposerMenu = false
                                             startVoiceRecordingIfPermitted()
                                         }
+                                        HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
+                                        PopupMenuRow(Icons.Default.Apps, "Play Chess") {
+                                            showComposerMenu = false
+                                            chatViewModel.startChessGame(contactId)
+                                        }
                                         if (conversation?.contact?.handshakeComplete != true) {
                                             HorizontalDivider(color = LocalAppColors.current.textPrimary.copy(alpha = 0.08f))
                                             PopupMenuRow(Icons.Default.BackHand, "Send Handshake") {
@@ -739,6 +744,21 @@ fun ChatThreadScreen(
         val revealOffsetPx = remember { Animatable(0f) }
         val maxRevealOffsetPx = with(LocalDensity.current) { 64.dp.toPx() }
 
+        // Computed here (not inside the LazyColumn content below) - LazyListScope's item-builder
+        // lambda isn't a real @Composable context, so a bare remember() call in it fails to
+        // compile ("@Composable invocations can only happen from the context of a @Composable
+        // function").
+        val chessSourceMessages = remember(messages) {
+            messages.map {
+                com.kachat.app.util.ChessGameEngine.SimpleChessSourceMessage(
+                    id = it.id,
+                    plaintextBody = it.plaintextBody,
+                    isOutgoing = it.direction == "sent",
+                    blockTimestamp = it.blockTimestamp
+                )
+            }
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -786,8 +806,41 @@ fun ChatThreadScreen(
                                 }
                             }
                         }
+                        val chessEnvelopeForRow = remember(msg.plaintextBody) {
+                            com.kachat.app.util.ChessMessage.parseOrNull(
+                                MessageReply.parseOrNull(msg.plaintextBody)?.text ?: msg.plaintextBody
+                            )
+                        }
+                        val chessSummaryForRow = remember(chessEnvelopeForRow, chessSourceMessages, myAddress) {
+                            val address = myAddress
+                            if (chessEnvelopeForRow != null && address != null) {
+                                com.kachat.app.util.ChessGameEngine.summarize(chessEnvelopeForRow.gameId, chessSourceMessages, address, contactId)
+                            } else {
+                                null
+                            }
+                        }
+                        val isLatestChessForRow = remember(chessEnvelopeForRow, chessSourceMessages) {
+                            chessEnvelopeForRow != null && com.kachat.app.util.ChessGameEngine.isLatestChessMessage(
+                                com.kachat.app.util.ChessGameEngine.SimpleChessSourceMessage(
+                                    id = msg.id,
+                                    plaintextBody = msg.plaintextBody,
+                                    isOutgoing = msg.direction == "sent",
+                                    blockTimestamp = msg.blockTimestamp
+                                ),
+                                chessSourceMessages
+                            )
+                        }
                         MessageBubble(
                             message = msg,
+                            chessSummary = chessSummaryForRow,
+                            isLatestChessMessage = isLatestChessForRow,
+                            onRespondToChessInvite = { accepted ->
+                                val gameId = chessEnvelopeForRow?.gameId
+                                if (gameId != null) {
+                                    chatViewModel.respondToChessInvite(contactId, gameId, accepted)
+                                }
+                            },
+                            onOpenChessGame = { gameId -> navController.navigate("chess_game/$contactId/$gameId") },
                             contactAvatarUrl = conversation?.contact?.knsAvatarUrl,
                             contactAvatarFallback = conversation?.contact?.alias ?: contactId.takeLast(8),
                             myAvatarUrl = myKnsProfile?.avatarUrl,
@@ -955,7 +1008,15 @@ fun MessageBubble(
     kaspaExplorer: com.kachat.app.models.KaspaExplorer = com.kachat.app.models.KaspaExplorer.default,
     /** Tapping the reply quote (if any) jumps to and highlights the original message. */
     onJumpToReply: (String) -> Unit = {},
-    isHighlighted: Boolean = false
+    isHighlighted: Boolean = false,
+    /** Current game state for this message's chess envelope, if it has one - computed by the
+     *  caller (needs the full conversation's messages, which this composable doesn't have). */
+    chessSummary: com.kachat.app.util.ChessGameSummary? = null,
+    /** True only for the most recent chess message belonging to its game - see
+     *  ChessGameEngine.isLatestChessMessage. */
+    isLatestChessMessage: Boolean = false,
+    onRespondToChessInvite: (Boolean) -> Unit = {},
+    onOpenChessGame: (String) -> Unit = {}
 ) {
     val isSent = message.direction == "sent"
     var showMenu by remember { mutableStateOf(false) }
@@ -965,6 +1026,7 @@ fun MessageBubble(
     val replyContent = remember(message.plaintextBody) { MessageReply.parseOrNull(message.plaintextBody) }
     val displayBody = replyContent?.text ?: message.plaintextBody
     val imageContent = remember(displayBody) { ImageMessage.parseOrNull(displayBody) }
+    val chessEnvelope = remember(displayBody) { com.kachat.app.util.ChessMessage.parseOrNull(displayBody) }
 
     if (isPendingRequest) {
         Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
@@ -1140,6 +1202,16 @@ fun MessageBubble(
                         )
                     }
                 }
+            } else if (chessEnvelope != null) {
+                ChessBubble(
+                    envelope = chessEnvelope,
+                    summary = chessSummary,
+                    isLatest = isLatestChessMessage,
+                    isSent = isSent,
+                    onRespond = onRespondToChessInvite,
+                    onOpen = { onOpenChessGame(chessEnvelope.gameId) },
+                    onLongPress = { showMenu = true }
+                )
             } else if (VoiceMessage.parseOrNull(displayBody) != null) {
                 AudioBubble(
                     voiceContent = VoiceMessage.parseOrNull(displayBody)!!,
@@ -1360,6 +1432,192 @@ fun FullMessageTextDialog(text: String, onDismiss: () -> Unit, onCopy: () -> Uni
  * carry sample data, and re-decoding to PCM just to draw bars isn't worth the extra native-audio
  * surface area for a cosmetic detail; play/pause + duration covers the actual "does it work" bar.
  */
+/**
+ * "Play Chess" 1:1 feature - dispatches to an invite card (Accept/Decline, mirroring the
+ * handshake pending-request card above), a live status card (board thumbnail + status, for the
+ * most recent chess message in its game), or a compact one-line log entry (earlier moves in the
+ * same game, so a long game doesn't repeat a full board on every message).
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun ChessBubble(
+    envelope: com.kachat.app.util.ChessEnvelope,
+    summary: com.kachat.app.util.ChessGameSummary?,
+    isLatest: Boolean,
+    isSent: Boolean,
+    onRespond: (Boolean) -> Unit,
+    onOpen: () -> Unit,
+    onLongPress: () -> Unit = {}
+) {
+    when (envelope) {
+        is com.kachat.app.util.ChessEnvelope.Invite -> ChessInviteBubble(isSent, summary, onRespond, onOpen, onLongPress)
+        else -> {
+            if (isLatest && summary != null) {
+                ChessLiveCard(summary, onOpen, onLongPress)
+            } else {
+                ChessLogEntry(envelope, onOpen, onLongPress)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ChessInviteBubble(
+    isSent: Boolean,
+    summary: com.kachat.app.util.ChessGameSummary?,
+    onRespond: (Boolean) -> Unit,
+    onOpen: () -> Unit,
+    onLongPress: () -> Unit = {}
+) {
+    val showsResponseButtons = !isSent && summary?.status?.kind == com.kachat.app.util.ChessGameStatusKind.PENDING_RESPONSE
+    Surface(
+        color = LocalAppColors.current.surfaceVariant,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .widthIn(max = 280.dp)
+            .then(
+                if (!showsResponseButtons) {
+                    Modifier.combinedClickable(onClick = onOpen, onLongClick = onLongPress)
+                } else {
+                    Modifier
+                }
+            )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("♟️", fontSize = 18.sp)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (isSent) "Chess game invite sent" else "Invited you to a game of chess",
+                    color = LocalAppColors.current.textPrimary,
+                    fontSize = 14.sp
+                )
+            }
+            if (showsResponseButtons) {
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onRespond(true) },
+                        colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Accept", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                    Button(
+                        onClick = { onRespond(false) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3C)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Decline", color = LocalAppColors.current.textSecondary, fontWeight = FontWeight.Bold)
+                    }
+                }
+            } else if (summary != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(summary.statusText, color = LocalAppColors.current.textSecondary, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ChessLiveCard(summary: com.kachat.app.util.ChessGameSummary, onOpen: () -> Unit, onLongPress: () -> Unit = {}) {
+    Surface(
+        color = LocalAppColors.current.surfaceVariant,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.combinedClickable(onClick = onOpen, onLongClick = onLongPress)
+    ) {
+        Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            ChessBoardThumbnail(board = summary.board)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                summary.statusText,
+                color = if (summary.status.isGameOver) LocalAppColors.current.textSecondary else LocalAppColors.current.textPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ChessLogEntry(envelope: com.kachat.app.util.ChessEnvelope, onOpen: () -> Unit, onLongPress: () -> Unit = {}) {
+    val text = when (envelope) {
+        is com.kachat.app.util.ChessEnvelope.Move -> {
+            val promo = envelope.content.promotion?.let { " (${it.uppercase()})" } ?: ""
+            "♟️ ${envelope.content.from} → ${envelope.content.to}$promo"
+        }
+        is com.kachat.app.util.ChessEnvelope.Resign -> "♟️ Resigned"
+        is com.kachat.app.util.ChessEnvelope.Response -> if (envelope.content.accepted) "♟️ Accepted the game" else "♟️ Declined the game"
+        is com.kachat.app.util.ChessEnvelope.Invite -> "♟️ Chess invite"
+    }
+    Surface(
+        color = LocalAppColors.current.surfaceVariant,
+        shape = RoundedCornerShape(50),
+        modifier = Modifier.combinedClickable(onClick = onOpen, onLongClick = onLongPress)
+    ) {
+        Text(
+            text,
+            color = LocalAppColors.current.textSecondary,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+        )
+    }
+}
+
+/** Small, non-interactive board render - shared by the in-chat live card and (with its own
+ *  square size) the full-screen ChessGameScreen. */
+@Composable
+fun ChessBoardThumbnail(board: com.kachat.app.util.ChessBoard, sizeDp: Dp = 160.dp) {
+    val squareSize = sizeDp / 8
+    Column {
+        for (rank in 7 downTo 0) {
+            Row {
+                for (file in 0..7) {
+                    val isLight = (file + rank) % 2 != 0
+                    Box(
+                        modifier = Modifier
+                            .size(squareSize)
+                            .background(if (isLight) ChessLightSquareColor else ChessDarkSquareColor),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val piece = board.piece(com.kachat.app.util.ChessSquare(file, rank))
+                        if (piece != null) {
+                            ChessPieceGlyph(piece, fontSize = (squareSize.value * 0.6f).sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Classic wood-tone board colors (matches chess.com/lichess's default theme) - shared by the
+ *  in-chat thumbnail and the full-screen board in ChessGameScreen.kt. */
+val ChessLightSquareColor = Color(0xFFEFD9B4)
+val ChessDarkSquareColor = Color(0xFFB58863)
+
+/** Renders a single chess piece glyph with an explicit white/black fill plus a crisp
+ *  contrasting outline (four offset copies of the glyph drawn behind the fill, a standard
+ *  lightweight text-stroke trick), rather than relying on the bare Unicode glyph's
+ *  outline-vs-filled shape alone to distinguish sides - at typical board sizes that distinction
+ *  was too subtle to read at a glance, especially on a same-toned square. */
+@Composable
+fun ChessPieceGlyph(piece: com.kachat.app.util.ChessPiece, fontSize: androidx.compose.ui.unit.TextUnit, modifier: Modifier = Modifier) {
+    val fillColor = if (piece.color == com.kachat.app.util.ChessColor.WHITE) Color(0xFFFCFCFC) else Color(0xFF121212)
+    val outlineColor = if (piece.color == com.kachat.app.util.ChessColor.WHITE) Color(0xFF121212) else Color(0xFFFCFCFC)
+    val d = 0.9.dp
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Text(piece.glyph, fontSize = fontSize, color = outlineColor, modifier = Modifier.offset(x = d))
+        Text(piece.glyph, fontSize = fontSize, color = outlineColor, modifier = Modifier.offset(x = -d))
+        Text(piece.glyph, fontSize = fontSize, color = outlineColor, modifier = Modifier.offset(y = d))
+        Text(piece.glyph, fontSize = fontSize, color = outlineColor, modifier = Modifier.offset(y = -d))
+        Text(piece.glyph, fontSize = fontSize, color = fillColor)
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AudioBubble(voiceContent: VoiceMessageContent, isSent: Boolean, onLongPress: () -> Unit, onDoubleClick: () -> Unit = {}) {

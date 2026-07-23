@@ -914,6 +914,7 @@ private fun messagePreviewText(message: MessageEntity?, contactLabel: String): S
     }
     if (VoiceMessage.parseOrNull(body) != null) return "🎤 Audio message"
     if (ImageMessage.parseOrNull(body) != null) return "📷 Photo"
+    if (com.kachat.app.util.ChessMessage.parseOrNull(body) != null) return "♟️ Chess game"
     return body
 }
 

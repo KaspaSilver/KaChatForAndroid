@@ -1330,6 +1330,45 @@ class ChatViewModel @Inject constructor(
     }
 
     // -------------------------------------------------------------------------
+    // Chess — "Play Chess" 1:1 feature. Each action is just a JSON envelope (see ChessMessage.kt)
+    // sent through the exact same sendMessage() pipeline as text, the same way VoiceMessage/
+    // ImageMessage don't have their own send path either. `cancelReply()` first since these
+    // aren't things you'd ever want wrapped in an unrelated pending reply.
+    // -------------------------------------------------------------------------
+
+    fun startChessGame(contactId: String) {
+        cancelReply()
+        val content = com.kachat.app.util.ChessInviteContent(
+            gameId = java.util.UUID.randomUUID().toString(),
+            inviterColor = if (kotlin.random.Random.nextBoolean()) com.kachat.app.util.ChessInviteColor.WHITE else com.kachat.app.util.ChessInviteColor.BLACK
+        )
+        sendMessage(contactId, com.kachat.app.util.ChessMessage.encode(content))
+    }
+
+    fun respondToChessInvite(contactId: String, gameId: String, accepted: Boolean) {
+        cancelReply()
+        val content = com.kachat.app.util.ChessResponseContent(gameId = gameId, accepted = accepted)
+        sendMessage(contactId, com.kachat.app.util.ChessMessage.encode(content))
+    }
+
+    fun sendChessMove(contactId: String, gameId: String, move: com.kachat.app.util.ChessMove) {
+        cancelReply()
+        val content = com.kachat.app.util.ChessMoveContent(
+            gameId = gameId,
+            from = move.from.algebraic,
+            to = move.to.algebraic,
+            promotion = move.promotion?.promotionLetter
+        )
+        sendMessage(contactId, com.kachat.app.util.ChessMessage.encode(content))
+    }
+
+    fun resignChessGame(contactId: String, gameId: String) {
+        cancelReply()
+        val content = com.kachat.app.util.ChessResignContent(gameId = gameId)
+        sendMessage(contactId, com.kachat.app.util.ChessMessage.encode(content))
+    }
+
+    // -------------------------------------------------------------------------
     // Voice messages — recorded as Opus-in-WebM, then sent through the exact same
     // sendMessage() pipeline as text: the entire encoded audio is embedded as base64 in the
     // message content JSON, encrypted, and put on-chain like any other message. No separate

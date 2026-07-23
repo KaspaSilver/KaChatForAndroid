@@ -728,6 +728,17 @@ fun MainShell(
                 )
             }
 
+            composable("chess_game/{contactId}/{gameId}") { backStackEntry ->
+                val contactId = backStackEntry.arguments?.getString("contactId") ?: return@composable
+                val gameId = backStackEntry.arguments?.getString("gameId") ?: return@composable
+                ChessGameScreen(
+                    navController = navController,
+                    contactId = contactId,
+                    gameId = gameId,
+                    chatViewModel = chatViewModel
+                )
+            }
+
             composable(
                 "chat_info/{contactId}?fromBroadcast={fromBroadcast}",
                 arguments = listOf(navArgument("fromBroadcast") { type = NavType.BoolType; defaultValue = false })

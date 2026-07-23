@@ -453,6 +453,7 @@ class ChatRepository @Inject constructor(
             replyContent != null -> "Replied to \"${replyContent.replyToPreview}\""
             VoiceMessage.parseOrNull(plaintext) != null -> "🎤 Audio message"
             ImageMessage.parseOrNull(plaintext) != null -> "📷 Photo"
+            com.kachat.app.util.ChessMessage.parseOrNull(plaintext) != null -> "♟️ Chess game"
             else -> plaintext
         }
         notificationHelper.show(
