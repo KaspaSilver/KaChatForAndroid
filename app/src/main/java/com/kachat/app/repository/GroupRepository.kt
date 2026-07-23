@@ -50,6 +50,16 @@ data class GroupMessage(
     val deliveryStatus: String
 )
 
+/** In-memory model for the Group Chats tab's list - mirrors [com.kachat.app.models.Conversation]'s shape for 1:1 chats. */
+data class GroupConversation(
+    val group: GroupEntity,
+    val lastMessage: GroupMessage?,
+    /** Backs the Group Chats tab's unread badge - messages newer than group.lastReadAt, or 1 if
+     * the group was never opened and we didn't create it ourselves (covers "new group added"
+     * with zero messages yet). See GroupEntity.lastReadAt's doc comment. */
+    val unreadCount: Int = 0
+)
+
 /**
  * Group chat lifecycle (create/add/remove member, epoch rotation), sending, and message
  * decryption. Kotlin port of iOS KaChat's `GroupChatService.swift` — see that file's doc
@@ -93,6 +103,12 @@ class GroupRepository @Inject constructor(
     }
 
     fun getGroupCount(): Flow<Int> = getGroups().map { it.size }
+
+    /** Marks a group's thread as read as of now - backs the Group Chats tab's unread badge. Call when its thread screen opens. */
+    suspend fun markGroupRead(groupId: String) {
+        val walletAddress = walletManager.getAddress()
+        database.groupDao().markGroupRead(groupId, walletAddress, System.currentTimeMillis())
+    }
 
     /** True whenever a wallet is active, regardless of group state - see [com.kachat.app.services.GroupScanningService] for why `gctl` scanning must key off this instead of group count. */
     val hasActiveWallet: Flow<Boolean> = walletManager.activeAddressFlow.map { it != null }

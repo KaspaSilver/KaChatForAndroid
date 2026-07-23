@@ -43,6 +43,10 @@ class PortfolioViewModel @Inject constructor(
     private val _currentPriceUsd = MutableStateFlow<Double?>(null)
     val currentPriceUsd: StateFlow<Double?> = _currentPriceUsd.asStateFlow()
 
+    /** Backs PortfolioScreen's pull-to-refresh indicator - true while a refreshPrice() call's price + history fetches are both still in flight. */
+    private val _isRefreshingPortfolio = MutableStateFlow(false)
+    val isRefreshingPortfolio: StateFlow<Boolean> = _isRefreshingPortfolio.asStateFlow()
+
     private val _priceHistory = MutableStateFlow<List<Pair<Long, Double>>>(emptyList())
     val priceHistory: StateFlow<List<Pair<Long, Double>>> = _priceHistory.asStateFlow()
 
@@ -79,11 +83,21 @@ class PortfolioViewModel @Inject constructor(
     }
 
     fun refreshPrice() {
-        viewModelScope.launch {
-            _currentPriceUsd.value = repository.getCurrentPriceUsd()
+        val priceJob = viewModelScope.launch {
+            val price = repository.getCurrentPriceUsd()
+            if (price != null) {
+                _currentPriceUsd.value = price
+            }
         }
         priceHistoryCache.clear()
         fetchPriceHistory(_priceRangeDays.value)
+        val historyJob = priceHistoryJob
+        viewModelScope.launch {
+            _isRefreshingPortfolio.value = true
+            priceJob.join()
+            historyJob?.join()
+            _isRefreshingPortfolio.value = false
+        }
     }
 
     /** Switches the price chart's window (1/7/30 days) and refetches history for it. */

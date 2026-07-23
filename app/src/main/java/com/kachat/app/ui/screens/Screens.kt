@@ -146,8 +146,10 @@ fun ChatThreadScreen(
     chatViewModel: ChatViewModel = hiltViewModel(),
     connectionViewModel: ConnectionViewModel = hiltViewModel(),
     walletViewModel: WalletViewModel = hiltViewModel(),
+    settingsViewModel: SettingsViewModel = hiltViewModel(),
     startInPaymentMode: Boolean = false
 ) {
+    val showFeeEstimate by settingsViewModel.showFeeEstimate.collectAsState()
     val conversations by chatViewModel.conversations.collectAsState()
     val conversation = conversations.find { it.contact.id == contactId }
     val messages by chatViewModel.getMessages(contactId).collectAsState(initial = emptyList())
@@ -252,6 +254,12 @@ fun ChatThreadScreen(
                             Toast.makeText(micContext, "Address copied", Toast.LENGTH_SHORT).show()
                         }
                     ) {
+                        ContactAvatar(
+                            imageUrl = conversation?.contact?.knsAvatarUrl,
+                            fallbackText = conversation?.contact?.alias ?: contactId.takeLast(8),
+                            size = 36.dp
+                        )
+                        Spacer(Modifier.height(2.dp))
                         Text(
                             text = conversation?.contact?.alias ?: com.kachat.app.util.KaspaAddress.shortDisplay(contactId),
                             color = LocalAppColors.current.textPrimary,
@@ -301,7 +309,7 @@ fun ChatThreadScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (estimatedFee != null) {
+                            if (showFeeEstimate && estimatedFee != null) {
                                 Surface(
                                     color = LocalAppColors.current.surface,
                                     shape = RoundedCornerShape(12.dp),
@@ -407,7 +415,7 @@ fun ChatThreadScreen(
                     }
                 } else if (pendingPhotoUri != null) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        if (estimatedFee != null) {
+                        if (showFeeEstimate && estimatedFee != null) {
                             Surface(
                                 color = LocalAppColors.current.surface,
                                 shape = RoundedCornerShape(12.dp),
@@ -480,7 +488,7 @@ fun ChatThreadScreen(
                     }
                 } else if (voiceRecordingState.status == ChatViewModel.VoiceRecordingStatus.RECORDING) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        if (estimatedFee != null) {
+                        if (showFeeEstimate && estimatedFee != null) {
                             Surface(
                                 color = LocalAppColors.current.surface,
                                 shape = RoundedCornerShape(12.dp),
@@ -569,7 +577,7 @@ fun ChatThreadScreen(
                                 }
                             }
                         }
-                        if (estimatedFee != null && messageText.isNotEmpty()) {
+                        if (showFeeEstimate && estimatedFee != null && messageText.isNotEmpty()) {
                             Surface(
                                 color = LocalAppColors.current.surface,
                                 shape = RoundedCornerShape(12.dp),
@@ -1623,12 +1631,14 @@ fun ContactsScreen(navController: NavController) {
 fun ProfileScreen(
     viewModel: WalletViewModel,
     navController: NavController,
-    connectionViewModel: ConnectionViewModel = hiltViewModel()
+    connectionViewModel: ConnectionViewModel = hiltViewModel(),
+    chatViewModel: ChatViewModel = hiltViewModel()
 ) {
     val address by viewModel.address.collectAsState()
     val balance by viewModel.fullBalance.collectAsState()
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val scrollState = rememberScrollState()
+    val context = LocalContext.current
 
     val spendingAddress by viewModel.spendingAddress.collectAsState()
     val spendingBalance by viewModel.spendingBalance.collectAsState()
@@ -1637,6 +1647,7 @@ fun ProfileScreen(
     // accidentally affect an unrelated overlay reusing the same flag.
     var showAcceptPaymentQr by remember { mutableStateOf(false) }
     var showWithdrawDialog by remember { mutableStateOf(false) }
+    var showLogoutConfirmation by remember { mutableStateOf(false) }
 
     val knsInscribeState by viewModel.knsInscribeState.collectAsState()
     val pendingKnsCommit by viewModel.pendingKnsCommit.collectAsState()
@@ -1866,16 +1877,31 @@ fun ProfileScreen(
             }
 
             CollapsibleAddressSection(title = "Chatting Address", balance = balance) {
-                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { showWithdrawDialog = true },
+                            .clickable { showWithdrawDialog = true }
+                            .padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Send, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Withdraw Kaspa", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                    }
+                    if (address != null) {
+                        HorizontalDivider(color = LocalAppColors.current.divider)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { navController.navigate("cold_storage_tx_history/$address") }
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Receipt, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Transaction History", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -1884,29 +1910,79 @@ fun ProfileScreen(
             // Kaspa" sends always come out of this address, never the identity one above. It
             // rotates to a freshly derived address after every send (see WalletManager's
             // spending-address doc comment), so this always shows whichever one is current.
-            CollapsibleAddressSection(title = "Spending Address", balance = spendingBalance) {
-                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { navController.navigate("manage_addresses") },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.ManageAccounts, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Manage Addresses", color = KaspaTeal, fontWeight = FontWeight.Bold)
-                    }
-                }
+            // Unlike Chatting Address above, this is a direct one-tap navigation into Manage
+            // Addresses (matches iOS's spendingAddressRow()) rather than an expand/collapse
+            // section - there's nothing else to show here besides "go manage your addresses".
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(LocalAppColors.current.surface)
+                    .clickable { navController.navigate("manage_addresses") }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Spending Address",
+                    color = LocalAppColors.current.textPrimary,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(spendingBalance, color = KaspaTeal, fontWeight = FontWeight.Bold, modifier = Modifier.padding(end = 8.dp))
+                Icon(Icons.Default.ChevronRight, null, tint = LocalAppColors.current.textSecondary, modifier = Modifier.size(20.dp))
             }
 
-            SettingsSection(title = "Info") {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("Created", color = LocalAppColors.current.textPrimary)
-                    Text("Apr 22, 2026 at 8:33 AM", color = LocalAppColors.current.textSecondary)
+            // Bottom-most section on Profile - merges what used to be a separate "Info" section
+            // (just "Created") with Settings' old "About" section (Version/Website/Support
+            // Email/Donate), now reached without needing to open Settings at all.
+            SettingsSection(title = "About") {
+                SettingsInfoItem("Created", "Apr 22, 2026 at 8:33 AM")
+                SettingsDivider()
+                SettingsInfoItem("Version", com.kachat.app.BuildConfig.VERSION_NAME)
+                SettingsDivider()
+                SettingsInfoItem(
+                    "Website",
+                    "https://linktr.ee/Kachat_",
+                    KaspaTeal,
+                    onClick = {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://linktr.ee/Kachat_")))
+                        } catch (e: Exception) { /* no browser available */ }
+                    }
+                )
+                SettingsDivider()
+                SettingsInfoItem(
+                    "Support Email",
+                    "kaspasilver@gmail.com",
+                    KaspaTeal,
+                    onClick = {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:kaspasilver@gmail.com")))
+                        } catch (e: Exception) { /* no email app available */ }
+                    }
+                )
+                SettingsDivider()
+                SettingsInfoItem(
+                    "Donate",
+                    ChatViewModel.DONATION_KNS_DOMAIN,
+                    KaspaTeal,
+                    onClick = {
+                        chatViewModel.startDonationChat(
+                            onResolved = { donateAddress -> navController.navigate("chat/$donateAddress?paymentMode=true") },
+                            onError = {
+                                Toast.makeText(context, "Couldn't reach ${ChatViewModel.DONATION_KNS_DOMAIN} right now. Try again later", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+                    }
+                )
+            }
+
+            // Moved here from Settings > Actions - Profile is where the rest of the
+            // account-level actions (address management, About) already live.
+            SettingsSection(title = "Actions") {
+                SettingsActionItem("Log Out", Icons.AutoMirrored.Filled.Logout, Color.Red) {
+                    showLogoutConfirmation = true
                 }
             }
 
@@ -1932,6 +2008,33 @@ fun ProfileScreen(
             )
         }
         }
+    }
+
+    if (showLogoutConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showLogoutConfirmation = false },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Log Out", color = LocalAppColors.current.textPrimary) },
+            text = {
+                Text(
+                    "This signs out of your account, but keeps local wallet and message data on this device.",
+                    color = LocalAppColors.current.textSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLogoutConfirmation = false
+                    viewModel.logout()
+                }) {
+                    Text("Log Out", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutConfirmation = false }) {
+                    Text("Cancel", color = LocalAppColors.current.textSecondary)
+                }
+            }
+        )
     }
 
     if (showWithdrawDialog) {
@@ -4117,6 +4220,7 @@ fun SettingsScreen(
     val biometricSeedPhraseEnabled by walletViewModel.biometricSeedPhraseEnabled.collectAsState()
     val biometricAccountLoginEnabled by walletViewModel.biometricAccountLoginEnabled.collectAsState()
     val notificationsEnabled by settingsViewModel.notificationsEnabled.collectAsState()
+    val showFeeEstimate by settingsViewModel.showFeeEstimate.collectAsState()
     val chatPhotoQualityPreset by chatViewModel.chatPhotoQualityPreset.collectAsState()
     val kaspaExplorer by chatViewModel.kaspaExplorer.collectAsState()
     val syncSystemContactsEnabled by chatViewModel.syncSystemContactsEnabled.collectAsState()
@@ -4201,6 +4305,10 @@ fun SettingsScreen(
             }
 
             SettingsSection(title = "Chats") {
+                SettingsSwitchItem("Show Fee Estimate", showFeeEstimate) { enabled ->
+                    settingsViewModel.setShowFeeEstimate(enabled)
+                }
+                SettingsDivider()
                 SettingsNavigationItem(
                     "Photo Quality",
                     Icons.Default.Photo,
@@ -4486,10 +4594,6 @@ fun SettingsScreen(
                         navController.navigate("seed_phrase")
                     }
                 }
-                SettingsDivider()
-                SettingsActionItem("Log Out", Icons.AutoMirrored.Filled.Logout, Color.Red) {
-                    walletViewModel.logout()
-                }
             }
 
             SettingsSection(title = "Danger Zone") {
@@ -4623,48 +4727,6 @@ fun SettingsScreen(
                         }
                     )
                 }
-            }
-
-            SettingsSection(title = "About") {
-                SettingsInfoItem("Version", com.kachat.app.BuildConfig.VERSION_NAME)
-                SettingsDivider()
-                SettingsInfoItem(
-                    "Website",
-                    "https://linktr.ee/Kachat_",
-                    KaspaTeal,
-                    onClick = {
-                        try {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://linktr.ee/Kachat_")))
-                        } catch (e: Exception) { /* no browser available */ }
-                    }
-                )
-                SettingsDivider()
-                SettingsInfoItem(
-                    "Support Email",
-                    "kaspasilver@gmail.com",
-                    KaspaTeal,
-                    onClick = {
-                        try {
-                            context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:kaspasilver@gmail.com")))
-                        } catch (e: Exception) { /* no email app available */ }
-                    }
-                )
-                SettingsDivider()
-                SettingsInfoItem(
-                    "Donate",
-                    ChatViewModel.DONATION_KNS_DOMAIN,
-                    KaspaTeal,
-                    onClick = {
-                        chatViewModel.startDonationChat(
-                            onResolved = { address -> navController.navigate("chat/$address?paymentMode=true") },
-                            onError = {
-                                coroutineScope.launch {
-                                    snackbarHostState.showSnackbar("Couldn't reach ${ChatViewModel.DONATION_KNS_DOMAIN} right now. Try again later")
-                                }
-                            }
-                        )
-                    }
-                )
             }
 
             Spacer(modifier = Modifier.height(100.dp))
@@ -6031,7 +6093,8 @@ fun CreateChatScreen(
     var isGroupMode by remember { mutableStateOf(false) }
     var groupName by remember { mutableStateOf("") }
     var groupAddressRows by remember { mutableStateOf(listOf(GroupAddressRow())) }
-    var scanningGroupRowIndex by remember { mutableStateOf<Int?>(null) }
+    var scanningGroupRowId by remember { mutableStateOf<String?>(null) }
+    var importingGroupRowId by remember { mutableStateOf<String?>(null) }
     val isCreatingGroup by chatViewModel.isCreatingGroup.collectAsState()
     val createGroupError by chatViewModel.createGroupError.collectAsState()
     var importErrorMessage by remember { mutableStateOf<String?>(null) }
@@ -6055,6 +6118,8 @@ fun CreateChatScreen(
         ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE
     )
     val pickContactForImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { uri ->
+        val targetGroupRowId = importingGroupRowId
+        importingGroupRowId = null
         if (uri == null) return@rememberLauncherForActivityResult
         val entityUri = Uri.withAppendedPath(uri, ContactsContract.Contacts.Entity.CONTENT_DIRECTORY)
         var foundAddress: String? = null
@@ -6080,7 +6145,20 @@ fun CreateChatScreen(
                 foundAddress = com.kachat.app.services.SystemContactsSyncService.extractKaspaAddresses(value).firstOrNull()
             }
         }
-        if (foundAddress != null) {
+        if (targetGroupRowId != null) {
+            // Group mode: write into the row that requested the import, not the single-contact
+            // address field. No inline error slot for this case besides the row's own KNS/
+            // validity status line - a contact with no address just leaves the row untouched.
+            if (foundAddress != null) {
+                groupAddressRows = groupAddressRows.map {
+                    if (it.id == targetGroupRowId) it.copy(text = foundAddress!!, knsError = null) else it
+                }
+            } else {
+                groupAddressRows = groupAddressRows.map {
+                    if (it.id == targetGroupRowId) it.copy(knsError = "No Kaspa address found in ${displayName ?: "that contact"}") else it
+                }
+            }
+        } else if (foundAddress != null) {
             address = foundAddress!!
             if (name.isBlank()) name = displayName ?: ""
             importErrorMessage = null
@@ -6111,34 +6189,22 @@ fun CreateChatScreen(
         return
     }
 
-    scanningGroupRowIndex?.let { rowIndex ->
-        BackHandler {
-            // Scanner dismissed without a scan - drop the row it was pre-appended for if the
-            // user never filled it in.
-            if (groupAddressRows.getOrNull(rowIndex)?.trimmedText?.isEmpty() == true && groupAddressRows.size > 1) {
-                groupAddressRows = groupAddressRows.toMutableList().also { it.removeAt(rowIndex) }
-            }
-            scanningGroupRowIndex = null
-        }
+    scanningGroupRowId?.let { rowId ->
+        BackHandler { scanningGroupRowId = null }
         QrScannerOverlay(
             onScanned = { scanned ->
-                groupAddressRows = groupAddressRows.toMutableList().also {
-                    if (rowIndex < it.size) it[rowIndex] = it[rowIndex].copy(text = scanned.trim())
+                groupAddressRows = groupAddressRows.map {
+                    if (it.id == rowId) it.copy(text = scanned.trim()) else it
                 }
-                scanningGroupRowIndex = null
+                scanningGroupRowId = null
             },
-            onDismiss = {
-                if (groupAddressRows.getOrNull(rowIndex)?.trimmedText?.isEmpty() == true && groupAddressRows.size > 1) {
-                    groupAddressRows = groupAddressRows.toMutableList().also { it.removeAt(rowIndex) }
-                }
-                scanningGroupRowIndex = null
-            }
+            onDismiss = { scanningGroupRowId = null }
         )
         return
     }
 
     val canCreateGroup = groupName.trim().isNotEmpty() &&
-        groupAddressRows.filter { it.trimmedText.isNotEmpty() }.let { rows -> rows.isNotEmpty() && rows.all { it.effectiveAddress?.let(KaspaAddress::isValid) == true } }
+        groupAddressRows.filter { it.trimmedText.isNotEmpty() }.let { rows -> rows.isNotEmpty() && rows.all { it.isValid } }
 
     Scaffold(
         containerColor = LocalAppColors.current.background,
@@ -6232,7 +6298,11 @@ fun CreateChatScreen(
                     onGroupNameChange = { groupName = it },
                     rows = groupAddressRows,
                     onRowsChange = { groupAddressRows = it },
-                    onScanRequested = { rowIndex -> scanningGroupRowIndex = rowIndex },
+                    onScanRequested = { rowId -> scanningGroupRowId = rowId },
+                    onImportRequested = { rowId ->
+                        importingGroupRowId = rowId
+                        pickContactForImportLauncher.launch(null)
+                    },
                     errorMessage = createGroupError,
                     chatViewModel = chatViewModel
                 )
@@ -6415,6 +6485,17 @@ data class GroupAddressRow(
 
     /** The actual address this row resolves to - resolved KNS owner address, or the raw typed/scanned address. Null while a domain hasn't resolved yet. */
     val effectiveAddress: String? get() = if (looksLikeDomain) resolvedAddress else trimmedText.ifEmpty { null }
+
+    /**
+     * Matches the single-contact flow's `isValidAddress` trust model exactly: a resolved KNS
+     * domain is trusted outright (the KNS API is the source of truth for it), only a raw typed/
+     * scanned/pasted address gets re-validated here. Re-running a resolved domain's address back
+     * through `KaspaAddress.isValid` was the bug behind "KNS domains don't work in group mode" -
+     * it isn't wrong exactly, but it's a stricter, redundant check the 1:1 flow deliberately
+     * skips, and it was silently keeping "Add Address"/"Create" disabled even after a domain
+     * resolved successfully.
+     */
+    val isValid: Boolean get() = if (looksLikeDomain) resolvedAddress != null else KaspaAddress.isValid(trimmedText)
 }
 
 @Composable
@@ -6423,10 +6504,58 @@ fun GroupChatCreationFields(
     onGroupNameChange: (String) -> Unit,
     rows: List<GroupAddressRow>,
     onRowsChange: (List<GroupAddressRow>) -> Unit,
-    onScanRequested: (Int) -> Unit,
+    onScanRequested: (String) -> Unit,
+    onImportRequested: (String) -> Unit,
     errorMessage: String?,
     chatViewModel: ChatViewModel
 ) {
+    val clipboardManager = LocalClipboardManager.current
+
+    // The one member "card" expanded for editing (text field + Import/Paste/Scan + Add Address)
+    // - every other row shows collapsed (name/address + a remove button only). Tapping a
+    // collapsed row re-expands it; committing the expanded one via "Add Address" collapses it
+    // and expands a fresh blank row in its place. Resets whenever this composable enters
+    // composition fresh (i.e. every time group mode is toggled on), same as `rows` itself.
+    var editingRowId by remember { mutableStateOf(rows.firstOrNull()?.id) }
+
+    fun isValidRow(row: GroupAddressRow): Boolean = row.isValid
+
+    fun commitRow(id: String) {
+        val row = rows.firstOrNull { it.id == id } ?: return
+        if (!isValidRow(row)) return
+        if (rows.size < MAX_GROUP_MEMBERS) {
+            val newRow = GroupAddressRow()
+            onRowsChange(rows + newRow)
+            editingRowId = newRow.id
+        } else {
+            editingRowId = null
+        }
+    }
+
+    fun setEditingRow(id: String) {
+        val currentId = editingRowId
+        if (currentId != null && currentId != id) {
+            val current = rows.firstOrNull { it.id == currentId }
+            if (current != null && current.trimmedText.isEmpty() && rows.size > 1) {
+                onRowsChange(rows.filterNot { it.id == currentId })
+            }
+        }
+        editingRowId = id
+    }
+
+    fun removeRow(id: String) {
+        val wasEditing = editingRowId == id
+        val newRows = rows.filterNot { it.id == id }
+        if (wasEditing) editingRowId = null
+        if (newRows.isEmpty() || (editingRowId == null && newRows.size < MAX_GROUP_MEMBERS)) {
+            val newRow = GroupAddressRow()
+            onRowsChange(newRows + newRow)
+            editingRowId = newRow.id
+        } else {
+            onRowsChange(newRows)
+        }
+    }
+
     Text(
         text = "Group Name",
         color = LocalAppColors.current.textPrimary,
@@ -6471,111 +6600,140 @@ fun GroupChatCreationFields(
             .padding(16.dp)
     ) {
         rows.forEachIndexed { index, row ->
-            if (index > 0) Spacer(modifier = Modifier.height(8.dp))
+            if (index > 0) Spacer(modifier = Modifier.height(12.dp))
 
             // Debounced KNS resolution for this row, independent of every other row.
             LaunchedEffect(row.text) {
                 val trimmed = row.text.trim()
                 if (trimmed.isEmpty() || !com.kachat.app.services.KnsService.looksLikeDomain(trimmed)) {
                     if (row.resolvedAddress != null || row.knsError != null || row.isResolvingKns) {
-                        onRowsChange(rows.toMutableList().also {
-                            if (index < it.size) it[index] = it[index].copy(resolvedAddress = null, knsError = null, isResolvingKns = false)
-                        })
+                        onRowsChange(rows.map { if (it.id == row.id) it.copy(resolvedAddress = null, knsError = null, isResolvingKns = false) else it })
                     }
                     return@LaunchedEffect
                 }
-                onRowsChange(rows.toMutableList().also {
-                    if (index < it.size) it[index] = it[index].copy(isResolvingKns = true, resolvedAddress = null, knsError = null)
-                })
+                onRowsChange(rows.map { if (it.id == row.id) it.copy(isResolvingKns = true, resolvedAddress = null, knsError = null) else it })
                 kotlinx.coroutines.delay(500)
                 val resolved = chatViewModel.resolveKnsDomain(trimmed)
-                onRowsChange(rows.toMutableList().also {
-                    if (index < it.size && it[index].trimmedText == trimmed) {
-                        it[index] = it[index].copy(
-                            isResolvingKns = false,
-                            resolvedAddress = resolved,
-                            knsError = if (resolved == null) "KNS domain not found" else null
-                        )
-                    }
+                onRowsChange(rows.map {
+                    if (it.id == row.id && it.trimmedText == trimmed) {
+                        it.copy(isResolvingKns = false, resolvedAddress = resolved, knsError = if (resolved == null) "KNS domain not found" else null)
+                    } else it
                 })
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextField(
-                    value = row.text,
-                    onValueChange = { newValue ->
-                        onRowsChange(rows.toMutableList().also { it[index] = it[index].copy(text = newValue) })
-                    },
-                    placeholder = { Text("kaspa:qr... or name.kas", color = Color.DarkGray) },
-                    modifier = Modifier.weight(1f),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedTextColor = LocalAppColors.current.textPrimary,
-                        unfocusedTextColor = LocalAppColors.current.textPrimary,
-                        cursorColor = KaspaTeal,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
-                    ),
-                    singleLine = true
-                )
-                if (rows.size > 1) {
-                    IconButton(onClick = {
-                        onRowsChange(rows.toMutableList().also { it.removeAt(index) })
-                    }) {
-                        Icon(Icons.Default.RemoveCircle, contentDescription = "Remove", tint = Color(0xFFFF3B30))
-                    }
-                }
-            }
-
-            if (row.trimmedText.isNotEmpty()) {
-                when {
-                    row.isResolvingKns -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = KaspaTeal, strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Resolving KNS domain…", color = LocalAppColors.current.textSecondary, fontSize = 12.sp)
-                    }
-                    row.knsError != null -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF3B30), modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(row.knsError, color = Color(0xFFFF3B30), fontSize = 12.sp)
-                    }
-                    row.looksLikeDomain && row.resolvedAddress != null -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CD964), modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Resolved: ${row.resolvedAddress.takeLast(12)}", color = Color(0xFF4CD964), fontSize = 12.sp)
-                    }
-                    !row.looksLikeDomain -> {
-                        val isValid = KaspaAddress.isValid(row.trimmedText)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                if (isValid) Icons.Default.CheckCircle else Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = if (isValid) Color(0xFF4CD964) else Color(0xFFFF3B30),
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                if (isValid) "Valid address" else "Invalid address format",
-                                color = if (isValid) Color(0xFF4CD964) else Color(0xFFFF3B30),
-                                fontSize = 12.sp
-                            )
+            if (row.id == editingRowId) {
+                // The one expanded "card": address field, then Import/Paste/Scan (same
+                // size/style as the single-contact flow), then Add Address to commit it and
+                // open the next blank slot.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextField(
+                        value = row.text,
+                        onValueChange = { newValue ->
+                            onRowsChange(rows.map { if (it.id == row.id) it.copy(text = newValue) else it })
+                        },
+                        placeholder = { Text("kaspa:qr... or name.kas", color = Color.DarkGray) },
+                        modifier = Modifier.weight(1f),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedTextColor = LocalAppColors.current.textPrimary,
+                            unfocusedTextColor = LocalAppColors.current.textPrimary,
+                            cursorColor = KaspaTeal,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent
+                        ),
+                        singleLine = true
+                    )
+                    if (rows.size > 1) {
+                        IconButton(onClick = { removeRow(row.id) }) {
+                            Icon(Icons.Default.RemoveCircle, contentDescription = "Remove", tint = Color(0xFFFF3B30))
                         }
                     }
                 }
-            }
-        }
 
-        if (rows.size < MAX_GROUP_MEMBERS) {
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                CreateChatActionItem(Icons.Default.Add, "Add Address") {
-                    onRowsChange(rows + GroupAddressRow())
+                if (row.trimmedText.isNotEmpty() || row.knsError != null) {
+                    when {
+                        row.isResolvingKns -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), color = KaspaTeal, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Resolving KNS domain…", color = LocalAppColors.current.textSecondary, fontSize = 12.sp)
+                        }
+                        row.knsError != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF3B30), modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(row.knsError, color = Color(0xFFFF3B30), fontSize = 12.sp)
+                        }
+                        row.looksLikeDomain && row.resolvedAddress != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CD964), modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Resolved: ${row.resolvedAddress.takeLast(12)}", color = Color(0xFF4CD964), fontSize = 12.sp)
+                        }
+                        !row.looksLikeDomain -> {
+                            val isValid = KaspaAddress.isValid(row.trimmedText)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    if (isValid) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = if (isValid) Color(0xFF4CD964) else Color(0xFFFF3B30),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    if (isValid) "Valid address" else "Invalid address format",
+                                    color = if (isValid) Color(0xFF4CD964) else Color(0xFFFF3B30),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
                 }
-                CreateChatActionItem(Icons.Default.QrCodeScanner, "Scan QR Code") {
-                    val newRows = rows + GroupAddressRow()
-                    onRowsChange(newRows)
-                    onScanRequested(newRows.size - 1)
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = LocalAppColors.current.divider)
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                    CreateChatActionItem(Icons.Default.PersonAddAlt1, "Import") {
+                        onImportRequested(row.id)
+                    }
+                    CreateChatActionItem(Icons.Default.ContentPaste, "Paste") {
+                        clipboardManager.getText()?.text?.let { pasted ->
+                            onRowsChange(rows.map { if (it.id == row.id) it.copy(text = pasted.trim()) else it })
+                        }
+                    }
+                    CreateChatActionItem(Icons.Default.QrCodeScanner, "Scan QR") {
+                        onScanRequested(row.id)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = { commitRow(row.id) },
+                    enabled = isValidRow(row),
+                    colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal, disabledContainerColor = LocalAppColors.current.surfaceVariant),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Add Address", color = if (isValidRow(row)) Color.Black else Color.Gray, fontWeight = FontWeight.Bold)
+                }
+            } else {
+                // Committed: collapsed to a single row - tap the name/address to edit it again,
+                // or tap the red button to remove it outright.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { setEditingRow(row.id) },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = row.trimmedText,
+                        color = LocalAppColors.current.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = { removeRow(row.id) }) {
+                        Icon(Icons.Default.RemoveCircle, contentDescription = "Remove", tint = Color(0xFFFF3B30))
+                    }
                 }
             }
         }

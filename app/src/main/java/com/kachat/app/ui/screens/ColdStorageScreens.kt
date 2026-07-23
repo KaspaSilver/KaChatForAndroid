@@ -2,6 +2,7 @@ package com.kachat.app.ui.screens
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -80,6 +81,8 @@ fun ColdStorageListScreen(
     val accounts by viewModel.accounts.collectAsState()
     val importState by viewModel.importState.collectAsState()
     var showScanner by remember { mutableStateOf(false) }
+    var showManualEntry by remember { mutableStateOf(false) }
+    var manualKpubInput by remember { mutableStateOf("") }
     var pendingKpub by remember { mutableStateOf<String?>(null) }
     var nameInput by remember { mutableStateOf("") }
     val clipboardManager = LocalClipboardManager.current
@@ -128,21 +131,37 @@ fun ColdStorageListScreen(
         },
         floatingActionButtonPosition = FabPosition.Center,
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showScanner = true },
-                containerColor = KaspaTeal,
-                contentColor = Color.Black,
-                shape = RoundedCornerShape(28.dp),
-                modifier = Modifier
-                    .height(56.dp)
-                    .widthIn(min = 120.dp)
+            // Matches iOS's ColdStorageListView: "Paste kpub" (outlined, secondary) and "Scan"
+            // (filled, primary) side by side at the bottom, instead of a single centered FAB.
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
             ) {
-                Text(
-                    "Scan",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.semantics { contentDescription = "Scan kpub from KasSigner" }
-                )
+                OutlinedButton(
+                    onClick = {
+                        manualKpubInput = ""
+                        showManualEntry = true
+                    },
+                    modifier = Modifier.weight(1f).height(56.dp),
+                    shape = RoundedCornerShape(28.dp),
+                    border = BorderStroke(1.5.dp, KaspaTeal),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = KaspaTeal)
+                ) {
+                    Text("Paste kpub", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Button(
+                    onClick = { showScanner = true },
+                    modifier = Modifier.weight(1f).height(56.dp),
+                    shape = RoundedCornerShape(28.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal, contentColor = Color.Black)
+                ) {
+                    Text(
+                        "Scan",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.semantics { contentDescription = "Scan kpub from KasSigner" }
+                    )
+                }
             }
         }
     ) { padding ->
@@ -210,6 +229,58 @@ fun ColdStorageListScreen(
         }
     }
 
+    if (showManualEntry) {
+        AlertDialog(
+            onDismissRequest = { showManualEntry = false },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Enter kpub", color = LocalAppColors.current.textPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "Paste the kpub exported from your KasSigner device. This contains no private key material.",
+                        color = LocalAppColors.current.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = manualKpubInput,
+                        onValueChange = { manualKpubInput = it },
+                        label = { Text("kpub...") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = LocalAppColors.current.textPrimary,
+                            unfocusedTextColor = LocalAppColors.current.textPrimary,
+                            focusedBorderColor = KaspaTeal,
+                            unfocusedBorderColor = LocalAppColors.current.textSecondary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = manualKpubInput.trim().isNotEmpty(),
+                    onClick = {
+                        val trimmed = manualKpubInput.trim()
+                        showManualEntry = false
+                        // Feeds the same pendingKpub/nameInput -> import AlertDialog flow the QR
+                        // scanner already uses below - scan vs. paste only differ in how the raw
+                        // kpub string is obtained, not in how it's validated/named/imported.
+                        pendingKpub = trimmed
+                        nameInput = "Cold Storage ${accounts.size + 1}"
+                    }
+                ) {
+                    Text("Next", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showManualEntry = false }) {
+                    Text("Cancel", color = LocalAppColors.current.textSecondary)
+                }
+            }
+        )
+    }
+
     if (pendingKpub != null) {
         val kpub = pendingKpub!!
         val isInvalid = importState.status == ColdStorageViewModel.ImportStatus.INVALID_KPUB
@@ -220,7 +291,7 @@ fun ColdStorageListScreen(
             text = {
                 Column {
                     Text(
-                        "Scanned: ${kpub.take(24)}…",
+                        "kpub: ${kpub.take(24)}…",
                         color = LocalAppColors.current.textSecondary,
                         style = MaterialTheme.typography.bodySmall
                     )

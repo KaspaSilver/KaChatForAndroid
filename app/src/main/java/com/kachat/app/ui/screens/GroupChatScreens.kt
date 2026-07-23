@@ -4,14 +4,20 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,6 +41,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -44,9 +51,11 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -61,6 +70,7 @@ import com.kachat.app.util.ChatTimeFormat
 import com.kachat.app.util.ImageMessage
 import com.kachat.app.util.VoiceMessage
 import com.kachat.app.viewmodels.ChatViewModel
+import kotlinx.coroutines.launch
 
 /** Parses a [com.kachat.app.models.GroupEntity]'s stored roster JSON, or empty on failure - shared by every screen below instead of each re-implementing the same try/catch. */
 private fun parseGroupMembers(group: com.kachat.app.models.GroupEntity): List<GroupMember> {
@@ -85,7 +95,8 @@ fun GroupChatThreadScreen(
     navController: NavController,
     groupId: String,
     chatViewModel: ChatViewModel = hiltViewModel(),
-    walletViewModel: com.kachat.app.viewmodels.WalletViewModel = hiltViewModel()
+    walletViewModel: com.kachat.app.viewmodels.WalletViewModel = hiltViewModel(),
+    settingsViewModel: com.kachat.app.viewmodels.SettingsViewModel = hiltViewModel()
 ) {
     val myAddress by walletViewModel.address.collectAsState()
     val myKnsProfile by walletViewModel.knsProfile.collectAsState()
@@ -96,15 +107,33 @@ fun GroupChatThreadScreen(
     val contactAliasesByAddress by chatViewModel.contactAliasesByAddress.collectAsState()
     val pendingPhotoUri by chatViewModel.groupPendingPhotoUri.collectAsState()
     val voiceRecordingState by chatViewModel.groupVoiceRecordingState.collectAsState()
-    val estimatedFee by chatViewModel.groupEstimatedFeeSompi.collectAsState()
+    val showFeeEstimate by settingsViewModel.showFeeEstimate.collectAsState()
+    val estimatedFeeRaw by chatViewModel.groupEstimatedFeeSompi.collectAsState()
+    val estimatedFee = if (showFeeEstimate) estimatedFeeRaw else null
+    val networkFeeRate by chatViewModel.networkFeeRate.collectAsState()
+    val feeRateOverride by chatViewModel.feeRateOverride.collectAsState()
     var draft by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showComposerMenu by remember { mutableStateOf(false) }
     var composerMenuAnchor by remember { mutableStateOf(Offset.Zero) }
+    var showFeeEditor by remember { mutableStateOf(false) }
+    var feeEditorInput by remember { mutableStateOf("") }
+    val effectiveRate = feeRateOverride?.toDouble() ?: networkFeeRate
+    val openFeeEditor: (Long) -> Unit = { currentFeeSompi ->
+        feeEditorInput = "%.8f".format(java.util.Locale.US, currentFeeSompi / 100_000_000.0)
+        showFeeEditor = true
+    }
     val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
+    // Swipe-left-to-reveal-timestamps (iMessage-style) — same implementation as 1:1/broadcast
+    // rooms (see ChatThreadScreen in Screens.kt), kept in sync with it.
+    val revealOffsetPx = remember { Animatable(0f) }
+    val maxRevealOffsetPx = with(LocalDensity.current) { 64.dp.toPx() }
 
     LaunchedEffect(Unit) {
         chatViewModel.refreshUtxos()
+        chatViewModel.markGroupRead(groupId)
     }
     LaunchedEffect(draft) {
         chatViewModel.setGroupMessageText(draft)
@@ -181,7 +210,7 @@ fun GroupChatThreadScreen(
                 ) {
                     if (pendingPhotoUri != null) {
                         Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                            groupFeePill(estimatedFee)
+                            groupFeePill(estimatedFee, onClick = { openFeeEditor(estimatedFee ?: 0L) })
                             groupPhotoPreviewRow(
                                 pendingPhotoUri = pendingPhotoUri,
                                 onCancel = { chatViewModel.cancelGroupPendingPhoto() },
@@ -190,7 +219,7 @@ fun GroupChatThreadScreen(
                         }
                     } else if (voiceRecordingState.status == ChatViewModel.VoiceRecordingStatus.RECORDING) {
                         Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                            groupFeePill(estimatedFee)
+                            groupFeePill(estimatedFee, onClick = { openFeeEditor(estimatedFee ?: 0L) })
                             groupRecordingRow(
                                 elapsedMs = voiceRecordingState.elapsedMs,
                                 onCancel = { chatViewModel.cancelGroupVoiceRecording() },
@@ -201,7 +230,11 @@ fun GroupChatThreadScreen(
                         Column(modifier = Modifier.fillMaxWidth()) {
                         if (estimatedFee != null && draft.isNotEmpty()) {
                             Box(modifier = Modifier.fillMaxWidth()) {
-                                groupFeePill(estimatedFee, modifier = Modifier.align(Alignment.Center))
+                                groupFeePill(
+                                    estimatedFee,
+                                    modifier = Modifier.align(Alignment.Center),
+                                    onClick = { openFeeEditor(estimatedFee ?: 0L) }
+                                )
                             }
                         }
                         Row(verticalAlignment = Alignment.Bottom) {
@@ -273,44 +306,134 @@ fun GroupChatThreadScreen(
             }
         }
     ) { padding ->
-        LazyColumn(
-            state = listState,
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(messages, key = { it.txId }) { message ->
-                GroupMessageBubble(
-                    message = message,
-                    group = group,
-                    avatarUrl = message.senderAddress?.let { contactAvatarsByAddress[it] },
-                    liveAlias = message.senderAddress?.let { contactAliasesByAddress[it] },
-                    myAddress = myAddress,
-                    myAvatarUrl = myKnsProfile?.avatarUrl,
-                    navController = navController,
-                    onRetry = { chatViewModel.retryGroupMessage(groupId, message.content) }
+                .draggable(
+                    orientation = Orientation.Horizontal,
+                    state = rememberDraggableState { delta ->
+                        coroutineScope.launch {
+                            revealOffsetPx.snapTo((revealOffsetPx.value + delta).coerceIn(-maxRevealOffsetPx, 0f))
+                        }
+                    },
+                    onDragStopped = { coroutineScope.launch { revealOffsetPx.animateTo(0f) } }
                 )
+        ) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                itemsIndexed(messages, key = { _, msg -> msg.txId }) { index, message ->
+                    if (index == 0 || !ChatTimeFormat.isSameDay(messages[index - 1].blockTimestamp, message.blockTimestamp)) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                            Surface(color = LocalAppColors.current.surface, shape = RoundedCornerShape(12.dp)) {
+                                Text(
+                                    ChatTimeFormat.formatDateDivider(message.blockTimestamp),
+                                    color = LocalAppColors.current.textSecondary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                    GroupMessageBubble(
+                        message = message,
+                        group = group,
+                        avatarUrl = message.senderAddress?.let { contactAvatarsByAddress[it] },
+                        liveAlias = message.senderAddress?.let { contactAliasesByAddress[it] },
+                        myAddress = myAddress,
+                        myAvatarUrl = myKnsProfile?.avatarUrl,
+                        navController = navController,
+                        onRetry = { chatViewModel.retryGroupMessage(groupId, message.content) },
+                        revealOffsetPx = revealOffsetPx,
+                        maxRevealOffsetPx = maxRevealOffsetPx
+                    )
+                }
             }
         }
     }
+
+    if (showFeeEditor) {
+        AlertDialog(
+            onDismissRequest = { showFeeEditor = false },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Adjust Network Fee", color = LocalAppColors.current.textPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "If the network is busy, a higher fee can help your transaction confirm faster.",
+                        color = LocalAppColors.current.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = feeEditorInput,
+                        onValueChange = { feeEditorInput = it },
+                        label = { Text("Fee (KAS)") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = LocalAppColors.current.textPrimary,
+                            unfocusedTextColor = LocalAppColors.current.textPrimary,
+                            focusedBorderColor = KaspaTeal,
+                            unfocusedBorderColor = LocalAppColors.current.textSecondary,
+                            focusedLabelColor = KaspaTeal,
+                            unfocusedLabelColor = LocalAppColors.current.textSecondary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val kas = feeEditorInput.toDoubleOrNull()
+                    val currentFeeSompi = estimatedFeeRaw ?: 0L
+                    if (kas != null && kas > 0 && currentFeeSompi > 0 && effectiveRate > 0) {
+                        val impliedMass = currentFeeSompi / effectiveRate
+                        val desiredFeeSompi = Math.round(kas * 100_000_000.0)
+                        chatViewModel.setFeeRateOverride(kotlin.math.ceil(desiredFeeSompi / impliedMass).toLong())
+                    } else {
+                        chatViewModel.setFeeRateOverride(null)
+                    }
+                    showFeeEditor = false
+                }) {
+                    Text("Save", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { chatViewModel.setFeeRateOverride(null); showFeeEditor = false }) {
+                        Text("Use Default", color = LocalAppColors.current.textSecondary)
+                    }
+                    TextButton(onClick = { showFeeEditor = false }) {
+                        Text("Cancel", color = LocalAppColors.current.textSecondary)
+                    }
+                }
+            }
+        )
+    }
 }
 
-/** "fee: N KAS" pill above the composer, matching 1:1/broadcast's identical display (no click-to-edit override here - group has no fee-editor UI). */
+/** "fee: N KAS" pill above the composer, matching 1:1/broadcast's identical display - tappable to adjust, same "Adjust Network Fee" dialog as 1:1/broadcast (see [GroupChatThreadScreen]'s showFeeEditor state). */
 @Composable
-private fun groupFeePill(feeSompi: Long?, modifier: Modifier = Modifier) {
+private fun groupFeePill(feeSompi: Long?, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
     if (feeSompi == null) return
     Surface(
         color = LocalAppColors.current.surface,
         shape = RoundedCornerShape(12.dp),
-        modifier = modifier.padding(bottom = 8.dp)
+        modifier = modifier.padding(bottom = 8.dp).let { if (onClick != null) it.clickable(onClick = onClick) else it }
     ) {
         Text(
             text = "fee: ${ChatRepository.formatKas(feeSompi)} KAS",
             color = KaspaTeal,
             fontWeight = FontWeight.Bold,
             fontSize = 12.sp,
+            textDecoration = if (onClick != null) androidx.compose.ui.text.style.TextDecoration.Underline else null,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
         )
     }
@@ -411,7 +534,9 @@ private fun GroupMessageBubble(
     myAddress: String?,
     myAvatarUrl: String?,
     navController: NavController,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    revealOffsetPx: Animatable<Float, AnimationVector1D>,
+    maxRevealOffsetPx: Float
 ) {
     val isSent = message.isOutgoing
     // Prefers the live contact alias (kept current by refreshKnsProfilesForGroupMembers, e.g. a
@@ -432,8 +557,20 @@ private fun GroupMessageBubble(
     var menuAnchor by remember { mutableStateOf(Offset.Zero) }
     val canRetry = isSent && message.deliveryStatus == "failed"
 
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = remember(message.blockTimestamp) { ChatTimeFormat.formatMessageTime(message.blockTimestamp) },
+            color = LocalAppColors.current.textSecondary,
+            fontSize = 11.sp,
+            modifier = Modifier
+                .align(if (isSent) Alignment.CenterEnd else Alignment.CenterStart)
+                .padding(horizontal = 12.dp)
+                .alpha((-revealOffsetPx.value / maxRevealOffsetPx).coerceIn(0f, 1f))
+        )
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .offset { IntOffset(revealOffsetPx.value.toInt(), 0) },
         horizontalArrangement = if (isSent) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom
     ) {
@@ -512,6 +649,7 @@ private fun GroupMessageBubble(
             Spacer(modifier = Modifier.width(8.dp))
             groupAvatarButton(address = myAddress, avatarUrl = myAvatarUrl, fallbackText = "You", navController = navController)
         }
+    }
     }
 }
 

@@ -106,7 +106,9 @@ fun KaChatApp(
     pendingContactId: String? = null,
     onPendingContactHandled: () -> Unit = {},
     pendingChannelName: String? = null,
-    onPendingChannelHandled: () -> Unit = {}
+    onPendingChannelHandled: () -> Unit = {},
+    pendingGroupId: String? = null,
+    onPendingGroupHandled: () -> Unit = {}
 ) {
     val isLoggedIn by walletViewModel.isLoggedIn.collectAsState()
     val mnemonic by walletViewModel.mnemonic.collectAsState()
@@ -119,7 +121,9 @@ fun KaChatApp(
             pendingContactId = pendingContactId,
             onPendingContactHandled = onPendingContactHandled,
             pendingChannelName = pendingChannelName,
-            onPendingChannelHandled = onPendingChannelHandled
+            onPendingChannelHandled = onPendingChannelHandled,
+            pendingGroupId = pendingGroupId,
+            onPendingGroupHandled = onPendingGroupHandled
         )
     }
 }
@@ -132,7 +136,9 @@ fun MainShell(
     pendingContactId: String? = null,
     onPendingContactHandled: () -> Unit = {},
     pendingChannelName: String? = null,
-    onPendingChannelHandled: () -> Unit = {}
+    onPendingChannelHandled: () -> Unit = {},
+    pendingGroupId: String? = null,
+    onPendingGroupHandled: () -> Unit = {}
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -182,6 +188,14 @@ fun MainShell(
         if (pendingChannelName != null) {
             navController.navigate("broadcast_channel/$pendingChannelName")
             onPendingChannelHandled()
+        }
+    }
+
+    // Same idea for a group chat notification.
+    LaunchedEffect(pendingGroupId) {
+        if (pendingGroupId != null) {
+            navController.navigate("group_chat/$pendingGroupId")
+            onPendingGroupHandled()
         }
     }
 

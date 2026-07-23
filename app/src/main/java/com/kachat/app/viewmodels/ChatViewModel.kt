@@ -12,6 +12,7 @@ import com.kachat.app.models.BackupRetention
 import com.kachat.app.models.ContactEntity
 import com.kachat.app.models.Conversation
 import com.kachat.app.models.MessageEntity
+import com.kachat.app.repository.GroupConversation
 import com.kachat.app.services.ChatHistoryExportImportService
 import com.kachat.app.services.GoogleDriveBackupService
 import com.kachat.app.services.KnsProfileFields
@@ -825,6 +826,30 @@ class ChatViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /**
+     * Groups with their latest message, for the Group Chats tab's list (mirrors [conversations]'
+     * shape for 1:1 chats). Unlike 1:1 messages (already stored plaintext, so
+     * [com.kachat.app.repository.ChatRepository.getLatestMessages] is a plain DB query), group
+     * messages are stored encrypted and only decrypted on read via [GroupRepository.getMessages]
+     * - so "latest per group" has to decrypt each group's messages and take the max, not a single
+     * aggregate query.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val groupConversations: StateFlow<List<GroupConversation>> = groups.flatMapLatest { groupList ->
+        if (groupList.isEmpty()) {
+            flowOf(emptyList())
+        } else {
+            combine(groupList.map { group ->
+                groupRepository.getMessages(group.groupId).map { messages ->
+                    val lastReadAt = group.lastReadAt
+                    val unread = messages.count { !it.isOutgoing && (lastReadAt == null || it.blockTimestamp > lastReadAt) }
+                    val unreadCount = if (lastReadAt == null && !group.isAdmin) maxOf(unread, 1) else unread
+                    GroupConversation(group, messages.maxByOrNull { it.blockTimestamp }, unreadCount)
+                }
+            }) { conversations -> conversations.sortedByDescending { it.lastMessage?.blockTimestamp ?: 0L } }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /**
      * One-shot KNS resolve for a single group-member address row - unlike
      * [onCreateChatAddressChanged]/[knsResolvedAddress] (single shared StateFlow, fine for the
      * one-address Create Chat flow), the group member list can have up to 10 rows resolving
@@ -885,6 +910,10 @@ class ChatViewModel @Inject constructor(
     }
 
     fun getGroupMessages(groupId: String) = groupRepository.getMessages(groupId)
+
+    fun markGroupRead(groupId: String) {
+        viewModelScope.launch { groupRepository.markGroupRead(groupId) }
+    }
 
     fun sendGroupMessage(text: String, groupId: String, onError: (String) -> Unit = {}) {
         viewModelScope.launch {

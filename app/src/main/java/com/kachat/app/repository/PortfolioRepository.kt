@@ -8,15 +8,20 @@ import com.kachat.app.services.CoinGeckoApi
 import com.kachat.app.services.database.KaChatDatabase
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import java.io.File
 import java.text.SimpleDateFormat
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
+import java.util.SimpleTimeZone
+import java.util.TimeZone
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.abs
+import kotlin.math.roundToLong
 
 /**
  * KAS portfolio tracker — a manual buy/sell ledger plus current/historical price from
@@ -82,20 +87,76 @@ class PortfolioRepository @Inject constructor(
         }
     }
 
-    /** Builds the CSV in app-private cache and returns a content:// URI ready for a share sheet. */
+    // -------------------------------------------------------------------------
+    // CSV (CoinMarketCap "Transaction History" format)
+    // -------------------------------------------------------------------------
+    //
+    // Column order matches CoinMarketCap's portfolio Transaction History export exactly:
+    // Date (UTC±H:MM),Token,Type,Price (USD),Amount,Total value (USD),Fee,Fee Currency,Notes
+    // — so a file exported from CoinMarketCap imports here unmodified, and a file exported from
+    // here imports back into CoinMarketCap unmodified. Mirrors iOS's PortfolioViewModel exactly.
+
+    private val trackedToken = "KAS"
+
+    /**
+     * CoinMarketCap formats numeric columns with thousands-separator commas above 999 (e.g.
+     * "10,597.25", "6,093,184.09"), which plain toDouble() rejects outright — parsing every such
+     * row would otherwise silently fail and get skipped. Strips those before parsing.
+     */
+    private fun parseLenientDouble(raw: String): Double? =
+        raw.trim().replace(",", "").toDoubleOrNull()
+
+    private fun makeDateFormat(timeZone: TimeZone): SimpleDateFormat =
+        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply {
+            isLenient = false
+            this.timeZone = timeZone
+        }
+
+    /**
+     * CoinMarketCap bakes the exporting user's local UTC offset into the date column's own
+     * header name (e.g. "Date (UTC-4:00)") rather than into each row, so the offset has to be
+     * parsed once from the header before any row's timestamp can be interpreted correctly. Falls
+     * back to UTC if the header doesn't look like CoinMarketCap's (or is missing).
+     */
+    private fun parseHeaderUtcOffset(header: String): TimeZone {
+        val utcTimeZone = TimeZone.getTimeZone("UTC")
+        val utcIndex = header.indexOf("UTC", ignoreCase = true)
+        if (utcIndex == -1) return utcTimeZone
+        val afterUtc = utcIndex + 3
+        val closeParen = header.indexOf(')', afterUtc)
+        if (closeParen == -1) return utcTimeZone
+        val offsetString = header.substring(afterUtc, closeParen).trim()
+        val parts = offsetString.split(":")
+        if (parts.size != 2) return utcTimeZone
+        val hours = parts[0].toIntOrNull() ?: return utcTimeZone
+        val minutes = parts[1].toIntOrNull() ?: return utcTimeZone
+        val sign = if (offsetString.startsWith("-")) -1 else 1
+        val offsetMillis = sign * (abs(hours) * 3600 + minutes * 60) * 1000
+        return SimpleTimeZone(offsetMillis, "CMC-IMPORT")
+    }
+
+    /**
+     * Builds a CoinMarketCap-compatible CSV in app-private cache and returns a content:// URI
+     * ready for a share sheet. Rows are exported in ascending timestamp order, always in UTC
+     * (spelled out in the header) so re-importing never depends on the exporting device's local
+     * timezone. Fee / Fee Currency are written as zero/USD — the ledger doesn't keep fee as a
+     * separate line item; any fee captured at import time is already folded into Total value
+     * (USD).
+     */
     fun exportCsv(transactions: List<PortfolioTransactionEntity>): Uri {
         val exportDir = File(context.cacheDir, "portfolio_exports").apply { mkdirs() }
         val fileTimestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now()).replace(":", "-")
         val csvFile = File(exportDir, "kachat-portfolio-$fileTimestamp.csv")
 
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+        val dateFormat = makeDateFormat(TimeZone.getTimeZone("UTC"))
         val csv = buildString {
-            append("Type,Date,Quantity (KAS),Total (USD),Notes\n")
+            append("Date (UTC+0:00),Token,Type,Price (USD),Amount,Total value (USD),Fee,Fee Currency,Notes\n")
             transactions.sortedBy { it.timestampMillis }.forEach { tx ->
                 val kas = tx.amountSompi / 100_000_000.0
+                val price = if (kas != 0.0) tx.fiatValue / kas else 0.0
                 val date = dateFormat.format(Date(tx.timestampMillis))
                 val notes = (tx.notes ?: "").replace("\"", "\"\"")
-                append("${tx.type},$date,$kas,${tx.fiatValue},\"$notes\"\n")
+                append("\"$date\",\"$trackedToken\",\"${tx.type}\",\"$price\",\"$kas\",\"${tx.fiatValue}\",\"0.00\",\"USD\",\"$notes\"\n")
             }
         }
         csvFile.writeText(csv)
@@ -104,29 +165,63 @@ class PortfolioRepository @Inject constructor(
     }
 
     /**
-     * Parses a CSV in the format written by [exportCsv] (header + Type,Date,Quantity (KAS),Total
-     * (USD),Notes rows) and inserts each row as a new transaction. Malformed rows are skipped
-     * rather than aborting the whole import, since one bad line from a hand-edited file shouldn't
-     * cost the rest. Returns the number of rows successfully imported.
+     * Parses a CoinMarketCap "Transaction History" CSV — same column order [exportCsv] writes,
+     * so real CoinMarketCap exports import here directly too. Only rows for the tracked token
+     * (KAS) are imported; other tokens in a mixed-portfolio CMC export are silently skipped, as
+     * are malformed rows and unsupported Type values (only buy/sell are tracked). Fee is folded
+     * into Total value (USD) when the fee is itself denominated in USD — added for buys,
+     * subtracted for sells — since the ledger doesn't track fee as a separate line item. A row
+     * whose timestamp exactly matches an existing transaction replaces it in place (same id, new
+     * data) rather than adding a duplicate — re-importing a corrected or re-exported CSV updates
+     * the ledger instead of piling up copies. Returns the number of rows imported or replaced.
      */
     suspend fun importCsv(uri: Uri): Int {
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
-        val lines = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readLines() ?: emptyList()
+        val content = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: return 0
+        val lines = content.split("\r\n", "\n", "\r").toMutableList()
+        if (lines.isEmpty()) return 0
+        val header = lines.removeAt(0)
+        val dateFormat = makeDateFormat(parseHeaderUtcOffset(header))
+
+        val existing = database.portfolioDao().getTransactions().first()
+        val idByTimestamp = existing.associate { it.timestampMillis to it.id }.toMutableMap()
+
         var imported = 0
-        for (line in lines.drop(1)) {
+        for (line in lines) {
             if (line.isBlank()) continue
             val fields = parseCsvLine(line)
-            if (fields.size < 4) continue
-            val type = fields[0].trim().lowercase()
+            if (fields.size < 6) continue
+
+            val token = fields[1].trim()
+            if (!token.equals(trackedToken, ignoreCase = true)) continue
+
+            val type = fields[2].trim().lowercase()
             if (type != "buy" && type != "sell") continue
-            try {
-                val timestampMillis = dateFormat.parse(fields[1].trim())?.time ?: continue
-                val amountSompi = (fields[2].trim().toDouble() * 100_000_000).toLong()
-                val fiatValue = fields[3].trim().toDouble()
-                val notes = fields.getOrNull(4)?.takeIf { it.isNotEmpty() }
+            val timestampMillis = try { dateFormat.parse(fields[0].trim())?.time } catch (e: Exception) { null } ?: continue
+            val kas = parseLenientDouble(fields[4]) ?: continue
+            val totalValue = parseLenientDouble(fields[5]) ?: continue
+
+            var fiatValue = totalValue
+            if (fields.size > 7) {
+                val feeCurrency = fields[7].trim()
+                if (feeCurrency.equals("USD", ignoreCase = true)) {
+                    val fee = parseLenientDouble(fields[6])
+                    if (fee != null) {
+                        fiatValue = if (type == "buy") fiatValue + fee else maxOf(fiatValue - fee, 0.0)
+                    }
+                }
+            }
+
+            val notes = if (fields.size > 8 && fields[8].isNotEmpty()) fields[8] else null
+            val amountSompi = (kas * 100_000_000).roundToLong()
+
+            val existingId = idByTimestamp[timestampMillis]
+            if (existingId != null) {
+                updateTransaction(existingId, type, amountSompi, fiatValue, timestampMillis, notes)
+            } else {
+                val newId = UUID.randomUUID().toString()
                 database.portfolioDao().insert(
                     PortfolioTransactionEntity(
-                        id = UUID.randomUUID().toString(),
+                        id = newId,
                         type = type,
                         amountSompi = amountSompi,
                         fiatValue = fiatValue,
@@ -134,10 +229,9 @@ class PortfolioRepository @Inject constructor(
                         notes = notes
                     )
                 )
-                imported++
-            } catch (e: Exception) {
-                continue
+                idByTimestamp[timestampMillis] = newId
             }
+            imported++
         }
         return imported
     }

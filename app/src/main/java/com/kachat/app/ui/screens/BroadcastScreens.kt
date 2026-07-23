@@ -562,8 +562,10 @@ fun BroadcastChannelScreen(
     onBack: () -> Unit,
     navController: NavController,
     broadcastViewModel: BroadcastViewModel = hiltViewModel(),
-    walletViewModel: WalletViewModel = hiltViewModel()
+    walletViewModel: WalletViewModel = hiltViewModel(),
+    settingsViewModel: com.kachat.app.viewmodels.SettingsViewModel = hiltViewModel()
 ) {
+    val showFeeEstimate by settingsViewModel.showFeeEstimate.collectAsState()
     val messages by broadcastViewModel.getMessages(channelName).collectAsState(initial = emptyList())
     val myAddress by walletViewModel.address.collectAsState()
     val sendState by broadcastViewModel.sendBroadcastState.collectAsState()
@@ -703,7 +705,7 @@ fun BroadcastChannelScreen(
                     }
                 }
                 if (voiceRecordingState.status == BroadcastViewModel.VoiceRecordingStatus.RECORDING) {
-                    if (estimatedFee != null) {
+                    if (showFeeEstimate && estimatedFee != null) {
                         Surface(
                             color = LocalAppColors.current.surface,
                             shape = RoundedCornerShape(12.dp),
@@ -749,7 +751,7 @@ fun BroadcastChannelScreen(
                         }
                     }
                 } else {
-                    if (estimatedFee != null && messageText.isNotEmpty()) {
+                    if (showFeeEstimate && estimatedFee != null && messageText.isNotEmpty()) {
                         Surface(
                             color = LocalAppColors.current.surface,
                             shape = RoundedCornerShape(12.dp),

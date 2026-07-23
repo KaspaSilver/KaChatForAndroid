@@ -36,6 +36,8 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     val notificationVibrationEnabled = settings.notificationVibrationEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val showFeeEstimate = settings.showFeeEstimate
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
     fun saveNetwork(value: String) = viewModelScope.launch { settings.setNetwork(value) }
     fun saveIndexerUrl(value: String) = viewModelScope.launch { settings.setIndexerUrl(value) }
@@ -44,4 +46,5 @@ class SettingsViewModel @Inject constructor(
     fun setNotificationsEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationsEnabled(value) }
     fun setNotificationSoundEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationSoundEnabled(value) }
     fun setNotificationVibrationEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationVibrationEnabled(value) }
+    fun setShowFeeEstimate(value: Boolean) = viewModelScope.launch { settings.setShowFeeEstimate(value) }
 }

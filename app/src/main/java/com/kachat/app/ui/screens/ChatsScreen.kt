@@ -9,6 +9,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
@@ -71,13 +73,16 @@ import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
+import com.kachat.app.repository.GroupConversation
+import com.kachat.app.repository.GroupMessage
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
  * Chats tab — conversation list.
  * Phase 4 will wire this up to ChatService / ChatViewModel.
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun ChatsScreen(
     navController: NavController, 
@@ -89,11 +94,13 @@ fun ChatsScreen(
     val dotColorHex by connectionViewModel.dotColorHex.collectAsState()
     val hiddenTabs by walletViewModel.hiddenTabs.collectAsState()
     val conversations by chatViewModel.conversations.collectAsState()
+    val groupConversations by chatViewModel.groupConversations.collectAsState()
     val isRefreshing by chatViewModel.isRefreshing.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
     var isSelectionMode by remember { mutableStateOf(false) }
     var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var groupToDelete by remember { mutableStateOf<String?>(null) }
+    val pagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
+    val tabCoroutineScope = rememberCoroutineScope()
 
     // Matches on whatever's already shown per row — display name/alias, KNS domain, the raw
     // address (so pasting/typing part of an address you recognize still finds it), and the last
@@ -225,103 +232,30 @@ fun ChatsScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                 }
 
-                // Outside the padded inner Column above — sharing the same unpadded layout
-                // context as ConversationRow below (in the un-padded LazyColumn) so this row's
-                // avatar size/position and divider match the real chat rows exactly, pixel for
-                // pixel, rather than sitting inset an extra 16dp from the wrapping Column's own
-                // horizontal padding.
-                if ("broadcasts" !in hiddenTabs) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { navController.navigate("broadcasts") }
-                            .padding(horizontal = 16.dp, vertical = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(LocalAppColors.current.surface),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.RssFeed,
-                                contentDescription = null,
-                                tint = KaspaTeal,
-                                modifier = Modifier.size(24.dp)
-                            )
+                val chatsUnreadCount = conversations.sumOf { it.unreadCount }
+                val groupsUnreadCount = groupConversations.sumOf { it.unreadCount }
+                TabRow(
+                    selectedTabIndex = pagerState.currentPage,
+                    containerColor = LocalAppColors.current.background,
+                    contentColor = KaspaTeal
+                ) {
+                    Tab(
+                        selected = pagerState.currentPage == 0,
+                        onClick = { tabCoroutineScope.launch { pagerState.animateScrollToPage(0) } },
+                        text = {
+                            TabBadge(count = chatsUnreadCount) {
+                                Text("Chats", fontWeight = FontWeight.Bold)
+                            }
                         }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Text(
-                            text = "Broadcasts",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = LocalAppColors.current.textPrimary,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Icon(
-                            imageVector = Icons.Default.ChevronRight,
-                            contentDescription = null,
-                            tint = LocalAppColors.current.textSecondary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    HorizontalDivider(
-                        modifier = Modifier.padding(start = 72.dp),
-                        color = Color.DarkGray.copy(alpha = 0.5f)
                     )
-                }
-
-                val groups by chatViewModel.groups.collectAsState()
-                groups.forEach { group ->
-                    SwipeActionRow(
-                        trailingIcon = Icons.Default.Delete,
-                        trailingLabel = "Delete",
-                        trailingColor = Color(0xFFFF3B30),
-                        onTrailingClick = { groupToDelete = group.groupId }
-                    ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(LocalAppColors.current.background)
-                            .clickable { navController.navigate("group_chat/${group.groupId}") }
-                            .padding(horizontal = 16.dp, vertical = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(LocalAppColors.current.surface),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Groups,
-                                contentDescription = null,
-                                tint = KaspaTeal,
-                                modifier = Modifier.size(24.dp)
-                            )
+                    Tab(
+                        selected = pagerState.currentPage == 1,
+                        onClick = { tabCoroutineScope.launch { pagerState.animateScrollToPage(1) } },
+                        text = {
+                            TabBadge(count = groupsUnreadCount) {
+                                Text("Group Chats", fontWeight = FontWeight.Bold)
+                            }
                         }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Text(
-                            text = group.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = LocalAppColors.current.textPrimary,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Icon(
-                            imageVector = Icons.Default.ChevronRight,
-                            contentDescription = null,
-                            tint = LocalAppColors.current.textSecondary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    }
-                    HorizontalDivider(
-                        modifier = Modifier.padding(start = 72.dp),
-                        color = Color.DarkGray.copy(alpha = 0.5f)
                     )
                 }
             }
@@ -381,58 +315,75 @@ fun ChatsScreen(
             }
         }
     ) { padding ->
-        Box(
+        // Tap-only (userScrollEnabled = false), not swipeable - a draggable pager here would
+        // fight the row-level swipe-to-delete/mark-read gestures on both the Chats and Group
+        // Chats lists. Tab taps still drive it via pagerState.animateScrollToPage above.
+        HorizontalPager(
+            state = pagerState,
+            userScrollEnabled = false,
+            modifier = Modifier.fillMaxSize().padding(padding)
+        ) { page ->
+        when (page) {
+            1 -> GroupListBody(navController = navController, groupConversations = groupConversations, onDeleteGroup = { chatViewModel.deleteGroupChat(it) })
+            else -> Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
                 .pullRefresh(pullRefreshState)
         ) {
             if (conversations.isEmpty()) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.fillMaxSize().padding(bottom = 100.dp)
-                ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_kachat_logo),
-                        contentDescription = null,
-                        modifier = Modifier.size(120.dp),
-                        alpha = 0.5f // Dimmed logo like in screenshot
-                    )
-                    Spacer(Modifier.height(24.dp))
-                    Text(
-                        text = "No Conversations Yet",
-                        style = MaterialTheme.typography.headlineSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = LocalAppColors.current.textPrimary
-                        )
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        text = "Start a new chat by adding a contact",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = LocalAppColors.current.textSecondary,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(Modifier.height(32.dp))
-                    Button(
-                        onClick = { navController.navigate("create_chat") },
-                        colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.height(48.dp).padding(horizontal = 24.dp)
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Shown here too (not just in the real conversation list below) so a
+                    // brand-new account with zero 1:1 chats doesn't lose access to Broadcasts
+                    // until their first conversation exists.
+                    if ("broadcasts" !in hiddenTabs) {
+                        BroadcastsEntryRow(onClick = { navController.navigate("broadcasts") })
+                    }
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxWidth().weight(1f).padding(bottom = 100.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.PersonAddAlt1,
-                                contentDescription = null,
-                                tint = Color.Black
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_kachat_logo),
+                            contentDescription = null,
+                            modifier = Modifier.size(120.dp),
+                            alpha = 0.5f // Dimmed logo like in screenshot
+                        )
+                        Spacer(Modifier.height(24.dp))
+                        Text(
+                            text = "No Conversations Yet",
+                            style = MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = LocalAppColors.current.textPrimary
                             )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "Add Contact",
-                                color = Color.Black,
-                                fontWeight = FontWeight.Bold
-                            )
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "Start a new chat by adding a contact",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = LocalAppColors.current.textSecondary,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(32.dp))
+                        Button(
+                            onClick = { navController.navigate("create_chat") },
+                            colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.height(48.dp).padding(horizontal = 24.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.PersonAddAlt1,
+                                    contentDescription = null,
+                                    tint = Color.Black
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "Add Contact",
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }
@@ -464,6 +415,14 @@ fun ChatsScreen(
                 var contactToDelete by remember { mutableStateOf<String?>(null) }
 
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    // Restored to its original placement: a row inside the Chats list itself (so
+                    // it reads as "just another chat"), not a standalone element above the tabs -
+                    // only shown while not searching, matching iOS.
+                    if ("broadcasts" !in hiddenTabs && searchQuery.isBlank()) {
+                        item {
+                            BroadcastsEntryRow(onClick = { navController.navigate("broadcasts") })
+                        }
+                    }
                     items(filteredConversations, key = { it.contact.id }) { convo ->
                         SwipeActionRow(
                             enabled = !isSelectionMode,
@@ -514,6 +473,16 @@ fun ChatsScreen(
                             }
                         }
                     }
+                    item {
+                        val chatCount = conversations.size
+                        Text(
+                            text = "$chatCount ${if (chatCount == 1) "chat" else "chats"}",
+                            color = LocalAppColors.current.textSecondary,
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
+                        )
+                    }
                 }
 
                 contactToDelete?.let { contactId ->
@@ -545,36 +514,8 @@ fun ChatsScreen(
                     )
                 }
 
-                groupToDelete?.let { groupId ->
-                    val groups by chatViewModel.groups.collectAsState()
-                    val groupName = groups.firstOrNull { it.groupId == groupId }?.name ?: "this group"
-                    AlertDialog(
-                        onDismissRequest = { groupToDelete = null },
-                        containerColor = LocalAppColors.current.surface,
-                        title = { Text("Delete \"$groupName\"", color = LocalAppColors.current.textPrimary) },
-                        text = {
-                            Text(
-                                "This removes the group and its messages from this device. This cannot be undone, and other members won't be notified.",
-                                color = LocalAppColors.current.textSecondary
-                            )
-                        },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                chatViewModel.deleteGroupChat(groupId)
-                                groupToDelete = null
-                            }) {
-                                Text("Delete", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { groupToDelete = null }) {
-                                Text("Cancel", color = LocalAppColors.current.textSecondary)
-                            }
-                        }
-                    )
-                }
             }
-            
+
             PullRefreshIndicator(
                 refreshing = isRefreshing,
                 state = pullRefreshState,
@@ -584,7 +525,223 @@ fun ChatsScreen(
             )
 
         }
+        }
+        }
     }
+}
+
+/** Small unread-count badge for the Chats/Group Chats tab labels - hidden entirely when count is 0. */
+@Composable
+private fun TabBadge(count: Int, content: @Composable () -> Unit) {
+    BadgedBox(
+        badge = {
+            if (count > 0) {
+                Badge(containerColor = Color(0xFFFF3B30)) {
+                    Text(if (count > 99) "99+" else count.toString())
+                }
+            }
+        }
+    ) {
+        content()
+    }
+}
+
+/** The "Broadcasts" row inside the Chats list - shown both in the real conversation list and the empty state, so it's reachable regardless of whether the user has any 1:1 chats yet. */
+@Composable
+private fun BroadcastsEntryRow(onClick: () -> Unit) {
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(LocalAppColors.current.surface),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.RssFeed,
+                    contentDescription = null,
+                    tint = KaspaTeal,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Text(
+                text = "Broadcasts",
+                style = MaterialTheme.typography.titleMedium,
+                color = LocalAppColors.current.textPrimary,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = LocalAppColors.current.textSecondary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 72.dp),
+            color = Color.DarkGray.copy(alpha = 0.5f)
+        )
+    }
+}
+
+/**
+ * Group Chats tab content embedded in `ChatsScreen`'s pager - list of joined groups with their
+ * latest message, matching the 1:1 Chats page's row/footer/empty-state shape. Owns its own
+ * delete-confirmation dialog - previously nested inside the 1:1 conversation list's `else`
+ * branch, which meant it silently couldn't render whenever there were zero 1:1 chats; now
+ * self-contained regardless of what the Chats page shows.
+ */
+@Composable
+fun GroupListBody(
+    navController: NavController,
+    groupConversations: List<GroupConversation>,
+    onDeleteGroup: (String) -> Unit
+) {
+    var groupToDelete by remember { mutableStateOf<String?>(null) }
+
+    if (groupConversations.isEmpty()) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxSize().padding(bottom = 100.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Groups,
+                contentDescription = null,
+                tint = LocalAppColors.current.textSecondary,
+                modifier = Modifier.size(60.dp)
+            )
+            Spacer(Modifier.height(24.dp))
+            Text(
+                text = "No Group Chats Yet",
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    color = LocalAppColors.current.textPrimary
+                )
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "Start a group from the add-chat button",
+                style = MaterialTheme.typography.bodyLarge,
+                color = LocalAppColors.current.textSecondary,
+                textAlign = TextAlign.Center
+            )
+        }
+    } else {
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(groupConversations, key = { it.group.groupId }) { convo ->
+                SwipeActionRow(
+                    trailingIcon = Icons.Default.Delete,
+                    trailingLabel = "Delete",
+                    trailingColor = Color(0xFFFF3B30),
+                    onTrailingClick = { groupToDelete = convo.group.groupId }
+                ) {
+                    Column {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(LocalAppColors.current.background)
+                                .clickable { navController.navigate("group_chat/${convo.group.groupId}") }
+                                .padding(horizontal = 16.dp, vertical = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(LocalAppColors.current.surface),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Groups,
+                                    contentDescription = null,
+                                    tint = KaspaTeal,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = convo.group.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = LocalAppColors.current.textPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = groupMessagePreviewText(convo.lastMessage) ?: "No messages yet",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Color.Gray,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 88.dp),
+                            color = Color.DarkGray.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+            }
+            item {
+                val groupCount = groupConversations.size
+                Text(
+                    text = "$groupCount ${if (groupCount == 1) "group" else "groups"}",
+                    color = LocalAppColors.current.textSecondary,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
+                )
+            }
+        }
+    }
+
+    groupToDelete?.let { groupId ->
+        val groupName = groupConversations.firstOrNull { it.group.groupId == groupId }?.group?.name ?: "this group"
+        AlertDialog(
+            onDismissRequest = { groupToDelete = null },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Delete \"$groupName\"", color = LocalAppColors.current.textPrimary) },
+            text = {
+                Text(
+                    "This removes the group and its messages from this device. This cannot be undone, and other members won't be notified.",
+                    color = LocalAppColors.current.textSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteGroup(groupId)
+                    groupToDelete = null
+                }) {
+                    Text("Delete", color = Color(0xFFFF3B30), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { groupToDelete = null }) {
+                    Text("Cancel", color = LocalAppColors.current.textSecondary)
+                }
+            }
+        )
+    }
+}
+
+/** Mirrors [messagePreviewText] for group messages - no reply-attribution ("Alice replied to..."), since resolving a sender's alias here isn't worth the extra lookup for a one-line list preview. */
+private fun groupMessagePreviewText(message: GroupMessage?): String? {
+    val body = message?.content ?: return null
+    val replyContent = MessageReply.parseOrNull(body)
+    if (replyContent != null) return "Replied to \"${replyContent.replyToPreview}\""
+    if (VoiceMessage.parseOrNull(body) != null) return "🎤 Audio message"
+    if (ImageMessage.parseOrNull(body) != null) return "📷 Photo"
+    return body
 }
 
 /**

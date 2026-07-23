@@ -22,7 +22,13 @@ data class GroupEntity(
     val currentEpoch: Long,
     val createdAt: Long = System.currentTimeMillis(),
     val isAdmin: Boolean,
-    val membersJson: String            // JSON-encoded List<GroupMember>, see GroupRepository
+    val membersJson: String,           // JSON-encoded List<GroupMember>, see GroupRepository
+    /** Null until the group's thread has been opened at least once - drives the Group Chats tab
+     * badge (unread = messages newer than this, or the group itself if never opened at all and
+     * we're not the one who created it). Set via a dedicated UPDATE query (markGroupRead), not
+     * upsertGroup's REPLACE - upsertGroup call sites use entity.copy() for existing groups, so
+     * this is naturally preserved across roster/epoch updates and naturally null for new groups. */
+    val lastReadAt: Long? = null
 )
 
 /**

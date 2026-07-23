@@ -39,7 +39,7 @@ import com.kachat.app.models.SwapTransactionEntity
         GroupMessageEntity::class,
         GroupSyncCursorEntity::class,
     ],
-    version = 26,
+    version = 27,
     exportSchema = true
 )
 abstract class KaChatDatabase : RoomDatabase() {
@@ -257,6 +257,13 @@ abstract class KaChatDatabase : RoomDatabase() {
         val MIGRATION_25_26 = object : Migration(25, 26) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `group_sync_cursors` ADD COLUMN `cursor` TEXT DEFAULT NULL")
+            }
+        }
+
+        /** Backs the Group Chats tab's unread badge - see GroupEntity.lastReadAt's doc comment. */
+        val MIGRATION_26_27 = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `groups` ADD COLUMN `lastReadAt` INTEGER DEFAULT NULL")
             }
         }
     }

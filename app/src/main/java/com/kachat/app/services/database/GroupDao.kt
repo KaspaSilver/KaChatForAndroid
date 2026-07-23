@@ -24,6 +24,10 @@ interface GroupDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertGroup(group: GroupEntity)
 
+    /** Marks a group's thread as read as of now - backs the Group Chats tab's unread badge. */
+    @Query("UPDATE groups SET lastReadAt = :timestamp WHERE groupId = :groupId AND walletAddress = :walletAddress")
+    suspend fun markGroupRead(groupId: String, walletAddress: String, timestamp: Long)
+
     @Query("DELETE FROM groups WHERE groupId = :groupId AND walletAddress = :walletAddress")
     suspend fun deleteGroup(groupId: String, walletAddress: String)
 

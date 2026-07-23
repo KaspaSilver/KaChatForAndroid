@@ -62,6 +62,8 @@ class AppSettingsRepository @Inject constructor(
         val KEY_SYNC_SYSTEM_CONTACTS = booleanPreferencesKey("sync_system_contacts")
         val KEY_AUTOCREATE_SYSTEM_CONTACTS = booleanPreferencesKey("autocreate_system_contacts")
 
+        val KEY_SHOW_FEE_ESTIMATE = booleanPreferencesKey("show_fee_estimate")
+
         // A single in-flight KNS commit awaiting its reveal — see PendingKnsCommit.
         val KEY_PENDING_KNS_COMMIT = stringPreferencesKey("pending_kns_commit")
 
@@ -180,6 +182,10 @@ class AppSettingsRepository @Inject constructor(
         it[KEY_SYNC_SYSTEM_CONTACTS] ?: false
     }
 
+    val showFeeEstimate: Flow<Boolean> = dataStore.data.map {
+        it[KEY_SHOW_FEE_ESTIMATE] ?: true
+    }
+
     val autoCreateSystemContactsEnabled: Flow<Boolean> = dataStore.data.map {
         it[KEY_AUTOCREATE_SYSTEM_CONTACTS] ?: false
     }
@@ -252,6 +258,7 @@ class AppSettingsRepository @Inject constructor(
     suspend fun setBiometricAccountLoginEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] = value }
     suspend fun setSwapDisclaimerAgreed(value: Boolean) = dataStore.edit { it[KEY_SWAP_DISCLAIMER_AGREED] = value }
     suspend fun setNotificationsEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATIONS_ENABLED] = value }
+    suspend fun setShowFeeEstimate(value: Boolean) = dataStore.edit { it[KEY_SHOW_FEE_ESTIMATE] = value }
     suspend fun setNotificationSoundEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATION_SOUND] = value }
     suspend fun setNotificationVibrationEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATION_VIBRATION] = value }
     suspend fun setSyncSystemContactsEnabled(value: Boolean) = dataStore.edit { it[KEY_SYNC_SYSTEM_CONTACTS] = value }

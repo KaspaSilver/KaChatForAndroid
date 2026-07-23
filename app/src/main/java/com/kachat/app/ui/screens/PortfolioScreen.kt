@@ -40,7 +40,6 @@ import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.material.icons.filled.MonetizationOn
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Receipt
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.TrendingDown
 import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.AlertDialog
@@ -63,9 +62,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -80,6 +82,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.painterResource
@@ -144,9 +147,22 @@ fun PortfolioScreen(
     val priceRangeDays by viewModel.priceRangeDays.collectAsState()
     val valueHistory by viewModel.valueHistory.collectAsState()
     val summary by viewModel.summary.collectAsState()
+    val isRefreshing by viewModel.isRefreshingPortfolio.collectAsState()
     // (timestamp, price) while scrubbing the price sparkline above, null otherwise — lifted up
     // here (rather than kept local to PriceChartCard) since the summary card below needs it too.
     var scrubbedPrice by remember { mutableStateOf<Pair<Long, Double>?>(null) }
+    val pullRefreshState = rememberPullToRefreshState()
+
+    LaunchedEffect(pullRefreshState.isRefreshing) {
+        if (pullRefreshState.isRefreshing) {
+            viewModel.refreshPrice()
+        }
+    }
+    LaunchedEffect(isRefreshing) {
+        if (!isRefreshing && pullRefreshState.isRefreshing) {
+            pullRefreshState.endRefresh()
+        }
+    }
 
     Scaffold(
         containerColor = LocalAppColors.current.background,
@@ -158,42 +174,47 @@ fun PortfolioScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = KaspaTeal)
                     }
                 },
-                actions = {
-                    IconButton(onClick = { viewModel.refreshPrice() }) {
-                        Icon(Icons.Default.Refresh, "Refresh price", tint = KaspaTeal)
-                    }
-                },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = LocalAppColors.current.background)
             )
         }
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(12.dp)
-                // Still scrollable as a safety net (smaller phones, larger system font scale),
-                // but every element below is sized to comfortably fit a typical phone screen
-                // without needing it.
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .nestedScroll(pullRefreshState.nestedScrollConnection)
         ) {
-            PortfolioSummaryCard(summary = summary, currentPriceUsd = currentPriceUsd, scrubbedPrice = scrubbedPrice)
-            if (priceHistory.size >= 2) {
-                PriceChartCard(
-                    priceHistory = priceHistory,
-                    onScrub = { scrubbedPrice = it },
-                    selectedRangeDays = priceRangeDays,
-                    onRangeSelected = { viewModel.setPriceRangeDays(it) }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp)
+                    // Still scrollable as a safety net (smaller phones, larger system font scale),
+                    // but every element below is sized to comfortably fit a typical phone screen
+                    // without needing it.
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                PortfolioSummaryCard(summary = summary, currentPriceUsd = currentPriceUsd, scrubbedPrice = scrubbedPrice)
+                if (priceHistory.size >= 2) {
+                    PriceChartCard(
+                        priceHistory = priceHistory,
+                        onScrub = { scrubbedPrice = it },
+                        selectedRangeDays = priceRangeDays,
+                        onRangeSelected = { viewModel.setPriceRangeDays(it) }
+                    )
+                }
+                if (valueHistory.size >= 2) {
+                    PortfolioValueChartCard(valueHistory = valueHistory)
+                }
+                PortfolioNavRow(
+                    icon = Icons.Default.Receipt,
+                    label = "Transactions",
+                    onClick = { navController.navigate("portfolio_transactions") }
                 )
             }
-            if (valueHistory.size >= 2) {
-                PortfolioValueChartCard(valueHistory = valueHistory)
-            }
-            PortfolioNavRow(
-                icon = Icons.Default.Receipt,
-                label = "Transactions",
-                onClick = { navController.navigate("portfolio_transactions") }
+            PullToRefreshContainer(
+                state = pullRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
             )
         }
     }

@@ -28,12 +28,14 @@ class MainActivity : FragmentActivity() {
 
     private var pendingContactId by mutableStateOf<String?>(null)
     private var pendingChannelName by mutableStateOf<String?>(null)
+    private var pendingGroupId by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         pendingContactId = intent?.getStringExtra(NotificationHelper.EXTRA_CONTACT_ID)
         pendingChannelName = intent?.getStringExtra(NotificationHelper.EXTRA_CHANNEL_NAME)
+        pendingGroupId = intent?.getStringExtra(NotificationHelper.EXTRA_GROUP_ID)
         setContent {
             val walletViewModel: WalletViewModel = hiltViewModel()
             val darkModeEnabled by walletViewModel.darkModeEnabled.collectAsState()
@@ -46,7 +48,9 @@ class MainActivity : FragmentActivity() {
                         pendingContactId = pendingContactId,
                         onPendingContactHandled = { pendingContactId = null },
                         pendingChannelName = pendingChannelName,
-                        onPendingChannelHandled = { pendingChannelName = null }
+                        onPendingChannelHandled = { pendingChannelName = null },
+                        pendingGroupId = pendingGroupId,
+                        onPendingGroupHandled = { pendingGroupId = null }
                     )
                 }
             }
@@ -58,5 +62,6 @@ class MainActivity : FragmentActivity() {
         setIntent(intent)
         pendingContactId = intent.getStringExtra(NotificationHelper.EXTRA_CONTACT_ID)
         pendingChannelName = intent.getStringExtra(NotificationHelper.EXTRA_CHANNEL_NAME)
+        pendingGroupId = intent.getStringExtra(NotificationHelper.EXTRA_GROUP_ID)
     }
 }
