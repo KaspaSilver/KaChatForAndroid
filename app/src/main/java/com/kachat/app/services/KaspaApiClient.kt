@@ -160,7 +160,7 @@ data class PostTransactionResponse(
 )
 
 // -------------------------------------------------------------------------
-// Retrofit interface — Kasia Indexer API (indexer.kasia.fyi)
+// Retrofit interface — Kasia Indexer API (indexer.kasia.wtf)
 // Verified against the real indexer response shape and the Kasia web client's
 // actual query usage — payments/self-stash/bcast endpoints are out of scope
 // for now, only handshake + contextual-message (comm) receive is implemented.

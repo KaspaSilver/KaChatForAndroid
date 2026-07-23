@@ -34,7 +34,11 @@ class AppSettingsRepository @Inject constructor(
 
         // Defaults matching the iOS app
         const val DEFAULT_NETWORK        = "mainnet"
-        const val DEFAULT_INDEXER_URL    = "https://indexer.kasia.fyi"
+        const val DEFAULT_INDEXER_URL    = "https://indexer.kasia.wtf"
+        // Retired default - kasia.fyi doesn't run the group-chat REST endpoints
+        // (/group-messages/..., /group-control/...), only kasia.wtf does. See `indexerUrl`'s
+        // one-time migration off this value below.
+        const val LEGACY_DEFAULT_INDEXER_URL = "https://indexer.kasia.fyi"
         const val DEFAULT_KNS_API_URL    = "https://api.knsdomains.org/mainnet/api/v1"
         const val DEFAULT_KASPA_REST_URL = "https://api.kaspa.org"
 
@@ -113,8 +117,12 @@ class AppSettingsRepository @Inject constructor(
         it[KEY_NETWORK] ?: DEFAULT_NETWORK
     }
 
+    // Transforms away the retired kasia.fyi default on read (rather than requiring a one-time
+    // write-back migration) - anyone who saved settings before the indexer moved to kasia.wtf
+    // would otherwise stay stuck on kasia.fyi forever, which 404s on every group-chat REST call.
     val indexerUrl: Flow<String> = dataStore.data.map {
-        it[KEY_INDEXER_URL] ?: DEFAULT_INDEXER_URL
+        val stored = it[KEY_INDEXER_URL]
+        if (stored == null || stored == LEGACY_DEFAULT_INDEXER_URL) DEFAULT_INDEXER_URL else stored
     }
 
     val knsApiUrl: Flow<String> = dataStore.data.map {
