@@ -1,6 +1,7 @@
 package com.kachat.app.services
 
 import android.util.Log
+import com.kachat.app.repository.AppSettingsRepository
 import com.kachat.app.services.grpc.KaspadConnection
 import com.kachat.app.services.grpc.NodeRecord
 import com.kachat.app.services.grpc.NodeRegistry
@@ -17,6 +18,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
@@ -32,11 +34,30 @@ import javax.inject.Singleton
  * scoring, no network-epoch tracking, no hedged requests — see the "explicit
  * non-goals" section of the implementation plan): this drives a status *display*,
  * not a live routing decision under load.
+ *
+ * If the user pins a "host:port" node in Connection Settings
+ * ([AppSettingsRepository.trustedNodeAddress]), this switches to a Kaspium-style
+ * fixed-node mode instead: all discovery (seeds/DNS/peer-gossip) stops, and every
+ * connection this class hands out is that one address, with no automatic failover
+ * to a different node if it goes down (see [trustedNodeAddress]'s doc comment).
  */
 @Singleton
-class NodePoolManager @Inject constructor() {
+class NodePoolManager @Inject constructor(
+    private val settings: AppSettingsRepository
+) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val registry = NodeRegistry()
+
+    // Non-null (and non-blank) once the user pins a "host:port" node in Connection Settings -
+    // see the reactive collector in init(). When set, probeCycle()/getBroadcastConnection()
+    // both short-circuit to this single address, skipping seed/DNS/peer-gossip discovery
+    // entirely (Kaspium-style: one trusted node, no automatic failover to a different one).
+    private val trustedNodeAddress = MutableStateFlow<String?>(null)
+
+    // Bumped every time trusted mode is entered/left/re-targeted, so a probeCycle() whose
+    // network calls were still in flight when the switch happened can tell its own results are
+    // now stale and discard them instead of writing them into the just-reset registry.
+    private var probeEpoch = 0
 
     // Persistent, reused gRPC connections — one per known node address. gRPC channels
     // are designed to be long-lived and reused across many calls; an earlier version
@@ -111,7 +132,45 @@ class NodePoolManager @Inject constructor() {
 
     init {
         registry.resetTo(seeds, "Seed")
-        startProbing()
+        scope.launch {
+            // Load the persisted trusted-node setting BEFORE probing ever starts, rather than
+            // racing a `collect` against `startProbing()`'s own coroutine - without this, on a
+            // fresh launch with a trusted node already saved, the very first probe cycle could
+            // run in normal discovery mode (DataStore's read hadn't landed yet), kick off
+            // seed/DNS probes, and have those results land in the registry *after* the
+            // trusted-mode reset below already ran - leaving stale entries "Other Nodes" would
+            // then show despite trusted mode being active.
+            val initial = settings.trustedNodeAddress.first().trim().ifBlank { null }
+            trustedNodeAddress.value = initial
+            probeEpoch++
+            if (initial != null) {
+                registry.resetTo(listOf(initial), "Trusted")
+            }
+            startProbing()
+
+            // Now watch for the setting changing while the app is already running.
+            settings.trustedNodeAddress.collect { raw ->
+                val next = raw.trim().ifBlank { null }
+                if (next == trustedNodeAddress.value) return@collect
+                trustedNodeAddress.value = next
+                probeEpoch++
+                // Entering or leaving trusted-node mode invalidates every existing
+                // connection/registry entry - same reset shape as clearPool().
+                connections.values.forEach { it.close() }
+                connections.clear()
+                if (next != null) {
+                    registry.resetTo(listOf(next), "Trusted")
+                } else {
+                    manualEndpoints.clear()
+                    discoveredEndpoints.clear()
+                    dnsResolvedEndpoints.clear()
+                    lastDnsResolveAt = 0L
+                    registry.resetTo(seeds, "Seed")
+                }
+                publish()
+                refreshNow()
+            }
+        }
     }
 
     private fun startProbing() {
@@ -119,13 +178,24 @@ class NodePoolManager @Inject constructor() {
         probeJob = scope.launch {
             while (true) {
                 probeCycle()
-                // While the pool hasn't reached a healthy active count yet (e.g. right after a
-                // fresh app launch, before any node has been confirmed reachable+synced), retry
-                // much sooner than the normal steady-state cadence — a flat 30s here meant a cold
-                // launch could sit on "Disconnected"/0 active for a full 30-90+ seconds even
-                // though a retry a few seconds later would very likely succeed.
-                val activeCount = registry.snapshot().count { registry.statusOf(it) == "Active" }
-                delay(if (activeCount < targetActiveNodes) unhealthyRetryDelayMillis else 30_000)
+                val delayMillis = if (trustedNodeAddress.value != null) {
+                    // Trusted mode's registry only ever holds the one pinned node, so
+                    // activeCount below can never reach targetActiveNodes (8) - comparing
+                    // against it would permanently pin this to the aggressive cold-launch
+                    // retry rate for the node's entire lifetime, hammering it every 5s with
+                    // tight per-RPC timeouts and risking spurious failures. Just use the
+                    // normal steady-state cadence directly.
+                    30_000L
+                } else {
+                    // While the pool hasn't reached a healthy active count yet (e.g. right after a
+                    // fresh app launch, before any node has been confirmed reachable+synced), retry
+                    // much sooner than the normal steady-state cadence — a flat 30s here meant a cold
+                    // launch could sit on "Disconnected"/0 active for a full 30-90+ seconds even
+                    // though a retry a few seconds later would very likely succeed.
+                    val activeCount = registry.snapshot().count { registry.statusOf(it) == "Active" }
+                    if (activeCount < targetActiveNodes) unhealthyRetryDelayMillis else 30_000L
+                }
+                delay(delayMillis)
             }
         }
     }
@@ -183,6 +253,27 @@ class NodePoolManager @Inject constructor() {
     }
 
     private suspend fun probeCycle() {
+        // Captured up front so a mode switch (trusted <-> normal discovery) that happens
+        // *while this cycle's own probes are in flight* can be detected below and the whole
+        // cycle's results discarded instead of writing stale seed/discovered entries into the
+        // registry after a resetTo() already ran for the new mode.
+        val epoch = probeEpoch
+
+        // Trusted-node mode: no discovery at all - just keep this one connection alive and
+        // report its health. No seeds, no DNS, no peer-gossip, no latency-based selection.
+        val trusted = trustedNodeAddress.value
+        if (trusted != null) {
+            connections.keys.filter { it != trusted }.forEach { addr -> connections.remove(addr)?.close() }
+            val result = probeExisting(trusted, connectionFor(trusted))
+            if (epoch != probeEpoch) return
+            if (!result.reachable) {
+                connections.remove(trusted)?.close()
+            }
+            registry.update(trusted, "Trusted", result)
+            publish()
+            return
+        }
+
         // Gated on truly *Active* count, not just "not yet Quarantined" — a fresh/unprobed seed
         // starts out "Suspect" rather than Quarantined, so gating on non-Quarantined meant this
         // never fired until the hardcoded seeds above had each racked up 3 full failed cycles
@@ -213,6 +304,12 @@ class NodePoolManager @Inject constructor() {
                 result
             }
         }.awaitAll()
+
+        // The user may have switched into trusted-node mode while these probes were still in
+        // flight - resetTo("Trusted") already ran for that switch, so writing this normal-mode
+        // cycle's results now would just re-populate the registry with stale seed/discovered
+        // entries right after they were supposed to be cleared.
+        if (epoch != probeEpoch) return
 
         results.forEach { result ->
             val type = when {
@@ -318,6 +415,7 @@ class NodePoolManager @Inject constructor() {
      * those have gone stale), and only as a last resort to the first hardcoded seed.
      */
     fun getBroadcastConnection(): KaspadConnection {
+        trustedNodeAddress.value?.let { return connectionFor(it) }
         val bestActive = registry.snapshot()
             .filter { registry.statusOf(it) == "Active" }
             .minByOrNull { it.lastProbe?.latencyMs ?: Long.MAX_VALUE }

@@ -95,6 +95,9 @@ class ConnectionViewModel @Inject constructor(
     val pushIndexerUrl: StateFlow<String> = MutableStateFlow("https://indexer.kasia.wtf")
     val knsApiUrl: StateFlow<String> = settings.knsApiUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "")
     val kaspaRestApiUrl: StateFlow<String> = settings.kaspaRestUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "")
+    val trustedNodeAddress: StateFlow<String> = settings.trustedNodeAddress.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "")
+    val savedNodeAddresses: StateFlow<List<com.kachat.app.models.SavedNodeAddress>> =
+        settings.savedNodeAddresses.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyList())
 
     private val _discoverNewPeers = MutableStateFlow(true)
     val discoverNewPeers: StateFlow<Boolean> = _discoverNewPeers
@@ -104,7 +107,14 @@ class ConnectionViewModel @Inject constructor(
     fun setPushIndexerUrl(value: String) { /* TODO */ }
     fun setKnsApiUrl(value: String) { viewModelScope.launch { settings.setKnsApiUrl(value) } }
     fun setKaspaRestApiUrl(value: String) { viewModelScope.launch { settings.setKaspaRestUrl(value) } }
+    fun setTrustedNodeAddress(value: String) { viewModelScope.launch { settings.setTrustedNodeAddress(value) } }
     fun setDiscoverNewPeers(value: Boolean) { _discoverNewPeers.value = value }
+    fun addSavedNodeAddress(label: String, address: String) {
+        viewModelScope.launch {
+            settings.addSavedNodeAddress(com.kachat.app.models.SavedNodeAddress(label = label, address = address))
+        }
+    }
+    fun removeSavedNodeAddress(id: String) { viewModelScope.launch { settings.removeSavedNodeAddress(id) } }
 
     fun refreshPool() { nodePoolManager.refreshNow() }
     fun clearPool() { nodePoolManager.clearPool() }

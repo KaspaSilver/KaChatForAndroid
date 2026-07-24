@@ -31,6 +31,13 @@ class AppSettingsRepository @Inject constructor(
         val KEY_INDEXER_URL      = stringPreferencesKey("indexer_url")
         val KEY_KNS_API_URL      = stringPreferencesKey("kns_api_url")
         val KEY_KASPA_REST_URL   = stringPreferencesKey("kaspa_rest_url")
+        // A user-pinned "host:port" gRPC node - when non-blank, NodePoolManager stops
+        // discovery (seeds/DNS/peer-gossip) entirely and only ever connects to this address,
+        // Kaspium-style. Empty string = disabled (normal pool discovery).
+        val KEY_TRUSTED_NODE_ADDRESS = stringPreferencesKey("trusted_node_address")
+        // User-saved node addresses for quick copy/paste into the Kaspa Node field above -
+        // Gson-encoded list, same pattern as KEY_PENDING_KNS_COMMIT below.
+        val KEY_SAVED_NODE_ADDRESSES = stringPreferencesKey("saved_node_addresses")
 
         // Defaults matching the iOS app
         const val DEFAULT_NETWORK        = "mainnet"
@@ -41,6 +48,14 @@ class AppSettingsRepository @Inject constructor(
         const val LEGACY_DEFAULT_INDEXER_URL = "https://indexer.kasia.fyi"
         const val DEFAULT_KNS_API_URL    = "https://api.knsdomains.org/mainnet/api/v1"
         const val DEFAULT_KASPA_REST_URL = "https://api.kaspa.org"
+        // KaChat ships pinned to Kaspium's public node out of the box, rather than defaulting
+        // to full seed/DNS/peer-gossip discovery - the "Use Default" button in Connection
+        // Settings resets back to this same address after a user has typed something else.
+        // This is Kaspium's own currently-live default (see their node_settings_notifier.dart's
+        // "temporary Toccata node override" - node.kaspium.io's cert had expired, so Kaspium's
+        // app itself now points here instead) - TLS-secured, hence "grpcs://" (see
+        // KaspadConnection.kt's parseNodeAddress).
+        const val DEFAULT_TRUSTED_NODE_ADDRESS = "grpcs://toccata.kaspium.io"
 
         // Wallet (just a flag — actual keys live in Keystore)
         val KEY_HAS_WALLET       = booleanPreferencesKey("has_wallet")
@@ -141,6 +156,24 @@ class AppSettingsRepository @Inject constructor(
 
     val kaspaRestUrl: Flow<String> = dataStore.data.map {
         it[KEY_KASPA_REST_URL] ?: DEFAULT_KASPA_REST_URL
+    }
+
+    // Falls back to DEFAULT_TRUSTED_NODE_ADDRESS only when the key has never been written at
+    // all (a fresh install) - once the user explicitly saves "" (clearing it via the Kaspa Node
+    // field), that's a real stored value distinct from "never touched", so it correctly stays
+    // empty (normal discovery) instead of snapping back to the default on every read.
+    val trustedNodeAddress: Flow<String> = dataStore.data.map {
+        it[KEY_TRUSTED_NODE_ADDRESS] ?: DEFAULT_TRUSTED_NODE_ADDRESS
+    }
+
+    val savedNodeAddresses: Flow<List<com.kachat.app.models.SavedNodeAddress>> = dataStore.data.map { prefs ->
+        prefs[KEY_SAVED_NODE_ADDRESSES]?.let { json ->
+            try {
+                Gson().fromJson(json, Array<com.kachat.app.models.SavedNodeAddress>::class.java).toList()
+            } catch (e: Exception) {
+                emptyList()
+            }
+        } ?: emptyList()
     }
 
     val hasWallet: Flow<Boolean> = dataStore.data.map {
@@ -282,6 +315,27 @@ class AppSettingsRepository @Inject constructor(
     suspend fun setIndexerUrl(value: String) = dataStore.edit { it[KEY_INDEXER_URL] = value }
     suspend fun setKnsApiUrl(value: String) = dataStore.edit { it[KEY_KNS_API_URL] = value }
     suspend fun setKaspaRestUrl(value: String) = dataStore.edit { it[KEY_KASPA_REST_URL] = value }
+    suspend fun setTrustedNodeAddress(value: String) = dataStore.edit { it[KEY_TRUSTED_NODE_ADDRESS] = value }
+    suspend fun addSavedNodeAddress(entry: com.kachat.app.models.SavedNodeAddress) = dataStore.edit { prefs ->
+        val current = prefs[KEY_SAVED_NODE_ADDRESSES]?.let { json ->
+            try {
+                Gson().fromJson(json, Array<com.kachat.app.models.SavedNodeAddress>::class.java).toList()
+            } catch (e: Exception) {
+                emptyList()
+            }
+        } ?: emptyList()
+        prefs[KEY_SAVED_NODE_ADDRESSES] = Gson().toJson(current + entry)
+    }
+    suspend fun removeSavedNodeAddress(id: String) = dataStore.edit { prefs ->
+        val current = prefs[KEY_SAVED_NODE_ADDRESSES]?.let { json ->
+            try {
+                Gson().fromJson(json, Array<com.kachat.app.models.SavedNodeAddress>::class.java).toList()
+            } catch (e: Exception) {
+                emptyList()
+            }
+        } ?: emptyList()
+        prefs[KEY_SAVED_NODE_ADDRESSES] = Gson().toJson(current.filterNot { it.id == id })
+    }
     suspend fun setHasWallet(value: Boolean) = dataStore.edit { it[KEY_HAS_WALLET] = value }
     suspend fun setActiveAddress(value: String) = dataStore.edit { it[KEY_ACTIVE_ADDRESS] = value }
     suspend fun setChatPhotoQualityPreset(value: com.kachat.app.models.ChatPhotoQualityPreset) = dataStore.edit { it[KEY_CHAT_PHOTO_QUALITY_PRESET] = value.name }

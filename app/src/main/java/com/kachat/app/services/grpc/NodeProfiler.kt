@@ -27,27 +27,15 @@ data class NodeProbeResult(
  * whoever holds the persistent connection — see NodePoolManager.)
  */
 suspend fun probeExisting(address: String, connection: KaspadConnection): NodeProbeResult {
-    return try {
-        val start = System.currentTimeMillis()
-        val info = connection.getInfo()
-        val latency = System.currentTimeMillis() - start
-        val dagInfo = connection.getBlockDagInfo()
-        NodeProbeResult(
-            address = address,
-            reachable = true,
-            latencyMs = latency,
-            isSynced = info.isSynced,
-            isUtxoIndexed = info.isUtxoIndexed,
-            serverVersion = info.serverVersion,
-            networkName = dagInfo.networkName,
-            virtualDaaScore = dagInfo.virtualDaaScore
-        )
+    val start = System.currentTimeMillis()
+    val info = try {
+        connection.getInfo()
     } catch (e: Exception) {
         // Logged (not just captured in NodeProbeResult.error, which nothing currently reads) —
         // every prior "why is the pool empty" investigation had to add this ad hoc since probe
         // failures were otherwise completely silent.
         Log.w("NodeProfiler", "Probe failed for $address: ${e.javaClass.simpleName}: ${e.message}")
-        NodeProbeResult(
+        return NodeProbeResult(
             address = address,
             reachable = false,
             latencyMs = null,
@@ -59,4 +47,28 @@ suspend fun probeExisting(address: String, connection: KaspadConnection): NodePr
             error = e.message
         )
     }
+    val latency = System.currentTimeMillis() - start
+
+    // GetBlockDagInfo is a separate, heavier RPC (walks DAG-tip/blue-score state) - a node
+    // that just answered GetInfo is unambiguously reachable and synced regardless of whether
+    // this second call succeeds, so don't let a flaky/slow GetBlockDagInfo alone discard a
+    // real success and mark an otherwise-healthy node "Suspect"/unreachable. Its fields
+    // (networkName/virtualDaaScore) just come back null if it fails.
+    val dagInfo = try {
+        connection.getBlockDagInfo()
+    } catch (e: Exception) {
+        Log.w("NodeProfiler", "GetBlockDagInfo failed for $address (GetInfo still OK): ${e.javaClass.simpleName}: ${e.message}")
+        null
+    }
+
+    return NodeProbeResult(
+        address = address,
+        reachable = true,
+        latencyMs = latency,
+        isSynced = info.isSynced,
+        isUtxoIndexed = info.isUtxoIndexed,
+        serverVersion = info.serverVersion,
+        networkName = dagInfo?.networkName,
+        virtualDaaScore = dagInfo?.virtualDaaScore
+    )
 }

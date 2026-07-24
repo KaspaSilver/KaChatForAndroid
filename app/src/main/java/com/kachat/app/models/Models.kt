@@ -159,3 +159,13 @@ data class PendingKnsCommit(
     // commit persisted before this field existed, rather than failing to parse it entirely.
     val changeAddress: String? = null
 )
+
+/**
+ * A user-saved "host:port" node address, kept purely for quick copy/paste into the
+ * trusted-node field in Connection Settings - not itself used for connections.
+ */
+data class SavedNodeAddress(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val label: String,
+    val address: String
+)

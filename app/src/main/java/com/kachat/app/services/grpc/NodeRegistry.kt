@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 data class NodeRecord(
     val address: String,
-    val type: String, // "Seed" | "Discovered" | "Manual"
+    val type: String, // "Seed" | "Discovered" | "DNS" | "Manual" | "Trusted"
     val lastProbe: NodeProbeResult?,
     val consecutiveFailures: Int = 0,
     val lastSuccessAt: Long? = null
@@ -50,7 +50,10 @@ class NodeRegistry {
     fun lastSuccessAt(): Long? = records.values.mapNotNull { it.lastSuccessAt }.maxOrNull()
 
     fun statusOf(r: NodeRecord): String = when {
-        r.lastProbe?.reachable != true -> if (r.consecutiveFailures >= 3) "Quarantined" else "Suspect"
+        // A pinned trusted node is always used regardless of health (see
+        // NodePoolManager.getBroadcastConnection) - quarantine is meaningless for it and
+        // was previously showing up after a handful of transient probe failures.
+        r.lastProbe?.reachable != true -> if (r.type != "Trusted" && r.consecutiveFailures >= 3) "Quarantined" else "Suspect"
         r.lastProbe.isSynced == false -> "Suspect" // reachable but not synced — don't trust its data
         else -> "Active"
     }

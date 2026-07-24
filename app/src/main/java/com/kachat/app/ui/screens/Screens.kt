@@ -47,6 +47,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -82,6 +83,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
@@ -91,7 +93,9 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
@@ -5474,7 +5478,14 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
             SettingsSection(title = "Connection Status") {
                 ConnectionInfoRow("Status", statusText, statusColor)
                 SettingsDivider()
-                ConnectionInfoRow("Protocol", "gRPC (plaintext)")
+                ConnectionInfoRow(
+                    "Protocol",
+                    if (activeNodes.firstOrNull()?.ip?.let { com.kachat.app.services.grpc.parseNodeAddress(it)?.secure } == true) {
+                        "gRPC (secure)"
+                    } else {
+                        "gRPC (plaintext)"
+                    }
+                )
                 SettingsDivider()
                 ConnectionInfoRow("Connected Node", activeNodes.firstOrNull()?.ip ?: "None")
                 SettingsDivider()
@@ -5522,49 +5533,6 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
 
             Text(
                 text = "Primary: ${activeNodes.firstOrNull()?.ip ?: "None"}",
-                color = LocalAppColors.current.textSecondary,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(start = 8.dp)
-            )
-
-            SettingsSection(title = "Add Custom Endpoint") {
-                var endpoint by remember { mutableStateOf("") }
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextField(
-                        value = endpoint,
-                        onValueChange = { endpoint = it },
-                        placeholder = { Text("host:port", color = Color.DarkGray) },
-                        modifier = Modifier.weight(1f).height(50.dp).clip(RoundedCornerShape(12.dp)),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = LocalAppColors.current.surfaceVariant,
-                            unfocusedContainerColor = LocalAppColors.current.surfaceVariant,
-                            focusedTextColor = LocalAppColors.current.textPrimary,
-                            unfocusedTextColor = LocalAppColors.current.textPrimary,
-                            cursorColor = KaspaTeal,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent
-                        )
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    IconButton(
-                        onClick = {
-                            if (endpoint.isNotBlank()) {
-                                viewModel.addManualEndpoint(endpoint)
-                                endpoint = ""
-                            }
-                        },
-                        modifier = Modifier.size(40.dp).background(KaspaTeal, CircleShape)
-                    ) {
-                        Icon(Icons.Default.Add, null, tint = Color.Black)
-                    }
-                }
-            }
-
-            Text(
-                text = "Manual endpoints have highest priority",
                 color = LocalAppColors.current.textSecondary,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(start = 8.dp)
@@ -5867,10 +5835,8 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
     val pushIndexerUrl by viewModel.pushIndexerUrl.collectAsState()
     val knsApiUrl by viewModel.knsApiUrl.collectAsState()
     val kaspaRestApiUrl by viewModel.kaspaRestApiUrl.collectAsState()
-    val discoverNewPeers by viewModel.discoverNewPeers.collectAsState()
-    
-    val activeNodes by viewModel.activeNodes.collectAsState()
-    val allNodes by viewModel.allNodes.collectAsState()
+    val trustedNodeAddress by viewModel.trustedNodeAddress.collectAsState()
+    val savedNodeAddresses by viewModel.savedNodeAddresses.collectAsState()
     val scrollState = rememberScrollState()
 
     Scaffold(
@@ -5941,56 +5907,111 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                 SettingsFooter("REST API for transaction history and balance lookups")
             }
 
-            SettingsSection(title = "Node Pool") {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceAround
-                ) {
-                    PoolStatItem("Active", "12", Color(0xFF4CD964))
-                    PoolStatItem("Verified", "27", Color(0xFF2196F3))
-                    PoolStatItem("Profiled", "2", Color(0xFFF0AD4E))
-                    PoolStatItem("Other", "291", Color.Gray)
+            SettingsSection(title = "Kaspa Node") {
+                var endpoint by remember(trustedNodeAddress) { mutableStateOf(trustedNodeAddress) }
+                var validationError by remember { mutableStateOf<String?>(null) }
+                val keyboardController = LocalSoftwareKeyboardController.current
+
+                fun save() {
+                    val trimmed = endpoint.trim()
+                    if (trimmed.isEmpty()) {
+                        validationError = null
+                        viewModel.setTrustedNodeAddress("")
+                    } else if (com.kachat.app.services.grpc.parseNodeAddress(trimmed) == null) {
+                        validationError = "Enter as host:port or grpcs://host"
+                    } else {
+                        validationError = null
+                        viewModel.setTrustedNodeAddress(trimmed)
+                    }
+                    keyboardController?.hide()
                 }
-                SettingsDivider()
-                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Primary Latency", color = LocalAppColors.current.textSecondary)
-                    Text("61 ms", color = Color(0xFF4CD964))
-                }
-                SettingsDivider()
-                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Pool Health", color = LocalAppColors.current.textSecondary)
-                    Text("Healthy", color = Color(0xFF4CD964))
-                }
-                SettingsDivider()
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Discover new peers", color = LocalAppColors.current.textPrimary)
-                    Switch(
-                        checked = discoverNewPeers,
-                        onCheckedChange = { viewModel.setDiscoverNewPeers(it) },
-                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = KaspaTeal)
+
+                TextField(
+                    value = endpoint,
+                    onValueChange = { endpoint = it; validationError = null },
+                    placeholder = { Text("host:port or grpcs://host", color = Color.DarkGray) },
+                    modifier = Modifier.fillMaxWidth().padding(16.dp).height(50.dp).clip(RoundedCornerShape(12.dp)),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { save() }),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = LocalAppColors.current.surfaceVariant,
+                        unfocusedContainerColor = LocalAppColors.current.surfaceVariant,
+                        focusedTextColor = LocalAppColors.current.textPrimary,
+                        unfocusedTextColor = LocalAppColors.current.textPrimary,
+                        cursorColor = KaspaTeal,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
                     )
+                )
+                TextButton(
+                    onClick = {
+                        endpoint = com.kachat.app.repository.AppSettingsRepository.DEFAULT_TRUSTED_NODE_ADDRESS
+                        validationError = null
+                        viewModel.setTrustedNodeAddress(com.kachat.app.repository.AppSettingsRepository.DEFAULT_TRUSTED_NODE_ADDRESS)
+                    },
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                ) {
+                    Text("Use Default (${com.kachat.app.repository.AppSettingsRepository.DEFAULT_TRUSTED_NODE_ADDRESS})", color = KaspaTeal)
                 }
-                SettingsDivider()
-                TextButton(onClick = { }, modifier = Modifier.padding(8.dp)) {
-                    Text("Refresh Pool Now", color = KaspaTeal)
+                validationError?.let {
+                    Text(it, color = Color(0xFFFF3B30), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
                 }
-                SettingsFooter("Active = in use, Verified = ready, Profiled = checked, Other = candidates/suspect")
+                if (trustedNodeAddress.isNotBlank()) {
+                    SettingsDivider()
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Connected only to this node", color = KaspaTeal, fontSize = 13.sp)
+                        TextButton(onClick = {
+                            endpoint = ""
+                            validationError = null
+                            viewModel.setTrustedNodeAddress("")
+                        }) {
+                            Text("Clear", color = Color(0xFFFF3B30))
+                        }
+                    }
+                }
+                SettingsFooter(
+                    if (trustedNodeAddress.isNotBlank()) {
+                        "KaChat connects only to this node for sending and message scanning, and won't search for or fall back to other nodes. Clear, or edit and tap Done on the keyboard, to change it."
+                    } else {
+                        "Enter a trusted node (host:port for plaintext, or grpcs://host for TLS-secured nodes like Kaspium's) and tap Done on the keyboard to always connect to it instead of automatic discovery. Doesn't affect the Indexer/KNS/REST API URLs above."
+                    }
+                )
             }
 
-            SettingsSection(title = "Custom Endpoint") {
-                var endpoint by remember { mutableStateOf("") }
+            SettingsSection(title = "IP Address Book") {
+                var newLabel by remember { mutableStateOf("") }
+                var newAddress by remember { mutableStateOf("") }
+                var addError by remember { mutableStateOf<String?>(null) }
+                val clipboardManager = LocalClipboardManager.current
+                val context = LocalContext.current
+
+                TextField(
+                    value = newLabel,
+                    onValueChange = { newLabel = it },
+                    placeholder = { Text("Label (optional)", color = Color.DarkGray) },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).height(50.dp).clip(RoundedCornerShape(12.dp)),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = LocalAppColors.current.surfaceVariant,
+                        unfocusedContainerColor = LocalAppColors.current.surfaceVariant,
+                        focusedTextColor = LocalAppColors.current.textPrimary,
+                        unfocusedTextColor = LocalAppColors.current.textPrimary,
+                        cursorColor = KaspaTeal,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    )
+                )
                 Row(
                     modifier = Modifier.padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     TextField(
-                        value = endpoint,
-                        onValueChange = { endpoint = it },
-                        placeholder = { Text("grpc://host:port", color = Color.DarkGray) },
+                        value = newAddress,
+                        onValueChange = { newAddress = it; addError = null },
+                        placeholder = { Text("host:port or grpcs://host", color = Color.DarkGray) },
                         modifier = Modifier.weight(1f).height(50.dp).clip(RoundedCornerShape(12.dp)),
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = LocalAppColors.current.surfaceVariant,
@@ -6004,63 +6025,69 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     )
                     Spacer(Modifier.width(12.dp))
                     IconButton(
-                        onClick = { },
+                        onClick = {
+                            val trimmed = newAddress.trim()
+                            if (trimmed.isEmpty()) return@IconButton
+                            if (com.kachat.app.services.grpc.parseNodeAddress(trimmed) == null) {
+                                addError = "Enter as host:port or grpcs://host"
+                            } else {
+                                addError = null
+                                viewModel.addSavedNodeAddress(newLabel.trim(), trimmed)
+                                newLabel = ""
+                                newAddress = ""
+                            }
+                        },
                         modifier = Modifier.size(40.dp).background(KaspaTeal, CircleShape)
                     ) {
                         Icon(Icons.Default.Add, null, tint = Color.Black)
                     }
                 }
-                SettingsFooter("Manual endpoints have highest priority and are never auto-removed")
-            }
+                addError?.let {
+                    Text(it, color = Color(0xFFFF3B30), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                }
 
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(modifier = Modifier.size(8.dp).background(Color(0xFF4CD964), CircleShape))
-                    Spacer(Modifier.width(8.dp))
-                    Text(text = "Active Nodes", style = MaterialTheme.typography.titleMedium, color = LocalAppColors.current.textPrimary)
+                if (savedNodeAddresses.isEmpty()) {
+                    Text(
+                        "No saved addresses",
+                        color = LocalAppColors.current.textSecondary,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                } else {
+                    savedNodeAddresses.forEachIndexed { index, entry ->
+                        if (index > 0) SettingsDivider()
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    clipboardManager.setText(AnnotatedString(entry.address))
+                                    Toast.makeText(context, "Address copied", Toast.LENGTH_SHORT).show()
+                                }
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                if (entry.label.isNotBlank()) {
+                                    Text(entry.label, color = LocalAppColors.current.textPrimary)
+                                    Text(
+                                        entry.address,
+                                        color = LocalAppColors.current.textSecondary,
+                                        fontSize = 12.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                } else {
+                                    Text(entry.address, color = LocalAppColors.current.textPrimary, fontFamily = FontFamily.Monospace)
+                                }
+                            }
+                            IconButton(onClick = { viewModel.removeSavedNodeAddress(entry.id) }) {
+                                Icon(Icons.Default.Delete, null, tint = LocalAppColors.current.textSecondary)
+                            }
+                        }
+                    }
                 }
-                Text(text = "12", color = LocalAppColors.current.textSecondary)
+                SettingsFooter("Save your own node addresses here, then tap one to copy it and paste into the Kaspa Node field above.")
             }
-            Column(
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(LocalAppColors.current.surface)
-            ) {
-                activeNodes.forEachIndexed { index, node ->
-                    ActiveNodeRow(node)
-                    if (index < activeNodes.size - 1) SettingsDivider()
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(modifier = Modifier.size(8.dp).background(Color.Gray, CircleShape))
-                    Spacer(Modifier.width(8.dp))
-                    Text(text = "Other Nodes", style = MaterialTheme.typography.titleMedium, color = LocalAppColors.current.textPrimary)
-                }
-                Text(text = "293", color = LocalAppColors.current.textSecondary)
-            }
-            Column(
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(LocalAppColors.current.surface)
-            ) {
-                allNodes.forEachIndexed { index, node ->
-                    AllNodeRow(node)
-                    if (index < allNodes.size - 1) SettingsDivider()
-                }
-            }
-
-            Text(
-                text = "Profiled, candidate, and suspect nodes. Showing first 20.",
-                style = MaterialTheme.typography.bodySmall,
-                color = LocalAppColors.current.textSecondary,
-                modifier = Modifier.padding(horizontal = 16.dp)
-            )
 
             Button(
                 onClick = { },

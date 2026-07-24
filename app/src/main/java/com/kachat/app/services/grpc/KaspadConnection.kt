@@ -31,10 +31,37 @@ import protowire.rpcTransactionInput
 import protowire.rpcTransactionOutput
 import protowire.submitTransactionRequestMessage
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * A single plaintext gRPC connection to one Kaspa node ("ip:port"), wrapping the
+ * A parsed node address: "host:port" (plaintext), or "grpcs://host[:port]"/"https://host[:port]"
+ * (TLS, defaulting to port 443 when omitted) - mirrors iOS's Endpoint(url:) and Kaspium's own
+ * port inference (GrpcService.url in grpc_service.dart), needed for nodes like Kaspium's own
+ * that terminate TLS at the gRPC port itself and reject plaintext HTTP/2 entirely.
+ */
+data class ParsedNodeAddress(val host: String, val port: Int, val secure: Boolean)
+
+fun parseNodeAddress(raw: String): ParsedNodeAddress? {
+    var clean = raw.trim()
+    var secure = false
+    when {
+        clean.startsWith("grpcs://") -> { secure = true; clean = clean.removePrefix("grpcs://") }
+        clean.startsWith("https://") -> { secure = true; clean = clean.removePrefix("https://") }
+        clean.startsWith("grpc://") -> clean = clean.removePrefix("grpc://")
+    }
+    val lastColon = clean.lastIndexOf(':')
+    val port = if (lastColon >= 0) clean.substring(lastColon + 1).toIntOrNull() else null
+    return when {
+        port != null -> ParsedNodeAddress(clean.substring(0, lastColon), port, secure)
+        secure && clean.isNotBlank() -> ParsedNodeAddress(clean, 443, true)
+        else -> null
+    }
+}
+
+/**
+ * A single gRPC connection to one Kaspa node ("ip:port", plaintext by default; see
+ * [parseNodeAddress] for the TLS-secured "grpcs://"/"https://" link format), wrapping the
  * node's single bidirectional-streaming `MessageStream` RPC. Requests/responses
  * are multiplexed over that one stream by a client-assigned request id, matching
  * the real Kaspa RPC protocol (`protowire.RPC` service, see rpc.proto/messages.proto).
@@ -50,9 +77,29 @@ class KaspadConnection internal constructor(
 ) {
     constructor(address: String, scope: CoroutineScope) : this(
         scope,
-        ManagedChannelBuilder.forTarget(address).usePlaintext().build(),
+        buildChannel(address),
         address
     )
+
+    companion object {
+        private fun buildChannel(address: String): ManagedChannel {
+            val parsed = parseNodeAddress(address)
+            val target = if (parsed != null) "${parsed.host}:${parsed.port}" else address
+            val builder = ManagedChannelBuilder.forTarget(target)
+            if (parsed?.secure == true) builder.useTransportSecurity() else builder.usePlaintext()
+            return builder
+                // Connections (especially the trusted-node pin, which holds one connection open
+                // for its entire lifetime across ~30s idle gaps between probes) can go half-open
+                // - the OS drops the underlying socket (NAT/carrier idle timeout, Doze, network
+                // handoff) without the app finding out until the next RPC silently hangs for a
+                // full 5s timeout. HTTP/2 keepalive pings detect that proactively and force gRPC
+                // to fail fast and reconnect instead.
+                .keepAliveTime(20, TimeUnit.SECONDS)
+                .keepAliveTimeout(10, TimeUnit.SECONDS)
+                .keepAliveWithoutCalls(true)
+                .build()
+        }
+    }
 
     /** True once [connect] has (re)launched the stream-collecting coroutine and it hasn't since
      * died - see the doc comment on the `catch` block in [connect] for what clears this. */

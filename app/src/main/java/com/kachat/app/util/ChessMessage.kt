@@ -1,6 +1,7 @@
 package com.kachat.app.util
 
 import com.google.gson.Gson
+import com.google.gson.annotations.SerializedName
 
 /**
  * "Play Chess" 1:1 chat feature - four JSON envelopes embedded directly in the plaintext message
@@ -10,7 +11,16 @@ import com.google.gson.Gson
  * them through [ChessEngine], the same way [MessageReply.replyToId] is resolved client-side
  * against the in-memory message list rather than a database relationship.
  */
-enum class ChessInviteColor { WHITE, BLACK }
+/** `@SerializedName` pins the wire value to lowercase "white"/"black" - Gson's default enum
+ *  serialization uses the constant name verbatim ("WHITE"/"BLACK"), but iOS's Swift `Codable`
+ *  enum encodes its raw String value, which defaults to the lowercase case name. Without this,
+ *  every chess_invite sent from one platform silently failed to parse on the other (caught by
+ *  parseOrNull's broad catch, falling through to plain-text rendering) - since the invite is the
+ *  mandatory first message of every game, that broke the whole game, not just the color choice. */
+enum class ChessInviteColor {
+    @SerializedName("white") WHITE,
+    @SerializedName("black") BLACK
+}
 
 data class ChessInviteContent(
     val type: String = "chess_invite",
